@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "src/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "src/index.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/smart-sa/api/cron/daily",
+      "schedule": "0 23 * * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/weekly",
+      "schedule": "0 0 * * 1"
+    },
+    {
+      "path": "/smart-sa/api/cron/monthly",
+      "schedule": "0 0 1 * *"
+    }
+  ]
+}
