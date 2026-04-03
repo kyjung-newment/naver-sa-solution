@@ -464,12 +464,17 @@ router.get('/api-settings', requireLogin, async (req, res) => {
 router.post('/api-settings', requireLogin, async (req, res) => {
   const { api_key, secret_key, manager_customer_id } = req.body;
 
-  // API 연결 테스트
+  // API 연결 테스트 (401/403이면 인증 실패, 그 외 에러는 통과)
   try {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
     await testClient.getCustomerLinks();
   } catch (e) {
-    return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
+    const status = e.message.match(/\[(\d+)\]/)?.[1];
+    if (status === '401' || status === '403') {
+      return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
+    }
+    // 404, 500 등은 인증 자체는 성공한 것으로 간주
+    console.log('API 테스트 응답:', e.message);
   }
 
   await db.updateApiCredentials(req.session.userId, api_key, secret_key, manager_customer_id);

@@ -54,9 +54,9 @@ function createApiClient(creds) {
   }
 
   return {
-    // 연결된 광고주 목록 조회 (매니저 계정용)
+    // 연결된 광고주 목록 조회 (매니저 계정용) - 네이버 SA API: GET /managerLinks
     getCustomerLinks: () =>
-      apiCall('GET', '/customer-links'),
+      apiCall('GET', '/managerLinks'),
 
     getCampaigns: () =>
       apiCall('GET', '/ncc/campaigns'),
