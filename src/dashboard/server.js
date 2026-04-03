@@ -219,28 +219,28 @@ router.get('/login', async (req, res) => {
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const user = await db.authenticateUser(username, password);
-  if (!user) return res.redirect('/smart-sa/login?err=invalid');
+  if (!user) return res.redirect(303, '/smart-sa/login?err=invalid');
   req.session.userId = user.id;
   req.session.userName = user.name;
   req.session.isAdmin = !!user.is_admin;
   req.session.approved = user.approved;
-  res.redirect('/smart-sa');
+  req.session.save(() => res.redirect(303, '/smart-sa'));
 });
 
 router.post('/register', async (req, res) => {
   const { username, password, name } = req.body;
   try {
     const count = await db.countUsers();
-    if (count > 0) return res.redirect('/smart-sa/login');
+    if (count > 0) return res.redirect(303, '/smart-sa/login');
     // 최초 사용자는 관리자 + 승인 완료
     const id = await db.createUser(username, password, name || username, { isAdmin: true, approved: true });
     req.session.userId = id;
     req.session.userName = name || username;
     req.session.isAdmin = true;
     req.session.approved = 1;
-    res.redirect('/smart-sa');
+    req.session.save(() => res.redirect(303, '/smart-sa'));
   } catch (e) {
-    res.redirect('/smart-sa/login?err=taken');
+    res.redirect(303, '/smart-sa/login?err=taken');
   }
 });
 
@@ -292,9 +292,9 @@ router.post('/signup', async (req, res) => {
     req.session.userName = name || username;
     req.session.isAdmin = false;
     req.session.approved = 0;
-    res.redirect('/smart-sa/pending');
+    req.session.save(() => res.redirect(303, '/smart-sa/pending'));
   } catch (e) {
-    res.redirect('/smart-sa/signup?err=taken');
+    res.redirect(303, '/smart-sa/signup?err=taken');
   }
 });
 
@@ -386,12 +386,12 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
 
 router.post('/admin/users/:id/approve', requireLogin, requireAdmin, async (req, res) => {
   await db.approveUser(req.params.id);
-  res.redirect('/smart-sa/admin/users?msg=approved');
+  res.redirect(303, '/smart-sa/admin/users?msg=approved');
 });
 
 router.post('/admin/users/:id/reject', requireLogin, requireAdmin, async (req, res) => {
   await db.rejectUser(req.params.id);
-  res.redirect('/smart-sa/admin/users?msg=rejected');
+  res.redirect(303, '/smart-sa/admin/users?msg=rejected');
 });
 
 // ─── 헬퍼 ──────────────────────────────────────────────────────────
@@ -469,11 +469,11 @@ router.post('/api-settings', requireLogin, async (req, res) => {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
     await testClient.getCustomerLinks();
   } catch (e) {
-    return res.redirect('/smart-sa/api-settings?msg=invalid');
+    return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
   }
 
   await db.updateApiCredentials(req.session.userId, api_key, secret_key, manager_customer_id);
-  res.redirect('/smart-sa/api-settings?msg=saved');
+  res.redirect(303, '/smart-sa/api-settings?msg=saved');
 });
 
 // ─── 광고주 관리 (불러오기 + 선택 + 기능 설정) ──────────────────────
@@ -734,7 +734,7 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor','feat_auto_bidding']
     .forEach(k => { data[k] = k in req.body; });
   await db.updateAccount(req.params.id, user.id, data);
-  res.redirect('/smart-sa/accounts?msg=saved');
+  res.redirect(303, '/smart-sa/accounts?msg=saved');
 });
 
 router.delete('/accounts/:id', requireLogin, async (req, res) => {
