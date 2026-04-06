@@ -309,7 +309,7 @@ router.get('/logout', (req, res) => {
 router.get('/reset-password', (req, res) => {
   const secret = req.query.secret || '';
   const msg = req.query.msg || '';
-  const validSecret = secret === config.cronSecret;
+  const validSecret = secret === process.env.CRON_SECRET;
 
   res.send(layout('비밀번호 초기화', `
     <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fff7ed,#fef2f2)">
@@ -351,7 +351,7 @@ router.get('/reset-password', (req, res) => {
 
 router.post('/reset-password', async (req, res) => {
   const { secret, new_password, confirm_password } = req.body;
-  if (secret !== config.cronSecret) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
+  if (secret !== process.env.CRON_SECRET) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
   if (new_password !== confirm_password || new_password.length < 8) return res.redirect(303, '/smart-sa/reset-password?msg=err');
   try {
     await db.resetAdminPassword(new_password);
