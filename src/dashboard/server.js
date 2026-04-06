@@ -524,17 +524,13 @@ router.get('/api-settings', requireLogin, async (req, res) => {
 router.post('/api-settings', requireLogin, async (req, res) => {
   const { api_key, secret_key, manager_customer_id } = req.body;
 
-  // API 연결 테스트 (401/403이면 인증 실패, 그 외 에러는 통과)
+  // API 연결 테스트 (/ncc/campaigns로 검증 - 모든 계정 유형에서 작동)
   try {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
-    await testClient.getCustomerLinks();
+    await testClient.getCampaigns();
   } catch (e) {
-    const status = e.message.match(/\[(\d+)\]/)?.[1];
-    if (status === '401' || status === '403') {
-      return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
-    }
-    // 404, 500 등은 인증 자체는 성공한 것으로 간주
-    console.log('API 테스트 응답:', e.message);
+    console.log('API 테스트 실패:', e.message);
+    return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
   }
 
   await db.updateApiCredentials(req.session.userId, api_key, secret_key, manager_customer_id);
@@ -682,8 +678,32 @@ router.get('/api/customer-links', requireLogin, async (req, res) => {
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     const client = makeClient(creds, creds.manager_customer_id);
-    const customers = await client.getCustomerLinks();
-    res.json({ ok: true, customers: Array.isArray(customers) ? customers : [] });
+
+    // 먼저 customer-links 시도 (대행사/매니저 계정)
+    try {
+      const customers = await client.getCustomerLinks();
+      return res.json({ ok: true, customers: Array.isArray(customers) ? customers : [] });
+    } catch (linkErr) {
+      // customer-links 실패 시 (직접 광고주 계정) → 자기 자신을 광고주로 반환
+      console.log('customer-links 미지원 계정, 직접 광고주 모드:', linkErr.message);
+      try {
+        // /ncc/campaigns로 계정명 확인
+        const campaigns = await client.getCampaigns();
+        const accountName = campaigns.length > 0
+          ? `광고주 (${creds.manager_customer_id})`
+          : `내 계정 (${creds.manager_customer_id})`;
+        return res.json({
+          ok: true,
+          customers: [{
+            customerId: parseInt(creds.manager_customer_id),
+            customerName: accountName,
+            loginId: creds.manager_customer_id,
+          }]
+        });
+      } catch (campErr) {
+        return res.status(500).json({ ok: false, error: '계정 정보 조회 실패: ' + campErr.message });
+      }
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
