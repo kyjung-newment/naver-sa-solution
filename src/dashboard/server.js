@@ -549,18 +549,31 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     ${msg === 'added' ? '<div class="alert alert-ok">광고주가 추가되었습니다.</div>' : ''}
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
-      <p style="color:#64748b;font-size:13px">API 계정에 연결된 광고주를 불러와 솔루션 적용 대상을 선택합니다.</p>
-      <button class="btn btn-primary" onclick="loadCustomers()" id="load-btn">📥 광고주 불러오기</button>
+      <p style="color:#64748b;font-size:13px">관리 중인 광고주를 등록하고 솔루션 적용 대상을 선택합니다.</p>
     </div>
 
-    <!-- 광고주 불러오기 결과 영역 -->
-    <div id="customer-list-wrap" style="display:none;margin-bottom:20px">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">📋 API 연결 광고주 목록</span>
-          <span id="customer-count" style="font-size:12px;color:#94a3b8"></span>
+    <!-- 광고주 추가 영역 -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <span class="card-title">➕ 광고주 추가</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#64748b;margin-bottom:12px">
+          네이버 광고주센터 → 광고 계정 관리에서 확인한 광고주의 Customer ID와 이름을 입력해주세요.<br>
+          입력 후 해당 계정에 API 접근 권한이 있는지 자동으로 확인합니다.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">광고주명</label>
+            <input id="add-name" placeholder="예: egojin" style="width:100%">
+          </div>
+          <div style="flex:1;min-width:150px">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID</label>
+            <input id="add-cid" placeholder="예: 1737106" style="width:100%">
+          </div>
+          <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()">🔍 확인 및 추가</button>
         </div>
-        <div id="customer-list-body"></div>
+        <div id="add-result" style="margin-top:8px"></div>
       </div>
     </div>
 
@@ -600,62 +613,50 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <script>
-    async function loadCustomers() {
-      const btn = document.getElementById('load-btn');
-      btn.disabled = true; btn.textContent = '불러오는 중...';
-      try {
-        const res = await fetch('/smart-sa/api/customer-links');
-        const json = await res.json();
-        if (!json.ok) throw new Error(json.error);
-        const customers = json.customers;
-        const wrap = document.getElementById('customer-list-wrap');
-        wrap.style.display = 'block';
-        document.getElementById('customer-count').textContent = customers.length + '개 광고주';
+    async function testAndAddCustomer() {
+      const nameEl = document.getElementById('add-name');
+      const cidEl = document.getElementById('add-cid');
+      const btn = document.getElementById('add-btn');
+      const result = document.getElementById('add-result');
+      const name = nameEl.value.trim();
+      const customerId = cidEl.value.trim();
 
-        if (!customers.length) {
-          document.getElementById('customer-list-body').innerHTML = '<div class="empty">연결된 광고주가 없습니다.</div>';
-          return;
-        }
-
-        const alreadyAdded = ${JSON.stringify(accounts.map(a => a.customer_id))};
-        document.getElementById('customer-list-body').innerHTML = '<table><thead><tr>'
-          +'<th>광고주명</th><th>Customer ID</th><th style="text-align:center">상태</th>'
-          +'</tr></thead><tbody>'
-          + customers.map(c => {
-            const added = alreadyAdded.includes(String(c.customerId));
-            return '<tr>'
-              +'<td><strong>'+(c.customerName || c.loginId || '-')+'</strong></td>'
-              +'<td style="font-family:monospace;font-size:12px;color:#64748b">'+c.customerId+'</td>'
-              +'<td style="text-align:center">'
-              +(added
-                ? '<span class="badge badge-green">추가됨</span>'
-                : '<button class="btn btn-primary btn-sm" onclick="addCustomer(\\''+c.customerId+'\\',\\''+( c.customerName || c.loginId || c.customerId )+'\\',this)">+ 선택</button>')
-              +'</td></tr>';
-          }).join('')
-          +'</tbody></table>';
-      } catch(e) {
-        toast('광고주 불러오기 실패: '+e.message, true);
-      } finally {
-        btn.disabled = false; btn.textContent = '📥 광고주 불러오기';
+      if (!name || !customerId) {
+        result.innerHTML = '<div class="alert alert-err">광고주명과 Customer ID를 모두 입력해주세요.</div>';
+        return;
       }
-    }
 
-    async function addCustomer(customerId, name, btnEl) {
-      btnEl.disabled = true; btnEl.textContent = '추가 중...';
+      btn.disabled = true; btn.textContent = '확인 중...';
+      result.innerHTML = '<div style="color:#64748b;font-size:13px">🔄 API 접근 권한 확인 중...</div>';
+
       try {
-        const res = await fetch('/smart-sa/api/add-customer', {
+        const res = await fetch('/smart-sa/api/test-customer', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ customerId, name })
+          body: JSON.stringify({ customerId })
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
-        btnEl.outerHTML = '<span class="badge badge-green">추가됨</span>';
-        toast(name + ' 광고주가 추가되었습니다.');
-        setTimeout(() => location.reload(), 1000);
+
+        if (json.accessible) {
+          // API 접근 가능 → 바로 추가
+          const addRes = await fetch('/smart-sa/api/add-customer', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ customerId, name })
+          });
+          const addJson = await addRes.json();
+          if (!addJson.ok) throw new Error(addJson.error);
+          result.innerHTML = '<div class="alert alert-ok">✅ ' + name + ' (ID: ' + customerId + ') — API 연동 성공! 캠페인 ' + json.campaignCount + '개 확인됨</div>';
+          toast(name + ' 광고주가 추가되었습니다.');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          result.innerHTML = '<div class="alert alert-err">❌ 해당 Customer ID에 API 접근 권한이 없습니다.<br><span style="font-size:12px;color:#94a3b8">네이버 광고주센터에서 해당 광고주의 검색광고 Key 권한을 확인해주세요.</span></div>';
+        }
       } catch(e) {
-        toast('추가 실패: '+e.message, true);
-        btnEl.disabled = false; btnEl.textContent = '+ 선택';
+        result.innerHTML = '<div class="alert alert-err">오류: ' + e.message + '</div>';
+      } finally {
+        btn.disabled = false; btn.textContent = '🔍 확인 및 추가';
       }
     }
 
@@ -677,32 +678,42 @@ router.get('/api/customer-links', requireLogin, async (req, res) => {
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
+    // 특정 Customer ID로 API 접근 가능 여부 테스트
     const client = makeClient(creds, creds.manager_customer_id);
+    const campaigns = await client.getCampaigns();
+    return res.json({
+      ok: true,
+      customers: [{
+        customerId: parseInt(creds.manager_customer_id),
+        customerName: `내 계정 (${creds.manager_customer_id})`,
+        campaignCount: campaigns.length,
+      }]
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
-    // 먼저 customer-links 시도 (대행사/매니저 계정)
+// API: 광고주 Customer ID 접근 권한 테스트
+router.post('/api/test-customer', requireLogin, async (req, res) => {
+  try {
+    const { customerId } = req.body;
+    if (!customerId) return res.status(400).json({ ok: false, error: 'Customer ID를 입력해주세요.' });
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
+
+    // 해당 Customer ID로 캠페인 조회 시도
+    const client = makeClient(creds, String(customerId));
     try {
-      const customers = await client.getCustomerLinks();
-      return res.json({ ok: true, customers: Array.isArray(customers) ? customers : [] });
-    } catch (linkErr) {
-      // customer-links 실패 시 (직접 광고주 계정) → 자기 자신을 광고주로 반환
-      console.log('customer-links 미지원 계정, 직접 광고주 모드:', linkErr.message);
-      try {
-        // /ncc/campaigns로 계정명 확인
-        const campaigns = await client.getCampaigns();
-        const accountName = campaigns.length > 0
-          ? `광고주 (${creds.manager_customer_id})`
-          : `내 계정 (${creds.manager_customer_id})`;
-        return res.json({
-          ok: true,
-          customers: [{
-            customerId: parseInt(creds.manager_customer_id),
-            customerName: accountName,
-            loginId: creds.manager_customer_id,
-          }]
-        });
-      } catch (campErr) {
-        return res.status(500).json({ ok: false, error: '계정 정보 조회 실패: ' + campErr.message });
+      const campaigns = await client.getCampaigns();
+      return res.json({ ok: true, accessible: true, campaignCount: campaigns.length });
+    } catch (apiErr) {
+      const status = apiErr.message.match(/\[(\d+)\]/)?.[1];
+      if (status === '403') {
+        return res.json({ ok: true, accessible: false, error: 'API 접근 권한 없음' });
       }
+      return res.json({ ok: true, accessible: false, error: apiErr.message });
     }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
