@@ -1530,7 +1530,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
-        const desc  = {daily:'어제 하루 성과',weekly:'최근 7일 성과',monthly:'최근 30일 성과'}[t];
+        const desc  = {daily:'어제 하루 성과 (매일 09:00)',weekly:'최근 7일 성과 (월요일 09:00)',monthly:'최근 30일 성과 (매월 1일 09:00)'}[t];
         return `<div class="card">
           <div class="card-body" style="text-align:center">
             <div style="font-size:32px;margin-bottom:12px">${{daily:'📅',weekly:'📆',monthly:'🗓'}[t]}</div>
@@ -1539,7 +1539,10 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
             <select id="acc-${t}" style="margin-bottom:10px">
               ${accounts.map(a=>`<option value="${a.id}" ${String(a.id) === String(req.session.selectedAccountId) ? 'selected' : ''}>${a.name}</option>`).join('')||'<option value="">광고주 없음</option>'}
             </select>
-            <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="triggerReport('${t}')">발송</button>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-outline" style="flex:1;justify-content:center" onclick="previewReport('${t}')">미리보기</button>
+              <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="triggerReport('${t}')">이메일 발송</button>
+            </div>
           </div>
         </div>`;
       }).join('')}
@@ -1550,8 +1553,8 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         <table>
           <thead><tr><th>리포트</th><th>스케줄</th><th>시각</th><th>광고주별 설정</th></tr></thead>
           <tbody>
-            <tr><td>일간</td><td><code>0 8 * * *</code></td><td>매일 08:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
-            <tr><td>주간</td><td><code>0 9 * * 1</code></td><td>월요일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
+            <tr><td>일간</td><td><code>0 9 * * *</code></td><td>매일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
+            <tr><td>주간</td><td><code>0 9 * * 1</code></td><td>매주 월요일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
             <tr><td>월간</td><td><code>0 9 1 * *</code></td><td>매월 1일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
           </tbody>
         </table>
@@ -1569,12 +1572,40 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         const labels = {daily:'일간',weekly:'주간',monthly:'월간'};
-        toast(labels[type]+' 리포트 발송 시작!');
+        toast(labels[type]+' 리포트 발송 시작! (1~2분 소요)');
       } catch(e) { toast(e.message, true); }
+    }
+
+    function previewReport(type) {
+      const id = document.getElementById('acc-'+type).value;
+      if (!id) return toast('광고주를 선택해주세요.', true);
+      window.open('/smart-sa/api/report/preview?type='+type+'&accountId='+id, '_blank');
     }
     </script>
   `;
   res.send(appLayout('리포트', content, user, 'reports', await getLayoutOpts(req)));
+});
+
+// API: 리포트 미리보기 (HTML 직접 반환)
+router.get('/api/report/preview', requireLogin, async (req, res) => {
+  try {
+    const { type = 'daily', accountId } = req.query;
+    if (!['daily', 'weekly', 'monthly'].includes(type)) return res.status(400).send('잘못된 타입');
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).send('API 계정 미등록');
+
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+    const { generatePreview } = require('../report/generator');
+
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    const html = await generatePreview(enriched, type);
+    res.send(html);
+  } catch (err) {
+    res.status(500).send(`<h2>리포트 생성 오류</h2><pre>${err.message}</pre>`);
+  }
 });
 
 router.post('/api/report/trigger', requireLogin, async (req, res) => {

@@ -9,7 +9,7 @@ const config = {
   sessionSecret: process.env.SESSION_SECRET || 'naver-sa-secret-change-me',
 
   cron: {
-    daily:   process.env.CRON_DAILY   || '0 8 * * *',
+    daily:   process.env.CRON_DAILY   || '0 9 * * *',
     weekly:  process.env.CRON_WEEKLY  || '0 9 * * 1',
     monthly: process.env.CRON_MONTHLY || '0 9 1 * *',
   },
