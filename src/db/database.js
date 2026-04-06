@@ -221,6 +221,21 @@ async function deleteAccount(id, userId) {
   return query('DELETE FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, userId]);
 }
 
+// 관리자 비밀번호 초기화 (CRON_SECRET으로 보호)
+async function resetAdminPassword(newPassword) {
+  const passwordHash = hashPassword(newPassword);
+  await pool.query(
+    'UPDATE users SET password_hash = $1 WHERE is_admin = 1',
+    [passwordHash]
+  );
+}
+
+// 전체 사용자 삭제 (최초 재등록용)
+async function deleteAllUsers() {
+  await pool.query('DELETE FROM ad_accounts');
+  await pool.query('DELETE FROM users');
+}
+
 module.exports = Object.assign(module.exports, {
   initDb,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
@@ -228,4 +243,5 @@ module.exports = Object.assign(module.exports, {
   updateApiCredentials, getApiCredentials,
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount,
+  resetAdminPassword, deleteAllUsers,
 });

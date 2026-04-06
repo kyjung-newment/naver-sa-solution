@@ -208,6 +208,9 @@ router.get('/login', async (req, res) => {
             <div style="text-align:center;margin-top:16px;padding-top:16px;border-top:1px solid #f1f5f9">
               <span style="font-size:13px;color:#64748b">계정이 없으신가요?</span>
               <a href="/smart-sa/signup" style="font-size:13px;color:#03c75a;font-weight:600;margin-left:6px">회원가입</a>
+            </div>
+            <div style="text-align:center;margin-top:8px">
+              <a href="/smart-sa/reset-password" style="font-size:12px;color:#94a3b8">비밀번호를 잊으셨나요?</a>
             </div>` : ''}
           </div>
         </div>
@@ -300,6 +303,63 @@ router.post('/signup', async (req, res) => {
 
 router.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/smart-sa/login'));
+});
+
+// ─── 관리자 비밀번호 초기화 (CRON_SECRET 필요) ───────────────────────
+router.get('/reset-password', (req, res) => {
+  const secret = req.query.secret || '';
+  const msg = req.query.msg || '';
+  const validSecret = secret === config.cronSecret;
+
+  res.send(layout('비밀번호 초기화', `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fff7ed,#fef2f2)">
+      <div style="width:100%;max-width:420px;padding:16px">
+        <div style="text-align:center;margin-bottom:24px">
+          <div style="font-size:40px">🔑</div>
+          <h1 style="font-size:20px;font-weight:700;color:#111827;margin-top:8px">관리자 비밀번호 초기화</h1>
+          <p style="color:#64748b;font-size:13px;margin-top:4px">보안 코드가 있어야 사용 가능합니다</p>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            ${msg === 'done' ? '<div class="alert alert-ok">✅ 비밀번호가 초기화되었습니다. 새 비밀번호로 로그인하세요.</div>' : ''}
+            ${msg === 'fail' ? '<div class="alert alert-err">❌ 보안 코드가 올바르지 않습니다.</div>' : ''}
+            ${msg === 'err' ? '<div class="alert alert-err">❌ 초기화 중 오류가 발생했습니다.</div>' : ''}
+            <form method="POST" action="/smart-sa/reset-password">
+              <div class="form-group">
+                <label>보안 코드 (CRON_SECRET)</label>
+                <input name="secret" type="password" required placeholder="보안 코드 입력" value="${validSecret ? secret : ''}">
+              </div>
+              <div class="form-group">
+                <label>새 비밀번호</label>
+                <input name="new_password" type="password" required placeholder="새 비밀번호 (8자 이상)" minlength="8">
+              </div>
+              <div class="form-group">
+                <label>새 비밀번호 확인</label>
+                <input name="confirm_password" type="password" required placeholder="비밀번호 재입력">
+              </div>
+              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px;background:#ef4444;border-color:#ef4444">비밀번호 초기화</button>
+            </form>
+            <div style="text-align:center;margin-top:16px">
+              <a href="/smart-sa/login" style="font-size:13px;color:#64748b">← 로그인으로 돌아가기</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `));
+});
+
+router.post('/reset-password', async (req, res) => {
+  const { secret, new_password, confirm_password } = req.body;
+  if (secret !== config.cronSecret) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
+  if (new_password !== confirm_password || new_password.length < 8) return res.redirect(303, '/smart-sa/reset-password?msg=err');
+  try {
+    await db.resetAdminPassword(new_password);
+    res.redirect(303, '/smart-sa/reset-password?msg=done');
+  } catch (e) {
+    console.error('비밀번호 초기화 오류:', e);
+    res.redirect(303, '/smart-sa/reset-password?msg=err');
+  }
 });
 
 // ─── 승인 대기 페이지 ──────────────────────────────────────────────
