@@ -53,6 +53,64 @@ async function initDb() {
     )
   `);
 
+  // 네이버 마스터 동기화 데이터
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS master_campaigns (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      customer_id TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      campaign_name TEXT NOT NULL,
+      campaign_tp INTEGER DEFAULT 1,
+      delivery_method INTEGER DEFAULT 1,
+      use_daily_budget INTEGER DEFAULT 0,
+      reg_time TEXT DEFAULT '',
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(account_id, campaign_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS master_adgroups (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      customer_id TEXT NOT NULL,
+      adgroup_id TEXT NOT NULL,
+      adgroup_name TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      use_daily_budget INTEGER DEFAULT 0,
+      reg_time TEXT DEFAULT '',
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(account_id, adgroup_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS master_keywords (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      customer_id TEXT NOT NULL,
+      keyword_id TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      adgroup_id TEXT NOT NULL,
+      bid_amt INTEGER DEFAULT 0,
+      use_group_bid INTEGER DEFAULT 0,
+      status TEXT DEFAULT '',
+      reg_time TEXT DEFAULT '',
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(account_id, keyword_id)
+    )
+  `);
+
+  // ad_accounts에 동기화 상태 컬럼 추가
+  try {
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_status TEXT DEFAULT 'none'`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS campaign_count INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS adgroup_count INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS keyword_count INTEGER DEFAULT 0`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   console.log('✅ DB 초기화 완료 (Supabase PostgreSQL)');
 }
 
@@ -236,6 +294,66 @@ async function deleteAllUsers() {
   await pool.query('DELETE FROM users');
 }
 
+// ─── 네이버 마스터 동기화 ─────────────────────────────────────────────
+async function updateSyncStatus(accountId, status, counts = {}) {
+  const sets = ['sync_status = $1', 'synced_at = CURRENT_TIMESTAMP'];
+  const vals = [status];
+  let idx = 2;
+  if (counts.campaigns !== undefined) { sets.push(`campaign_count = $${idx++}`); vals.push(counts.campaigns); }
+  if (counts.adgroups !== undefined)  { sets.push(`adgroup_count = $${idx++}`); vals.push(counts.adgroups); }
+  if (counts.keywords !== undefined)  { sets.push(`keyword_count = $${idx++}`); vals.push(counts.keywords); }
+  vals.push(accountId);
+  await pool.query(`UPDATE ad_accounts SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
+}
+
+async function upsertMasterCampaigns(accountId, rows) {
+  await pool.query('DELETE FROM master_campaigns WHERE account_id = $1', [accountId]);
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO master_campaigns (account_id, customer_id, campaign_id, campaign_name, campaign_tp, delivery_method, use_daily_budget, reg_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [accountId, r[0], r[1], r[2], parseInt(r[3]) || 1, parseInt(r[4]) || 1, parseInt(r[5]) || 0, r[8] || '']
+    );
+  }
+}
+
+async function upsertMasterAdgroups(accountId, rows) {
+  await pool.query('DELETE FROM master_adgroups WHERE account_id = $1', [accountId]);
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO master_adgroups (account_id, customer_id, adgroup_id, adgroup_name, campaign_id, use_daily_budget, reg_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [accountId, r[0], r[1], r[2], r[3] || '', parseInt(r[4]) || 0, r[7] || '']
+    );
+  }
+}
+
+async function upsertMasterKeywords(accountId, rows) {
+  await pool.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, status, reg_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [accountId, r[0], r[1], r[2] || '', r[3] || '', parseInt(r[4]) || 0, parseInt(r[5]) || 0, r[6] || '', r[7] || '']
+    );
+  }
+}
+
+async function getMasterCampaigns(accountId) {
+  return all('SELECT * FROM master_campaigns WHERE account_id = $1 ORDER BY campaign_name', [accountId]);
+}
+
+async function getMasterAdgroups(accountId) {
+  return all('SELECT * FROM master_adgroups WHERE account_id = $1 ORDER BY adgroup_name', [accountId]);
+}
+
+async function getMasterKeywords(accountId, adgroupId) {
+  if (adgroupId) {
+    return all('SELECT * FROM master_keywords WHERE account_id = $1 AND adgroup_id = $2 ORDER BY keyword', [accountId, adgroupId]);
+  }
+  return all('SELECT * FROM master_keywords WHERE account_id = $1 ORDER BY keyword', [accountId]);
+}
+
 module.exports = Object.assign(module.exports, {
   initDb,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
@@ -244,4 +362,6 @@ module.exports = Object.assign(module.exports, {
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount,
   resetAdminPassword, deleteAllUsers,
+  updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
+  getMasterCampaigns, getMasterAdgroups, getMasterKeywords,
 });

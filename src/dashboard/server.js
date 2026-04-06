@@ -586,12 +586,22 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
       ${accounts.length === 0
         ? '<div class="empty">위의 "광고주 불러오기" 버튼을 눌러<br>솔루션을 적용할 광고주를 선택해주세요.</div>'
         : `<table>
-            <thead><tr><th>광고주명</th><th>Customer ID</th><th>활용 기능</th><th>리포트 이메일</th><th style="text-align:center">관리</th></tr></thead>
+            <thead><tr><th>광고주명</th><th>Customer ID</th><th>네이버 마스터</th><th>활용 기능</th><th style="text-align:center">관리</th></tr></thead>
             <tbody>
-              ${accounts.map(a => `
+              ${accounts.map(a => {
+                const syncBadge = a.sync_status === 'synced'
+                  ? `<span class="badge badge-green">동기화 완료</span><br><span style="font-size:10px;color:#94a3b8">캠페인 ${a.campaign_count || 0} / 그룹 ${a.adgroup_count || 0} / 키워드 ${a.keyword_count || 0}</span>`
+                  : a.sync_status === 'syncing'
+                  ? '<span class="badge badge-blue">동기화 중...</span>'
+                  : '<span class="badge badge-gray">미동기화</span>';
+                return `
                 <tr>
                   <td><strong>${a.name}</strong></td>
                   <td style="font-family:monospace;font-size:12px;color:#64748b">${a.customer_id}</td>
+                  <td>
+                    ${syncBadge}<br>
+                    <button class="btn btn-outline btn-sm" style="margin-top:4px;font-size:11px" onclick="syncMaster(${a.id},'${a.name}',this)">🔄 동기화</button>
+                  </td>
                   <td>
                     ${a.feat_daily_report ? '<span class="badge badge-green" style="margin:2px">일간</span>' : ''}
                     ${a.feat_weekly_report ? '<span class="badge badge-green" style="margin:2px">주간</span>' : ''}
@@ -600,13 +610,12 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                     ${a.feat_auto_bidding ? '<span class="badge badge-blue" style="margin:2px">자동입찰</span>' : ''}
                     ${!a.feat_daily_report && !a.feat_weekly_report && !a.feat_monthly_report && !a.feat_keyword_monitor && !a.feat_auto_bidding ? '<span class="badge badge-gray">미설정</span>' : ''}
                   </td>
-                  <td style="font-size:12px;color:#64748b">${a.report_emails || '—'}</td>
                   <td style="text-align:center">
                     <a href="/smart-sa/accounts/${a.id}/edit" class="btn btn-outline btn-sm">설정</a>
                     <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAccount(${a.id},'${a.name}')">제거</button>
                   </td>
                 </tr>
-              `).join('')}
+              `}).join('')}
             </tbody>
           </table>`
       }
@@ -657,6 +666,24 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         result.innerHTML = '<div class="alert alert-err">오류: ' + e.message + '</div>';
       } finally {
         btn.disabled = false; btn.textContent = '🔍 확인 및 추가';
+      }
+    }
+
+    async function syncMaster(accountId, name, btnEl) {
+      btnEl.disabled = true; btnEl.textContent = '동기화 중...';
+      try {
+        const res = await fetch('/smart-sa/api/sync-master', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ accountId })
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        toast(name + ' 네이버 마스터 동기화 완료! (캠페인 ' + json.counts.campaigns + '개, 그룹 ' + json.counts.adgroups + '개, 키워드 ' + json.counts.keywords + '개)');
+        setTimeout(() => location.reload(), 1500);
+      } catch(e) {
+        toast('동기화 실패: ' + e.message, true);
+        btnEl.disabled = false; btnEl.textContent = '🔄 동기화';
       }
     }
 
@@ -716,6 +743,61 @@ router.post('/api/test-customer', requireLogin, async (req, res) => {
       return res.json({ ok: true, accessible: false, error: apiErr.message });
     }
   } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// API: 네이버 마스터 동기화
+router.post('/api/sync-master', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.body;
+    if (!accountId) return res.status(400).json({ ok: false, error: 'Account ID 필요' });
+
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다.' });
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
+
+    // 동기화 상태 업데이트
+    await db.updateSyncStatus(accountId, 'syncing');
+
+    const client = makeClient(creds, account.customer_id);
+
+    // 캠페인 마스터 동기화
+    let campaignCount = 0, adgroupCount = 0, keywordCount = 0;
+    try {
+      const campRows = await client.syncMaster('Campaign');
+      await db.upsertMasterCampaigns(accountId, campRows);
+      campaignCount = campRows.length;
+    } catch (e) { console.log('캠페인 마스터 동기화 실패:', e.message); }
+
+    // 광고그룹 마스터 동기화
+    try {
+      const agRows = await client.syncMaster('Adgroup');
+      await db.upsertMasterAdgroups(accountId, agRows);
+      adgroupCount = agRows.length;
+    } catch (e) { console.log('광고그룹 마스터 동기화 실패:', e.message); }
+
+    // 키워드 마스터 동기화
+    try {
+      const kwRows = await client.syncMaster('Keyword');
+      await db.upsertMasterKeywords(accountId, kwRows);
+      keywordCount = kwRows.length;
+    } catch (e) { console.log('키워드 마스터 동기화 실패:', e.message); }
+
+    await db.updateSyncStatus(accountId, 'synced', {
+      campaigns: campaignCount,
+      adgroups: adgroupCount,
+      keywords: keywordCount,
+    });
+
+    res.json({
+      ok: true,
+      counts: { campaigns: campaignCount, adgroups: adgroupCount, keywords: keywordCount },
+    });
+  } catch (err) {
+    console.error('마스터 동기화 오류:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

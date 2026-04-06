@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const axios = require('axios');
+const zlib = require('zlib');
 
 const BASE_URL = 'https://api.searchad.naver.com';
 
@@ -38,7 +39,7 @@ function createApiClient(creds) {
         headers,
         params: method === 'GET' ? params : undefined,
         data:   method !== 'GET' ? data : undefined,
-        timeout: 10000,
+        timeout: 15000,
       });
       return response.data;
     } catch (err) {
@@ -49,12 +50,38 @@ function createApiClient(creds) {
         return apiCall(method, path, params, data, retryCount + 1);
       }
       const msg = err.response?.data?.message || err.message;
-      throw new Error(`API 오류 [${err.response?.status}] ${path}: ${msg}`);
+      const error = new Error(`API 오류 [${err.response?.status}] ${path}: ${msg}`);
+      error.statusCode = err.response?.status;
+      throw error;
     }
   }
 
+  // 마스터 리포트 다운로드 (인증 헤더 필요)
+  async function downloadMasterReport(downloadUrl) {
+    const urlObj = new URL(downloadUrl);
+    const path = urlObj.pathname;
+    const headers = makeAuthHeaders('GET', path);
+
+    const response = await axios({
+      method: 'GET',
+      url: downloadUrl,
+      headers,
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+
+    // gzip 압축 해제 시도
+    let text;
+    try {
+      text = zlib.gunzipSync(response.data).toString('utf-8');
+    } catch (e) {
+      text = response.data.toString('utf-8');
+    }
+    return text;
+  }
+
   return {
-    // 연결된 광고주 목록 조회 (매니저 계정용) - 네이버 SA API: GET /customer-links
+    // 연결된 광고주 목록 조회 (매니저 계정용)
     getCustomerLinks: () =>
       apiCall('GET', '/customer-links'),
 
@@ -91,6 +118,48 @@ function createApiClient(creds) {
 
     getBidSimulation: (keywordId) =>
       apiCall('GET', `/ncc/keywords/${keywordId}/bids`),
+
+    // ─── 네이버 마스터 동기화 API ────────────────────────────────
+    // 마스터 리포트 생성 요청
+    createMasterReport: (item) =>
+      apiCall('POST', '/master-reports', {}, { item }),
+
+    // 마스터 리포트 상태 조회
+    getMasterReport: (reportId) =>
+      apiCall('GET', `/master-reports/${reportId}`),
+
+    // 마스터 리포트 목록 조회
+    getMasterReports: () =>
+      apiCall('GET', '/master-reports'),
+
+    // 마스터 리포트 다운로드
+    downloadMasterReport,
+
+    // 마스터 동기화 전체 프로세스 (생성 → 대기 → 다운로드 → 파싱)
+    syncMaster: async (item) => {
+      // 1. 마스터 리포트 생성
+      const report = await apiCall('POST', '/master-reports', {}, { item });
+      const reportId = report.id;
+
+      // 2. 빌드 완료 대기 (최대 30초)
+      let status = report.status;
+      let downloadUrl = report.downloadUrl;
+      for (let i = 0; i < 15 && status !== 'BUILT'; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const check = await apiCall('GET', `/master-reports/${reportId}`);
+        status = check.status;
+        downloadUrl = check.downloadUrl;
+        if (status === 'ERROR') throw new Error(`마스터 리포트 빌드 실패 (${item})`);
+      }
+      if (status !== 'BUILT') throw new Error(`마스터 리포트 타임아웃 (${item})`);
+
+      // 3. 다운로드
+      const tsvText = await downloadMasterReport(downloadUrl);
+
+      // 4. TSV 파싱
+      const lines = tsvText.trim().split('\n').filter(l => l.trim());
+      return lines.map(line => line.split('\t'));
+    },
   };
 }
 
