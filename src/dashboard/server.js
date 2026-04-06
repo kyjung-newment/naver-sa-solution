@@ -558,10 +558,19 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         <span class="card-title">➕ 광고주 추가</span>
       </div>
       <div class="card-body">
-        <p style="font-size:13px;color:#64748b;margin-bottom:12px">
-          네이버 광고주센터 → 광고 계정 관리에서 확인한 광고주의 Customer ID와 이름을 입력해주세요.<br>
-          입력 후 해당 계정에 API 접근 권한이 있는지 자동으로 확인합니다.
+        <p style="font-size:13px;color:#64748b;margin-bottom:8px">
+          관리 중인 광고주의 <strong>Customer ID</strong>와 이름을 입력하면 API 접근 권한을 자동으로 확인합니다.
         </p>
+        <details style="margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 14px;font-size:12px;color:#0369a1">
+          <summary style="cursor:pointer;font-weight:600">📌 Customer ID 확인 방법 (광고계정 ID와 다릅니다!)</summary>
+          <ol style="margin:8px 0 0 16px;line-height:1.8;color:#0c4a6e">
+            <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7">검색광고 센터</a>에 로그인</li>
+            <li>관리할 광고주 계정으로 <strong>전환</strong></li>
+            <li>상단 <strong>도구 → API 사용 관리</strong> 클릭</li>
+            <li>페이지 상단에 표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
+          </ol>
+          <p style="margin-top:6px;color:#b45309;font-size:11px">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 1484655)는 서로 다른 값입니다.</p>
+        </details>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div style="flex:1;min-width:200px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">광고주명</label>
@@ -569,7 +578,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           </div>
           <div style="flex:1;min-width:150px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID</label>
-            <input id="add-cid" placeholder="예: 1737106" style="width:100%">
+            <input id="add-cid" placeholder="API 사용 관리에서 확인한 ID" style="width:100%">
           </div>
           <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()">🔍 확인 및 추가</button>
         </div>
