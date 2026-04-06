@@ -129,7 +129,10 @@ function toast(msg, isErr=false){
 </script></body></html>`;
 }
 
-function appLayout(title, content, user, activeMenu) {
+function appLayout(title, content, user, activeMenu, opts = {}) {
+  const accounts = opts.accounts || [];
+  const selectedAccountId = opts.selectedAccountId || '';
+
   const menuItems = [
     { id: 'dashboard', icon: '📊', label: '성과 대시보드', href: '/smart-sa' },
     { id: 'rankings',  icon: '📍', label: '키워드 순위',   href: '/smart-sa/rankings' },
@@ -141,12 +144,33 @@ function appLayout(title, content, user, activeMenu) {
     menuItems.push({ id: 'admin', icon: '👥', label: '직원 관리', href: '/smart-sa/admin/users' });
   }
 
+  const accountSelector = accounts.length > 0 ? `
+    <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1)">
+      <label style="font-size:10px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:4px">광고주 선택</label>
+      <select id="account-selector" onchange="switchAccount(this.value)"
+        style="width:100%;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:#334155;color:#fff;font-size:13px;cursor:pointer">
+        <option value="">전체 광고주</option>
+        ${accounts.map(a => `<option value="${a.id}" ${String(a.id) === String(selectedAccountId) ? 'selected' : ''}>${a.name} (${a.customer_id})</option>`).join('')}
+      </select>
+    </div>
+    <script>
+    function switchAccount(accountId) {
+      fetch('/smart-sa/api/select-account', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({accountId})
+      }).then(() => location.reload());
+    }
+    </script>
+  ` : '';
+
   const sidebar = `
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-logo">네이버 SA 솔루션</div>
       <div class="sidebar-sub">광고대행사 관리 시스템</div>
     </div>
+    ${accountSelector}
     <div style="padding:8px">
       ${menuItems.map(m => `
         <a href="${m.href}" class="sidebar-link ${activeMenu === m.id ? 'active' : ''}">
@@ -441,7 +465,7 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
       </table>
     </div>
   `;
-  res.send(appLayout('직원 관리', content, user, 'admin'));
+  res.send(appLayout('직원 관리', content, user, 'admin', await getLayoutOpts(req)));
 });
 
 router.post('/admin/users/:id/approve', requireLogin, requireAdmin, async (req, res) => {
@@ -460,6 +484,18 @@ async function getUser(req) {
 }
 
 // 사용자의 API 자격증명으로 특정 광고주(customerId)용 API 클라이언트 생성
+// 레이아웃에 전달할 공통 옵션 (광고주 목록 + 선택된 광고주)
+async function getLayoutOpts(req) {
+  if (!req.session.userId) return {};
+  try {
+    const accounts = await db.getAccountsByUser(req.session.userId);
+    return {
+      accounts,
+      selectedAccountId: req.session.selectedAccountId || '',
+    };
+  } catch (e) { return {}; }
+}
+
 function makeClient(creds, customerId) {
   return createApiClient({
     apiKey: creds.api_key,
@@ -518,7 +554,7 @@ router.get('/api-settings', requireLogin, async (req, res) => {
     </div>
   `;
 
-  res.send(appLayout('API 설정', content, user, 'api'));
+  res.send(appLayout('API 설정', content, user, 'api', await getLayoutOpts(req)));
 });
 
 router.post('/api-settings', requireLogin, async (req, res) => {
@@ -541,35 +577,50 @@ router.post('/api-settings', requireLogin, async (req, res) => {
 router.get('/accounts', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
+  const creds = req.apiCreds;
   const msg = req.query.msg || '';
+
+  const existingCids = accounts.map(a => a.customer_id);
 
   const content = `
     ${msg === 'saved' ? '<div class="alert alert-ok">저장되었습니다.</div>' : ''}
     ${msg === 'deleted' ? '<div class="alert alert-err">삭제되었습니다.</div>' : ''}
     ${msg === 'added' ? '<div class="alert alert-ok">광고주가 추가되었습니다.</div>' : ''}
 
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
-      <p style="color:#64748b;font-size:13px">관리 중인 광고주를 등록하고 솔루션 적용 대상을 선택합니다.</p>
-    </div>
+    <p style="color:#64748b;font-size:13px;margin-bottom:16px">마케터 API로 연동된 광고주를 조회하고, 솔루션 적용 대상을 선택합니다.</p>
 
-    <!-- 광고주 추가 영역 -->
+    <!-- 연동 광고주 자동 조회 -->
     <div class="card" style="margin-bottom:20px">
-      <div class="card-header">
-        <span class="card-title">➕ 광고주 추가</span>
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+        <span class="card-title">📡 연동 광고주 조회</span>
+        <button class="btn btn-primary btn-sm" id="scan-btn" onclick="scanCustomers()">🔍 광고주 자동 조회</button>
       </div>
       <div class="card-body">
-        <p style="font-size:13px;color:#64748b;margin-bottom:8px">
-          관리 중인 광고주의 <strong>Customer ID</strong>와 이름을 입력하면 API 접근 권한을 자동으로 확인합니다.
+        <p style="font-size:13px;color:#64748b;margin-bottom:10px">
+          마케터 API에 연동된 광고주 목록을 자동으로 조회합니다. 조회된 광고주를 선택하여 솔루션에 추가하세요.
         </p>
-        <details style="margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 14px;font-size:12px;color:#0369a1">
-          <summary style="cursor:pointer;font-weight:600">📌 Customer ID 확인 방법 (광고계정 ID와 다릅니다!)</summary>
-          <ol style="margin:8px 0 0 16px;line-height:1.8;color:#0c4a6e">
-            <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7">검색광고 센터</a>에 로그인</li>
-            <li>관리할 광고주 계정으로 <strong>전환</strong></li>
-            <li>상단 <strong>도구 → API 사용 관리</strong> 클릭</li>
-            <li>페이지 상단에 표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
-          </ol>
-          <p style="margin-top:6px;color:#b45309;font-size:11px">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 1484655)는 서로 다른 값입니다.</p>
+        <div id="scan-result"></div>
+      </div>
+    </div>
+
+    <!-- 광고주 수동 추가 -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <span class="card-title">✏️ 광고주 수동 추가</span>
+      </div>
+      <div class="card-body">
+        <details style="margin-bottom:10px">
+          <summary style="cursor:pointer;font-size:13px;color:#64748b">자동 조회에 표시되지 않는 광고주를 Customer ID로 직접 추가합니다.</summary>
+          <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 14px;font-size:12px;color:#0369a1">
+            <strong>📌 Customer ID 확인 방법 (광고계정 ID와 다릅니다!)</strong>
+            <ol style="margin:6px 0 0 16px;line-height:1.8;color:#0c4a6e">
+              <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7">검색광고 센터</a>에 로그인</li>
+              <li>관리할 광고주 계정으로 <strong>전환</strong></li>
+              <li>상단 <strong>도구 → SA API 사용 관리</strong> 클릭</li>
+              <li>페이지 상단에 표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
+            </ol>
+            <p style="margin-top:6px;color:#b45309;font-size:11px">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 1484655)는 서로 다른 값입니다.</p>
+          </div>
         </details>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div style="flex:1;min-width:200px">
@@ -586,14 +637,14 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
       </div>
     </div>
 
-    <!-- 선택된(활성) 광고주 목록 -->
-    <div class="card">
+    <!-- 솔루션 적용 광고주 목록 -->
+    <div class="card" style="margin-bottom:20px">
       <div class="card-header">
         <span class="card-title">🏢 솔루션 적용 광고주</span>
         <span style="font-size:12px;color:#94a3b8">${accounts.length}개</span>
       </div>
       ${accounts.length === 0
-        ? '<div class="empty">위의 "광고주 불러오기" 버튼을 눌러<br>솔루션을 적용할 광고주를 선택해주세요.</div>'
+        ? '<div class="empty">위에서 광고주를 조회하거나 수동 추가하여<br>솔루션을 적용할 광고주를 등록해주세요.</div>'
         : `<table>
             <thead><tr><th>광고주명</th><th>Customer ID</th><th>네이버 마스터</th><th>활용 기능</th><th style="text-align:center">관리</th></tr></thead>
             <tbody>
@@ -606,7 +657,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                 return `
                 <tr>
                   <td><strong>${a.name}</strong></td>
-                  <td style="font-family:monospace;font-size:12px;color:#64748b">${a.customer_id}</td>
+                  <td style="font-family:monospace;font-size:13px;color:#64748b">${a.customer_id}</td>
                   <td>
                     ${syncBadge}<br>
                     <button class="btn btn-outline btn-sm" style="margin-top:4px;font-size:11px" onclick="syncMaster(${a.id},'${a.name}',this)">🔄 동기화</button>
@@ -630,7 +681,108 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
       }
     </div>
 
+    <!-- 마케터 API 연동 정보 -->
+    <div class="card">
+      <div class="card-header" style="display:flex;align-items:center;gap:8px">
+        <span class="card-title">🔗 마케터 API 연동 정보</span>
+        ${creds ? '<span class="badge badge-green">연동됨</span>' : '<span class="badge badge-gray">미연동</span>'}
+      </div>
+      <div class="card-body" style="font-size:13px">
+        ${creds ? `
+          <table style="width:100%;max-width:500px">
+            <tr>
+              <td style="padding:6px 12px;color:#64748b;font-weight:600;width:160px;border-bottom:1px solid #f1f5f9">마케터 Customer ID</td>
+              <td style="padding:6px 12px;font-family:monospace;border-bottom:1px solid #f1f5f9">${creds.manager_customer_id}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 12px;color:#64748b;font-weight:600;border-bottom:1px solid #f1f5f9">API Key</td>
+              <td style="padding:6px 12px;font-family:monospace;font-size:11px;border-bottom:1px solid #f1f5f9">${creds.api_key.substring(0, 20)}...</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 12px;color:#64748b;font-weight:600">연동 상태</td>
+              <td style="padding:6px 12px"><span class="badge badge-green">정상</span></td>
+            </tr>
+          </table>
+          <p style="margin-top:10px;font-size:12px;color:#94a3b8">
+            이 마케터 API로 권한이 부여된 광고주 계정에 접근할 수 있습니다.
+            <a href="/smart-sa/api-settings" style="color:#03c75a;margin-left:4px">설정 변경 →</a>
+          </p>
+        ` : `
+          <p style="color:#ef4444">마케터 API가 연동되지 않았습니다. <a href="/smart-sa/api-settings" style="color:#03c75a;font-weight:600">API 설정</a>에서 먼저 등록해주세요.</p>
+        `}
+      </div>
+    </div>
+
     <script>
+    const existingCids = ${JSON.stringify(existingCids)};
+
+    async function scanCustomers() {
+      const btn = document.getElementById('scan-btn');
+      const result = document.getElementById('scan-result');
+      btn.disabled = true; btn.textContent = '조회 중...';
+      result.innerHTML = '<div style="color:#64748b;font-size:13px;padding:8px 0">🔄 연동 광고주 조회 중... 계정 수에 따라 시간이 소요될 수 있습니다.</div>';
+
+      try {
+        const res = await fetch('/smart-sa/api/list-customers', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'}
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+
+        if (json.customers.length === 0) {
+          result.innerHTML = '<div class="alert alert-info">연동된 광고주가 없습니다. 아래 수동 추가를 이용해주세요.</div>';
+          return;
+        }
+
+        let html = '<table style="width:100%"><thead><tr><th></th><th>광고주명</th><th>Customer ID</th><th>상태</th></tr></thead><tbody>';
+        json.customers.forEach(c => {
+          const already = existingCids.includes(String(c.customerId));
+          html += '<tr>';
+          html += '<td style="text-align:center">' + (already
+            ? '<span class="badge badge-green" style="font-size:10px">등록됨</span>'
+            : '<input type="checkbox" class="scan-check" data-cid="'+c.customerId+'" data-name="'+(c.name||c.customerId)+'">') + '</td>';
+          html += '<td>'+(c.name || '-')+'</td>';
+          html += '<td style="font-family:monospace;font-size:13px;color:#64748b">'+c.customerId+'</td>';
+          html += '<td>' + (c.accessible ? '<span class="badge badge-green">접근가능</span>' : '<span class="badge badge-gray">접근불가</span>') + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
+        html += '<button class="btn btn-primary" onclick="addSelectedCustomers()">선택한 광고주 추가</button>';
+        html += '<span style="font-size:12px;color:#94a3b8" id="scan-status"></span>';
+        html += '</div>';
+        result.innerHTML = html;
+      } catch(e) {
+        result.innerHTML = '<div class="alert alert-err">조회 실패: ' + e.message + '</div>';
+      } finally {
+        btn.disabled = false; btn.textContent = '🔍 광고주 자동 조회';
+      }
+    }
+
+    async function addSelectedCustomers() {
+      const checks = document.querySelectorAll('.scan-check:checked');
+      if (checks.length === 0) { toast('추가할 광고주를 선택해주세요.', true); return; }
+      const status = document.getElementById('scan-status');
+      let added = 0;
+      for (const chk of checks) {
+        const cid = chk.dataset.cid;
+        const name = chk.dataset.name;
+        status.textContent = name + ' 추가 중...';
+        try {
+          const res = await fetch('/smart-sa/api/add-customer', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ customerId: cid, name })
+          });
+          const json = await res.json();
+          if (json.ok) added++;
+        } catch(e) {}
+      }
+      toast(added + '개 광고주가 추가되었습니다.');
+      setTimeout(() => location.reload(), 1000);
+    }
+
     async function testAndAddCustomer() {
       const nameEl = document.getElementById('add-name');
       const cidEl = document.getElementById('add-cid');
@@ -657,7 +809,6 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
 
         if (json.accessible) {
-          // API 접근 가능 → 바로 추가
           const addRes = await fetch('/smart-sa/api/add-customer', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
@@ -665,11 +816,11 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           });
           const addJson = await addRes.json();
           if (!addJson.ok) throw new Error(addJson.error);
-          result.innerHTML = '<div class="alert alert-ok">✅ ' + name + ' (ID: ' + customerId + ') — API 연동 성공! 캠페인 ' + json.campaignCount + '개 확인됨</div>';
+          result.innerHTML = '<div class="alert alert-ok">✅ ' + name + ' — API 연동 성공!</div>';
           toast(name + ' 광고주가 추가되었습니다.');
           setTimeout(() => location.reload(), 1500);
         } else {
-          result.innerHTML = '<div class="alert alert-err">❌ 해당 Customer ID에 API 접근 권한이 없습니다.<br><span style="font-size:12px;color:#94a3b8">네이버 광고주센터에서 해당 광고주의 검색광고 Key 권한을 확인해주세요.</span></div>';
+          result.innerHTML = '<div class="alert alert-err">❌ 해당 Customer ID에 API 접근 권한이 없습니다.</div>';
         }
       } catch(e) {
         result.innerHTML = '<div class="alert alert-err">오류: ' + e.message + '</div>';
@@ -688,7 +839,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
-        toast(name + ' 네이버 마스터 동기화 완료! (캠페인 ' + json.counts.campaigns + '개, 그룹 ' + json.counts.adgroups + '개, 키워드 ' + json.counts.keywords + '개)');
+        toast(name + ' 네이버 마스터 동기화 완료!');
         setTimeout(() => location.reload(), 1500);
       } catch(e) {
         toast('동기화 실패: ' + e.message, true);
@@ -705,7 +856,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     }
     </script>
   `;
-  res.send(appLayout('광고주 관리', content, user, 'accounts'));
+  res.send(appLayout('광고주 관리', content, user, 'accounts', { accounts, selectedAccountId: req.session.selectedAccountId || '' }));
 });
 
 // API: 연결된 광고주 목록 불러오기
@@ -725,6 +876,67 @@ router.get('/api/customer-links', requireLogin, async (req, res) => {
         campaignCount: campaigns.length,
       }]
     });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// API: 광고주 선택 (세션에 저장)
+router.post('/api/select-account', requireLogin, (req, res) => {
+  const { accountId } = req.body;
+  req.session.selectedAccountId = accountId || '';
+  req.session.save(() => res.json({ ok: true }));
+});
+
+// API: 연동 광고주 자동 조회 (customer-links + 마케터 자신)
+router.post('/api/list-customers', requireLogin, async (req, res) => {
+  try {
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
+
+    const customers = [];
+
+    // 1. 마케터 자신의 계정 추가
+    try {
+      const selfClient = makeClient(creds, creds.manager_customer_id);
+      const camps = await selfClient.getCampaigns();
+      customers.push({
+        customerId: creds.manager_customer_id,
+        name: '마케터 계정 (' + creds.manager_customer_id + ')',
+        accessible: true,
+        campaignCount: camps.length,
+      });
+    } catch (e) {}
+
+    // 2. customer-links로 연동 광고주 조회 시도
+    try {
+      const client = makeClient(creds, creds.manager_customer_id);
+      const links = await client.getCustomerLinks();
+      if (Array.isArray(links)) {
+        for (const link of links) {
+          const cid = String(link.clientCustomerId || link.customerId || link.id);
+          if (cid === creds.manager_customer_id) continue;
+          let accessible = false;
+          let campCount = 0;
+          try {
+            const c = makeClient(creds, cid);
+            const camps = await c.getCampaigns();
+            accessible = true;
+            campCount = camps.length;
+          } catch (e) {}
+          customers.push({
+            customerId: cid,
+            name: link.clientLoginId || link.loginId || cid,
+            accessible,
+            campaignCount: campCount,
+          });
+        }
+      }
+    } catch (e) {
+      // customer-links 미지원 계정 — 무시
+    }
+
+    res.json({ ok: true, customers, source: customers.length > 1 ? 'customer-links' : 'self' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -912,7 +1124,7 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
   if (!account) return res.redirect('/smart-sa/accounts');
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor','feat_auto_bidding']
     .forEach(k => { account[k] = !!account[k]; });
-  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account), user, 'accounts'));
+  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account), user, 'accounts', await getLayoutOpts(req)));
 });
 
 router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
@@ -943,12 +1155,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         <button class="period-btn" data-period="30days">최근 30일</button>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
-        <label style="margin:0;font-size:13px;color:#64748b">광고주:</label>
-        <select id="account-select" style="width:200px">
-          ${accounts.length === 0
-            ? '<option value="">— 광고주 없음 —</option>'
-            : accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
-        </select>
+        <span style="font-size:13px;color:#64748b" id="selected-account-label">
+          ${req.session.selectedAccountId
+            ? accounts.find(a => String(a.id) === String(req.session.selectedAccountId))?.name || '전체'
+            : '전체 광고주'}
+        </span>
         <button class="btn btn-outline btn-sm" onclick="loadStats()">↻ 조회</button>
       </div>
     </div>
@@ -982,9 +1193,13 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       });
     });
 
+    const selectedAccountId = '${req.session.selectedAccountId || ''}';
+    // 페이지 로드 시 자동 조회
+    if (selectedAccountId) { setTimeout(() => loadStats(), 300); }
+
     async function loadStats() {
-      const accountId = document.getElementById('account-select').value;
-      if (!accountId) return toast('광고주를 선택해주세요.', true);
+      const accountId = selectedAccountId || '${accounts[0]?.id || ''}';
+      if (!accountId) return toast('사이드바에서 광고주를 선택해주세요.', true);
 
       document.getElementById('kpi-grid').innerHTML = ${JSON.stringify(
         ['👁 노출수','🖱 클릭수','📊 CTR','💰 전환매출','🎯 평균순위'].map(l =>
@@ -1048,7 +1263,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     </script>
   `;
 
-  res.send(appLayout('성과 대시보드', content, user, 'dashboard'));
+  res.send(appLayout('성과 대시보드', content, user, 'dashboard', await getLayoutOpts(req)));
 });
 
 // ─── API: 통계 ──────────────────────────────────────────────────────
@@ -1133,7 +1348,7 @@ router.get('/rankings', requireLogin, requireApi, async (req, res) => {
     }
     </script>
   `;
-  res.send(appLayout('키워드 순위', content, user, 'rankings'));
+  res.send(appLayout('키워드 순위', content, user, 'rankings', await getLayoutOpts(req)));
 });
 
 router.get('/api/rankings', requireLogin, async (req, res) => {
@@ -1186,7 +1401,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
             <h3 style="font-weight:600;margin-bottom:6px">${label} 리포트</h3>
             <p style="color:#64748b;font-size:12px;margin-bottom:16px">${desc}</p>
             <select id="acc-${t}" style="margin-bottom:10px">
-              ${accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')||'<option value="">광고주 없음</option>'}
+              ${accounts.map(a=>`<option value="${a.id}" ${String(a.id) === String(req.session.selectedAccountId) ? 'selected' : ''}>${a.name}</option>`).join('')||'<option value="">광고주 없음</option>'}
             </select>
             <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="triggerReport('${t}')">발송</button>
           </div>
@@ -1223,7 +1438,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     }
     </script>
   `;
-  res.send(appLayout('리포트', content, user, 'reports'));
+  res.send(appLayout('리포트', content, user, 'reports', await getLayoutOpts(req)));
 });
 
 router.post('/api/report/trigger', requireLogin, async (req, res) => {
