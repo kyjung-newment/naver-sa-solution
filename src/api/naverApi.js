@@ -56,8 +56,8 @@ function createApiClient(creds) {
     }
   }
 
-  // 마스터 리포트 다운로드 (인증 헤더 필요)
-  async function downloadMasterReport(downloadUrl) {
+  // 마스터/Stat 리포트 다운로드 (인증 헤더 필요)
+  async function downloadReport(downloadUrl) {
     const urlObj = new URL(downloadUrl);
     const path = urlObj.pathname;
     const headers = makeAuthHeaders('GET', path);
@@ -80,6 +80,64 @@ function createApiClient(creds) {
     return text;
   }
 
+  // ─── Stat Report 공통 함수 ─────────────────────────────────────────
+  async function createAndDownloadStatReport(reportTp, statDt) {
+    // 1. 리포트 생성
+    const report = await apiCall('POST', '/stat-reports', {}, { reportTp, statDt });
+    const reportId = report.reportJobId;
+
+    // 2. 빌드 완료 대기 (최대 30초)
+    let status = report.status;
+    let downloadUrl = report.downloadUrl;
+    for (let i = 0; i < 15; i++) {
+      if (status === 'BUILT' && downloadUrl) break;
+      await new Promise(r => setTimeout(r, 2000));
+      const check = await apiCall('GET', `/stat-reports/${reportId}`);
+      status = check.status;
+      downloadUrl = check.downloadUrl;
+      if (status === 'ERROR') throw new Error(`Stat Report 빌드 실패 (${reportTp})`);
+    }
+    if (status !== 'BUILT') throw new Error(`Stat Report 타임아웃 (${reportTp})`);
+
+    // 3. 다운로드
+    const text = await downloadReport(downloadUrl);
+
+    // 4. TSV 파싱
+    return text.trim().split('\n').filter(l => l.trim()).map(line => line.split('\t'));
+  }
+
+  // ─── 구매완료 전환만 필터링 ────────────────────────────────────────
+  async function getPurchaseConversions(dateRange) {
+    const result = { totalAmt: 0, totalCnt: 0, byCampaign: {} };
+
+    const dates = getDatesBetween(dateRange.since, dateRange.until);
+    for (const dt of dates) {
+      try {
+        const rows = await createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt);
+        // TSV: date, customerId, campaignId, adgroupId, keywordId, adId, channelId,
+        //      hour, code, queryId, device, directFlag, convType, convCnt, convAmt
+        for (const cols of rows) {
+          if (cols.length < 15) continue;
+          const convType = cols[12];
+          // 구매완료 타입만 필터 (purchase, purchase_complete 등)
+          if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+            const campaignId = cols[2];
+            const cnt = parseInt(cols[13]) || 0;
+            const amt = parseInt(cols[14]) || 0;
+            result.totalAmt += amt;
+            result.totalCnt += cnt;
+            if (!result.byCampaign[campaignId]) result.byCampaign[campaignId] = { amt: 0, cnt: 0 };
+            result.byCampaign[campaignId].amt += amt;
+            result.byCampaign[campaignId].cnt += cnt;
+          }
+        }
+      } catch (e) {
+        console.log(`구매완료 전환 조회 실패 (${dt}):`, e.message);
+      }
+    }
+    return result;
+  }
+
   return {
     // 연결된 광고주 목록 조회 (매니저 계정용)
     getCustomerLinks: () =>
@@ -94,23 +152,113 @@ function createApiClient(creds) {
     getKeywords: (adGroupId) =>
       apiCall('GET', '/ncc/keywords', { nccAdgroupId: adGroupId }),
 
-    getStats: ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
-      const dateParams = resolveDateParams(timeRange, startDate, endDate);
+    // 캠페인 ID 기반 통계 조회
+    getStatById: (id, { timeRange = 'yesterday', startDate, endDate } = {}) => {
+      const dateRange = resolveDateRange(timeRange, startDate, endDate);
       return apiCall('GET', '/stats', {
-        ...dateParams,
-        timeIncrement: 'allDays',
-        fields: 'clkCnt,impCnt,salesAmt,crto,ctr,avgRnk',
+        id,
+        fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk']),
+        timeRange: JSON.stringify(dateRange),
       });
     },
 
-    getKeywordStats: ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
-      const dateParams = resolveDateParams(timeRange, startDate, endDate);
-      return apiCall('GET', '/stats', {
-        ...dateParams,
-        timeIncrement: 'allDays',
-        statType: 'KEYWORD',
-        fields: 'clkCnt,impCnt,salesAmt,crto,ctr,avgRnk,keywordId',
-      });
+    // ─── 전체 캠페인 통계 합산 조회 ─────────────────────────────────
+    // salesAmt=총비용, convAmt=총전환매출(장바구니포함), purchaseAmt=구매완료전환매출
+    getStats: async ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
+      const campaigns = await apiCall('GET', '/ncc/campaigns');
+      const dateRange = resolveDateRange(timeRange, startDate, endDate);
+      const totals = {
+        impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0,
+        ccnt: 0, ctr: 0, avgRnk: 0, cpc: 0,
+        purchaseAmt: 0, purchaseCnt: 0,
+      };
+      let campCount = 0;
+      const campStats = [];
+
+      for (const camp of (campaigns || [])) {
+        try {
+          const result = await apiCall('GET', '/stats', {
+            id: camp.nccCampaignId,
+            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto']),
+            timeRange: JSON.stringify(dateRange),
+          });
+          if (result?.data?.[0]) {
+            const d = result.data[0];
+            totals.impCnt += d.impCnt || 0;
+            totals.clkCnt += d.clkCnt || 0;
+            totals.salesAmt += d.salesAmt || 0;
+            totals.convAmt += d.convAmt || 0;
+            totals.ccnt += d.ccnt || 0;
+            totals.avgRnk += d.avgRnk || 0;
+            campCount++;
+            campStats.push({ name: camp.name, id: camp.nccCampaignId, ...d });
+          }
+        } catch (e) { /* 개별 캠페인 오류 무시 */ }
+      }
+
+      if (campCount > 0) totals.avgRnk = totals.avgRnk / campCount;
+      totals.ctr = totals.impCnt > 0 ? (totals.clkCnt / totals.impCnt * 100) : 0;
+      totals.cpc = totals.clkCnt > 0 ? Math.round(totals.salesAmt / totals.clkCnt) : 0;
+
+      // 구매완료 전환매출 조회 (AD_CONVERSION_DETAIL)
+      try {
+        const purchaseData = await getPurchaseConversions(dateRange);
+        totals.purchaseAmt = purchaseData.totalAmt;
+        totals.purchaseCnt = purchaseData.totalCnt;
+        // 캠페인별 구매완료 매핑
+        for (const cs of campStats) {
+          const p = purchaseData.byCampaign[cs.id] || { amt: 0, cnt: 0 };
+          cs.purchaseAmt = p.amt;
+          cs.purchaseCnt = p.cnt;
+        }
+      } catch (e) {
+        console.log('구매완료 전환 조회 실패:', e.message);
+      }
+
+      // ROAS = 구매완료전환매출 / 총비용 × 100
+      totals.roas = totals.salesAmt > 0 ? Math.round(totals.purchaseAmt / totals.salesAmt * 100) : 0;
+      totals.campStats = campStats;
+      return totals;
+    },
+
+    // ─── 광고그룹별 통계 조회 ───────────────────────────────────────
+    getKeywordStats: async ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
+      const campaigns = await apiCall('GET', '/ncc/campaigns');
+      const dateRange = resolveDateRange(timeRange, startDate, endDate);
+      const results = [];
+
+      for (const camp of (campaigns || [])) {
+        try {
+          const adGroups = await apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId });
+          for (const ag of (adGroups || [])) {
+            try {
+              const stat = await apiCall('GET', '/stats', {
+                id: ag.nccAdgroupId,
+                fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc']),
+                timeRange: JSON.stringify(dateRange),
+              });
+              const d = stat?.data?.[0] || {};
+              if (d.impCnt > 0 || d.clkCnt > 0) {
+                results.push({
+                  keyword: ag.name,
+                  campaignName: camp.name,
+                  adgroupId: ag.nccAdgroupId,
+                  impCnt: d.impCnt || 0,
+                  clkCnt: d.clkCnt || 0,
+                  salesAmt: d.salesAmt || 0,
+                  convAmt: d.convAmt || 0,
+                  ccnt: d.ccnt || 0,
+                  ctr: d.ctr || 0,
+                  avgRnk: d.avgRnk || 0,
+                  cpc: d.cpc || 0,
+                });
+              }
+            } catch (e) { /* 개별 광고그룹 오류 무시 */ }
+          }
+        } catch (e) { /* 개별 캠페인 오류 무시 */ }
+      }
+
+      return results;
     },
 
     updateKeywordBid: (keywordId, bidAmt) =>
@@ -119,29 +267,23 @@ function createApiClient(creds) {
     getBidSimulation: (keywordId) =>
       apiCall('GET', `/ncc/keywords/${keywordId}/bids`),
 
-    // ─── 네이버 마스터 동기화 API ────────────────────────────────
-    // 마스터 리포트 생성 요청
+    // ─── 네이버 마스터 동기화 API ────────────────────────────────────
     createMasterReport: (item) =>
       apiCall('POST', '/master-reports', {}, { item }),
 
-    // 마스터 리포트 상태 조회
     getMasterReport: (reportId) =>
       apiCall('GET', `/master-reports/${reportId}`),
 
-    // 마스터 리포트 목록 조회
     getMasterReports: () =>
       apiCall('GET', '/master-reports'),
 
-    // 마스터 리포트 다운로드
-    downloadMasterReport,
+    downloadMasterReport: downloadReport,
 
-    // 마스터 동기화 전체 프로세스 (생성 → 대기 → 다운로드 → 파싱)
+    // 마스터 동기화 전체 프로세스
     syncMaster: async (item) => {
-      // 1. 마스터 리포트 생성
       const report = await apiCall('POST', '/master-reports', {}, { item });
       const reportId = report.id;
 
-      // 2. 빌드 완료 대기 (최대 30초)
       let status = report.status;
       let downloadUrl = report.downloadUrl;
       for (let i = 0; i < 15 && status !== 'BUILT'; i++) {
@@ -153,34 +295,49 @@ function createApiClient(creds) {
       }
       if (status !== 'BUILT') throw new Error(`마스터 리포트 타임아웃 (${item})`);
 
-      // 3. 다운로드
-      const tsvText = await downloadMasterReport(downloadUrl);
-
-      // 4. TSV 파싱
+      const tsvText = await downloadReport(downloadUrl);
       const lines = tsvText.trim().split('\n').filter(l => l.trim());
       return lines.map(line => line.split('\t'));
     },
+
+    // ─── Stat Report 직접 접근 ──────────────────────────────────────
+    createAndDownloadStatReport,
+    getPurchaseConversions,
   };
 }
 
-function resolveDateParams(timeRange, startDate, endDate) {
+// ─── 날짜 유틸리티 ──────────────────────────────────────────────────
+function resolveDateRange(timeRange, startDate, endDate) {
   if (timeRange === 'yesterday') {
     const d = new Date(); d.setDate(d.getDate() - 1);
     const s = d.toISOString().slice(0, 10);
-    return { startDate: s, endDate: s };
+    return { since: s, until: s };
   }
   if (timeRange === 'last7days') {
     const end = new Date(); end.setDate(end.getDate() - 1);
     const start = new Date(); start.setDate(start.getDate() - 7);
-    return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
+    return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
   }
   if (timeRange === 'last30days') {
     const end = new Date(); end.setDate(end.getDate() - 1);
     const start = new Date(); start.setDate(start.getDate() - 30);
-    return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
+    return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
   }
-  if (startDate && endDate) return { startDate, endDate };
-  return {};
+  if (startDate && endDate) return { since: startDate, until: endDate };
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  const s = d.toISOString().slice(0, 10);
+  return { since: s, until: s };
+}
+
+// since~until 사이의 날짜 배열 반환 (YYYY-MM-DD)
+function getDatesBetween(since, until) {
+  const dates = [];
+  const start = new Date(since);
+  const end = new Date(until);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
 }
 
 module.exports = { createApiClient };

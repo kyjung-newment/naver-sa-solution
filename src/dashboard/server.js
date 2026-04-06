@@ -95,8 +95,8 @@ const css = `
   .topbar{background:#fff;border-bottom:1px solid #e2e8f0;padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
   .topbar-title{font-size:16px;font-weight:700}
   .content{padding:24px}
-  .kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:20px}
-  @media(max-width:1100px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
+  .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+  @media(max-width:1100px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
   .kpi-card{background:#fff;border-radius:12px;padding:18px 20px;border:1px solid #e2e8f0}
   .kpi-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
   .kpi-value{font-size:24px;font-weight:700;color:#111827}
@@ -589,16 +589,26 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
 
     <p style="color:#64748b;font-size:13px;margin-bottom:16px">마케터 API로 연동된 광고주를 조회하고, 솔루션 적용 대상을 선택합니다.</p>
 
-    <!-- 연동 광고주 자동 조회 -->
+    <!-- 연동 광고주 조회 (Customer ID 스캔) -->
     <div class="card" style="margin-bottom:20px">
       <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
         <span class="card-title">📡 연동 광고주 조회</span>
-        <button class="btn btn-primary btn-sm" id="scan-btn" onclick="scanCustomers()">🔍 광고주 자동 조회</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" id="scan-btn" onclick="scanCustomers()">🔍 광고주 자동 조회</button>
+        </div>
       </div>
       <div class="card-body">
-        <p style="font-size:13px;color:#64748b;margin-bottom:10px">
-          마케터 API에 연동된 광고주 목록을 자동으로 조회합니다. 조회된 광고주를 선택하여 솔루션에 추가하세요.
+        <p style="font-size:13px;color:#64748b;margin-bottom:12px">
+          운영관리 권한이 있는 광고주의 Customer ID를 입력하면 자동으로 접근 권한을 확인합니다.<br>
+          여러 Customer ID를 쉼표(,)로 구분하여 한 번에 입력할 수 있습니다.
         </p>
+        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:flex-end">
+          <div style="flex:1">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID (쉼표로 구분)</label>
+            <input id="scan-ids" placeholder="예: 1861934, 1234567, 9876543" style="width:100%">
+          </div>
+          <button class="btn btn-primary btn-sm" id="scan-ids-btn" onclick="scanByIds()">🔍 조회</button>
+        </div>
         <div id="scan-result"></div>
       </div>
     </div>
@@ -716,48 +726,66 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     <script>
     const existingCids = ${JSON.stringify(existingCids)};
 
-    async function scanCustomers() {
+    async function scanCustomers(testIds) {
       const btn = document.getElementById('scan-btn');
       const result = document.getElementById('scan-result');
       btn.disabled = true; btn.textContent = '조회 중...';
       result.innerHTML = '<div style="color:#64748b;font-size:13px;padding:8px 0">🔄 연동 광고주 조회 중... 계정 수에 따라 시간이 소요될 수 있습니다.</div>';
 
       try {
+        const body = {};
+        if (testIds) body.testIds = testIds;
         const res = await fetch('/smart-sa/api/list-customers', {
           method: 'POST',
-          headers: {'Content-Type':'application/json'}
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body)
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
 
         if (json.customers.length === 0) {
-          result.innerHTML = '<div class="alert alert-info">연동된 광고주가 없습니다. 아래 수동 추가를 이용해주세요.</div>';
+          result.innerHTML = '<div class="alert alert-info">접근 가능한 광고주가 없습니다. Customer ID를 확인해주세요.</div>';
           return;
         }
 
-        let html = '<table style="width:100%"><thead><tr><th></th><th>광고주명</th><th>Customer ID</th><th>상태</th></tr></thead><tbody>';
+        let html = '<table style="width:100%"><thead><tr><th style="width:40px"></th><th>광고주명</th><th>Customer ID</th><th>캠페인수</th><th>상태</th></tr></thead><tbody>';
         json.customers.forEach(c => {
           const already = existingCids.includes(String(c.customerId));
           html += '<tr>';
           html += '<td style="text-align:center">' + (already
             ? '<span class="badge badge-green" style="font-size:10px">등록됨</span>'
-            : '<input type="checkbox" class="scan-check" data-cid="'+c.customerId+'" data-name="'+(c.name||c.customerId)+'">') + '</td>';
-          html += '<td>'+(c.name || '-')+'</td>';
+            : (c.accessible ? '<input type="checkbox" class="scan-check" data-cid="'+c.customerId+'" data-name="'+(c.name||c.customerId)+'" checked>' : '')) + '</td>';
+          html += '<td><strong>'+(c.name || '-')+'</strong></td>';
           html += '<td style="font-family:monospace;font-size:13px;color:#64748b">'+c.customerId+'</td>';
-          html += '<td>' + (c.accessible ? '<span class="badge badge-green">접근가능</span>' : '<span class="badge badge-gray">접근불가</span>') + '</td>';
+          html += '<td style="text-align:center">'+(c.campaignCount || 0)+'</td>';
+          html += '<td>' + (c.accessible ? '<span class="badge badge-green">접근가능</span>' : '<span class="badge badge-red">접근불가</span>') + '</td>';
           html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
-        html += '<button class="btn btn-primary" onclick="addSelectedCustomers()">선택한 광고주 추가</button>';
-        html += '<span style="font-size:12px;color:#94a3b8" id="scan-status"></span>';
-        html += '</div>';
+        const hasAddable = json.customers.some(c => c.accessible && !existingCids.includes(String(c.customerId)));
+        if (hasAddable) {
+          html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
+          html += '<button class="btn btn-primary" onclick="addSelectedCustomers()">선택한 광고주 추가</button>';
+          html += '<span style="font-size:12px;color:#94a3b8" id="scan-status"></span>';
+          html += '</div>';
+        }
         result.innerHTML = html;
       } catch(e) {
         result.innerHTML = '<div class="alert alert-err">조회 실패: ' + e.message + '</div>';
       } finally {
         btn.disabled = false; btn.textContent = '🔍 광고주 자동 조회';
       }
+    }
+
+    async function scanByIds() {
+      const idsInput = document.getElementById('scan-ids').value.trim();
+      if (!idsInput) { toast('Customer ID를 입력해주세요.', true); return; }
+      const ids = idsInput.split(/[,\s]+/).map(s => s.trim()).filter(s => s);
+      if (ids.length === 0) { toast('유효한 Customer ID를 입력해주세요.', true); return; }
+      const btn = document.getElementById('scan-ids-btn');
+      btn.disabled = true; btn.textContent = '조회 중...';
+      await scanCustomers(ids);
+      btn.disabled = false; btn.textContent = '🔍 조회';
     }
 
     async function addSelectedCustomers() {
@@ -888,15 +916,16 @@ router.post('/api/select-account', requireLogin, (req, res) => {
   req.session.save(() => res.json({ ok: true }));
 });
 
-// API: 연동 광고주 자동 조회 (customer-links + 마케터 자신)
+// API: 연동 광고주 자동 조회 (customer-links + 마스터 리포트 기반 스캔)
 router.post('/api/list-customers', requireLogin, async (req, res) => {
   try {
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     const customers = [];
+    const seenCids = new Set();
 
-    // 1. 마케터 자신의 계정 추가
+    // 1. 마케터 자신의 계정
     try {
       const selfClient = makeClient(creds, creds.manager_customer_id);
       const camps = await selfClient.getCampaigns();
@@ -906,37 +935,59 @@ router.post('/api/list-customers', requireLogin, async (req, res) => {
         accessible: true,
         campaignCount: camps.length,
       });
+      seenCids.add(creds.manager_customer_id);
     } catch (e) {}
 
-    // 2. customer-links로 연동 광고주 조회 시도
+    // 2. customer-links API 시도 (매니저 계정용)
     try {
       const client = makeClient(creds, creds.manager_customer_id);
       const links = await client.getCustomerLinks();
       if (Array.isArray(links)) {
         for (const link of links) {
           const cid = String(link.clientCustomerId || link.customerId || link.id);
-          if (cid === creds.manager_customer_id) continue;
+          if (seenCids.has(cid)) continue;
+          seenCids.add(cid);
           let accessible = false;
           let campCount = 0;
+          let accountName = link.clientLoginId || link.loginId || cid;
           try {
             const c = makeClient(creds, cid);
             const camps = await c.getCampaigns();
             accessible = true;
             campCount = camps.length;
           } catch (e) {}
-          customers.push({
-            customerId: cid,
-            name: link.clientLoginId || link.loginId || cid,
-            accessible,
-            campaignCount: campCount,
-          });
+          customers.push({ customerId: cid, name: accountName, accessible, campaignCount: campCount });
         }
       }
     } catch (e) {
       // customer-links 미지원 계정 — 무시
     }
 
-    res.json({ ok: true, customers, source: customers.length > 1 ? 'customer-links' : 'self' });
+    // 3. 추가 Customer ID 스캔 (요청 body에 테스트할 ID 목록 포함 시)
+    const { testIds } = req.body || {};
+    if (Array.isArray(testIds)) {
+      for (const cid of testIds) {
+        const cidStr = String(cid).trim();
+        if (!cidStr || seenCids.has(cidStr)) continue;
+        seenCids.add(cidStr);
+        try {
+          const c = makeClient(creds, cidStr);
+          const camps = await c.getCampaigns();
+          // 캠페인 이름에서 공통 접두어 추출하여 광고주명 유추
+          let accountName = cidStr;
+          if (camps.length > 0) {
+            const firstName = camps[0].name || '';
+            const match = firstName.match(/^[^_]+_(.+)$/);
+            accountName = match ? match[1] : firstName;
+          }
+          customers.push({ customerId: cidStr, name: accountName, accessible: true, campaignCount: camps.length });
+        } catch (e) {
+          // 접근 불가 — 스킵
+        }
+      }
+    }
+
+    res.json({ ok: true, customers, source: customers.length > 1 ? 'scan' : 'self' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1165,9 +1216,15 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <div class="kpi-grid" id="kpi-grid">
-      ${['👁 노출수','🖱 클릭수','📊 CTR','💰 전환매출','🎯 평균순위'].map(l => `
+      ${['👁 노출수','🖱 클릭수','📊 CTR','💰 총비용','🛒 구매완료전환매출','📈 ROAS','🎯 평균순위','🔄 구매완료전환수'].map(l => `
         <div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:#e2e8f0">—</div></div>
       `).join('')}
+    </div>
+
+    <!-- 캠페인별 차트 영역 -->
+    <div id="chart-wrap" class="card" style="margin-bottom:20px;display:none">
+      <div class="card-header"><span class="card-title">📊 캠페인별 비용 vs 구매완료매출</span></div>
+      <div class="card-body" id="chart-body"></div>
     </div>
 
     <div class="card">
@@ -1202,35 +1259,92 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       if (!accountId) return toast('사이드바에서 광고주를 선택해주세요.', true);
 
       document.getElementById('kpi-grid').innerHTML = ${JSON.stringify(
-        ['👁 노출수','🖱 클릭수','📊 CTR','💰 전환매출','🎯 평균순위'].map(l =>
+        ['👁 노출수','🖱 클릭수','📊 CTR','💰 총비용','🛒 구매완료전환매출','📈 ROAS','🎯 평균순위','🔄 구매완료전환수'].map(l =>
           `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value"><span class="spinner"></span></div></div>`
         ).join('')
       )};
       document.getElementById('kw-table-wrap').innerHTML = '<div class="empty"><span class="spinner"></span> 로딩 중...</div>';
 
       try {
+        // 1단계: KPI 먼저 빠르게 로드
         const res = await fetch('/smart-sa/api/stats?period='+currentPeriod+'&accountId='+accountId);
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         renderKpi(json.stats);
-        renderKwTable(json.keywordStats || []);
       } catch(e) {
         toast('조회 실패: '+e.message, true);
-        document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">'+e.message+'</div>';
+      }
+
+      // 2단계: 키워드 통계 별도 로드
+      document.getElementById('kw-table-wrap').innerHTML = '<div class="empty"><span class="spinner"></span> 키워드 데이터 로딩 중...</div>';
+      try {
+        const kwRes = await fetch('/smart-sa/api/keyword-stats?period='+currentPeriod+'&accountId='+accountId);
+        const kwJson = await kwRes.json();
+        if (kwJson.ok) renderKwTable(kwJson.keywordStats || []);
+        else document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">키워드 데이터를 불러올 수 없습니다.</div>';
+      } catch(e) {
+        document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">키워드 조회 실패</div>';
       }
     }
 
     function renderKpi(s) {
+      const roas = s?.roas || 0;
       const cards = [
         {l:'👁 노출수', v:num(s?.impCnt)},
         {l:'🖱 클릭수', v:num(s?.clkCnt)},
         {l:'📊 CTR',    v:pct(s?.ctr)},
-        {l:'💰 전환매출',v:won(s?.salesAmt)},
+        {l:'💰 총비용', v:won(s?.salesAmt)},
+        {l:'🛒 구매완료전환매출',v:won(s?.purchaseAmt)},
+        {l:'📈 ROAS',   v:roas+'%'},
         {l:'🎯 평균순위',v:rnk(s?.avgRnk)},
+        {l:'🔄 구매완료전환수', v:num(s?.purchaseCnt)},
       ];
       document.getElementById('kpi-grid').innerHTML = cards.map(c =>
         '<div class="kpi-card"><div class="kpi-label">'+c.l+'</div><div class="kpi-value">'+c.v+'</div></div>'
       ).join('');
+
+      // 캠페인별 차트 렌더링
+      if (s?.campStats?.length) renderChart(s.campStats);
+    }
+
+    function renderChart(campStats) {
+      const chartWrap = document.getElementById('chart-wrap');
+      const chartBody = document.getElementById('chart-body');
+      if (!chartWrap || !chartBody) return;
+      chartWrap.style.display = 'block';
+      const maxCost = Math.max(...campStats.map(c => c.salesAmt || 0), 1);
+      const maxPurchase = Math.max(...campStats.map(c => c.purchaseAmt || 0), 1);
+      let html = '<div style="display:flex;gap:20px;flex-wrap:wrap">';
+      // 비용 vs 구매완료매출 바 차트
+      html += '<div style="flex:1;min-width:300px">';
+      campStats.forEach(c => {
+        const costW = Math.max((c.salesAmt||0)/maxCost*100, 2);
+        const purchW = maxPurchase > 0 ? Math.max((c.purchaseAmt||0)/maxPurchase*100, 2) : 2;
+        html += '<div style="margin-bottom:10px">';
+        html += '<div style="font-size:12px;font-weight:500;margin-bottom:3px;color:#374151">'+c.name+'</div>';
+        html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">';
+        html += '<span style="font-size:10px;color:#94a3b8;width:60px">총비용</span>';
+        html += '<div style="flex:1;background:#fee2e2;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+costW+'%;background:#ef4444;height:100%;border-radius:4px;min-width:2px"></div></div>';
+        html += '<span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.salesAmt)+'</span>';
+        html += '</div>';
+        html += '<div style="display:flex;align-items:center;gap:6px">';
+        html += '<span style="font-size:10px;color:#94a3b8;width:60px">구매매출</span>';
+        html += '<div style="flex:1;background:#d1fae5;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+purchW+'%;background:#10b981;height:100%;border-radius:4px;min-width:2px"></div></div>';
+        html += '<span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.purchaseAmt)+'</span>';
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      // KPI 요약 테이블
+      html += '<div style="flex:1;min-width:280px"><h4 style="font-size:13px;font-weight:600;margin-bottom:12px;color:#374151">캠페인별 주요 지표</h4>';
+      html += '<table style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">캠페인</th><th style="text-align:right">클릭</th><th style="text-align:right">총비용</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th></tr></thead><tbody>';
+      campStats.forEach(c => {
+        const roas = c.salesAmt > 0 ? Math.round((c.purchaseAmt||0)/c.salesAmt*100) : 0;
+        html += '<tr><td>'+c.name+'</td><td style="text-align:right">'+num(c.clkCnt)+'</td><td style="text-align:right">'+won(c.salesAmt)+'</td><td style="text-align:right;color:#16a34a">'+won(c.purchaseAmt)+'</td><td style="text-align:right;color:'+(roas>=100?'#16a34a':'#ef4444')+'">'+roas+'%</td></tr>';
+      });
+      html += '</tbody></table></div>';
+      html += '</div>';
+      chartBody.innerHTML = html;
     }
 
     function renderKwTable(kwStats) {
@@ -1242,7 +1356,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       }
       document.getElementById('kw-table-wrap').innerHTML = '<table><thead><tr>'
         +'<th>#</th><th>키워드</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'
-        +'<th style="text-align:right">CTR</th><th style="text-align:right">전환매출</th><th style="text-align:right">순위</th>'
+        +'<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">순위</th>'
         +'</tr></thead><tbody>'
         +sorted.map((kw,i)=>'<tr>'
           +'<td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>'
@@ -1250,7 +1364,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           +'<td style="text-align:right">'+num(kw.impCnt)+'</td>'
           +'<td style="text-align:right;color:#2563eb;font-weight:600">'+num(kw.clkCnt)+'</td>'
           +'<td style="text-align:right">'+pct(kw.ctr)+'</td>'
-          +'<td style="text-align:right;color:#16a34a">'+won(kw.salesAmt)+'</td>'
+          +'<td style="text-align:right">'+won(kw.salesAmt)+'</td>'
+          +'<td style="text-align:right">'+won(kw.cpc)+'</td>'
           +'<td style="text-align:right">'+rnk(kw.avgRnk)+'</td>'
           +'</tr>').join('')
         +'</tbody></table>';
@@ -1282,12 +1397,33 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const timeMap = { yesterday: 'yesterday', '7days': 'last7days', '30days': 'last30days' };
     const timeRange = timeMap[period] || 'yesterday';
 
-    const [stats, keywordStats] = await Promise.all([
-      client.getStats({ timeRange }).catch(() => null),
-      client.getKeywordStats({ timeRange }).catch(() => []),
-    ]);
+    // 캠페인 합산 통계만 빠르게 조회
+    const stats = await client.getStats({ timeRange }).catch(() => ({ impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 }));
 
-    res.json({ ok: true, stats, keywordStats });
+    res.json({ ok: true, stats, keywordStats: [] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 키워드별 통계 (별도 로딩) ─────────────────────────────────
+router.get('/api/keyword-stats', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    if (!accountId) return res.status(400).json({ ok: false, error: '광고주 ID 필요' });
+
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다' });
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const timeMap = { yesterday: 'yesterday', '7days': 'last7days', '30days': 'last30days' };
+    const timeRange = timeMap[period] || 'yesterday';
+
+    const keywordStats = await client.getKeywordStats({ timeRange });
+    res.json({ ok: true, keywordStats });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
