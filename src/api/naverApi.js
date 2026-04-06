@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const axios = require('axios');
 
-const BASE_URL = 'https://api.naver.com';
+const BASE_URL = 'https://api.searchad.naver.com';
 
 /**
  * 광고주 계정 자격증명을 받아 API 클라이언트 생성
