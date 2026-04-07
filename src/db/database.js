@@ -102,6 +102,29 @@ async function initDb() {
     )
   `);
 
+  // ─── 자동입찰 키워드별 설정 ────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS auto_bid_keywords (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      keyword_id TEXT NOT NULL,
+      keyword TEXT NOT NULL DEFAULT '',
+      campaign_name TEXT NOT NULL DEFAULT '',
+      adgroup_name TEXT NOT NULL DEFAULT '',
+      device TEXT NOT NULL DEFAULT 'PC',
+      target_rank INTEGER NOT NULL DEFAULT 3,
+      max_bid INTEGER NOT NULL DEFAULT 5000,
+      adjust_amt INTEGER NOT NULL DEFAULT 100,
+      schedule TEXT NOT NULL DEFAULT '111111111111111111111111',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_rank REAL DEFAULT 0,
+      last_bid INTEGER DEFAULT 0,
+      last_run TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(account_id, keyword_id, device)
+    )
+  `);
+
   // ─── 대시보드 데이터 동기화 테이블 ────────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stat_daily_detail (
@@ -462,6 +485,37 @@ async function buildKeywordMaps(accountId) {
   return { campMap, agMap, kwMap };
 }
 
+// ─── 자동입찰 키워드 관리 ─────────────────────────────────────────────
+async function getAutoBidKeywords(accountId) {
+  return all('SELECT * FROM auto_bid_keywords WHERE account_id = $1 ORDER BY campaign_name, adgroup_name, keyword', [accountId]);
+}
+
+async function upsertAutoBidKeyword(accountId, data) {
+  return pool.query(`
+    INSERT INTO auto_bid_keywords (account_id, keyword_id, keyword, campaign_name, adgroup_name, device, target_rank, max_bid, adjust_amt, schedule, enabled)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    ON CONFLICT (account_id, keyword_id, device)
+    DO UPDATE SET keyword = $3, campaign_name = $4, adgroup_name = $5,
+      target_rank = $7, max_bid = $8, adjust_amt = $9, schedule = $10, enabled = $11
+  `, [accountId, data.keyword_id, data.keyword, data.campaign_name, data.adgroup_name,
+      data.device, data.target_rank, data.max_bid, data.adjust_amt, data.schedule, data.enabled ? 1 : 0]);
+}
+
+async function deleteAutoBidKeyword(id, accountId) {
+  return pool.query('DELETE FROM auto_bid_keywords WHERE id = $1 AND account_id = $2', [id, accountId]);
+}
+
+async function updateAutoBidKeywordStatus(keywordId, device, rank, bid) {
+  return pool.query(
+    'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
+    [rank, bid, keywordId, device]
+  );
+}
+
+async function getEnabledAutoBidKeywords(accountId) {
+  return all('SELECT * FROM auto_bid_keywords WHERE account_id = $1 AND enabled = 1', [accountId]);
+}
+
 // ─── 대시보드 동기화 데이터 조회 ─────────────────────────────────────
 
 /** 해당 기간의 동기화 상태 확인 */
@@ -618,5 +672,6 @@ module.exports = Object.assign(module.exports, {
   resetAdminPassword, deleteAllUsers,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
+  getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
   isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups,
 });

@@ -135,7 +135,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
 
   const menuItems = [
     { id: 'dashboard', icon: '📊', label: '성과 대시보드', href: '/smart-sa' },
-    { id: 'rankings',  icon: '📍', label: '키워드 순위',   href: '/smart-sa/rankings' },
+    { id: 'autobid',   icon: '🎯', label: '자동입찰',      href: '/smart-sa/autobid' },
     { id: 'reports',   icon: '📧', label: '리포트',        href: '/smart-sa/reports' },
     { id: 'accounts',  icon: '🏢', label: '광고주 관리',   href: '/smart-sa/accounts' },
     { id: 'api',       icon: '🔑', label: 'API 설정',      href: '/smart-sa/api-settings' },
@@ -2312,92 +2312,287 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
 });
 
 // ─── 키워드 순위 ────────────────────────────────────────────────────
-router.get('/rankings', requireLogin, requireApi, async (req, res) => {
+// ─── 자동입찰 ──────────────────────────────────────────────────────
+router.get('/autobid', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
+  const selectedId = req.query.accountId || accounts[0]?.id || '';
 
   const content = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
-      <p style="color:#64748b;font-size:13px">입찰가 시뮬레이션 API로 예상 노출순위를 조회합니다.</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div>
+        <p style="color:#64748b;font-size:13px;margin:0">키워드별 희망순위에 맞춰 입찰가를 자동으로 조정합니다.</p>
+      </div>
       <div style="display:flex;align-items:center;gap:10px">
-        <select id="account-select" style="width:200px">
-          ${accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('') || '<option value="">— 광고주 없음 —</option>'}
+        <select id="ab-account" style="width:200px" onchange="location.href='/smart-sa/autobid?accountId='+this.value">
+          ${accounts.map(a => `<option value="${a.id}" ${a.id==selectedId?'selected':''}>${a.name}</option>`).join('')}
         </select>
-        <button class="btn btn-primary" onclick="loadRankings()" id="rank-btn">순위 조회</button>
+        <button class="btn btn-primary" onclick="openAddModal()">+ 키워드 추가</button>
       </div>
     </div>
+
+    <!-- 등록된 키워드 목록 -->
     <div class="card">
       <div class="card-header">
-        <span class="card-title">📍 키워드 노출순위</span>
-        <span id="rank-status" style="font-size:12px;color:#94a3b8"></span>
+        <span class="card-title">🎯 자동 입찰 키워드 관리</span>
+        <span id="ab-count" style="font-size:12px;color:#94a3b8"></span>
       </div>
-      <div id="rank-wrap">
-        <div class="empty">광고주를 선택하고 조회 버튼을 누르세요.<br>
-        <span style="font-size:12px;color:#cbd5e1;margin-top:4px;display:block">키워드 수에 따라 1~2분 소요될 수 있습니다.</span></div>
+      <div id="ab-list"><div class="empty"><span class="spinner"></span> 로딩 중...</div></div>
+    </div>
+
+    <!-- 키워드 추가 모달 -->
+    <div id="add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;display:none;align-items:center;justify-content:center">
+      <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;padding:24px;margin:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 style="margin:0;font-size:16px">키워드 추가</h3>
+          <button onclick="closeAddModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
+        </div>
+
+        <div style="margin-bottom:16px">
+          <button class="btn" onclick="loadKeywordList()" id="load-kw-btn" style="width:100%">📋 광고주 키워드 목록 불러오기</button>
+          <div id="kw-search-wrap" style="display:none;margin-top:10px">
+            <input id="kw-search" placeholder="키워드 검색..." style="width:100%;margin-bottom:8px" oninput="filterKwList()">
+            <div id="kw-pick-list" style="max-height:200px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px"></div>
+          </div>
+        </div>
+
+        <div class="form-group"><label>키워드</label><input id="add-keyword" readonly style="background:#f8fafc"></div>
+        <input type="hidden" id="add-kwid">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label>지면</label>
+            <select id="add-device"><option value="PC">PC</option><option value="MO" selected>MOBILE</option></select>
+          </div>
+          <div class="form-group"><label>희망순위</label><input id="add-rank" type="number" value="3" min="1" max="15"></div>
+          <div class="form-group"><label>최대입찰가 (원)</label><input id="add-maxbid" type="number" value="5000" step="100"></div>
+          <div class="form-group"><label>조정입찰가 (원)</label><input id="add-adjust" type="number" value="100" step="10"></div>
+        </div>
+
+        <div class="form-group">
+          <label>실행 시간대 <span style="font-size:11px;color:#94a3b8">(클릭하여 ON/OFF)</span></label>
+          <div id="add-schedule" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:4px">
+            ${Array.from({length:24},(_,h)=>`<div class="hour-btn on" data-h="${h}" onclick="toggleHour(this)" style="text-align:center;padding:6px 0;font-size:11px;border-radius:4px;cursor:pointer;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;user-select:none">${h}시</div>`).join('')}
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn btn-primary" onclick="saveKeyword()" style="flex:1">저장</button>
+          <button class="btn" onclick="closeAddModal()" style="flex:1">취소</button>
+        </div>
       </div>
     </div>
+
+    <style>
+      .hour-btn.on{background:#dcfce7!important;color:#166534!important;border-color:#bbf7d0!important}
+      .hour-btn.off{background:#f1f5f9!important;color:#94a3b8!important;border-color:#e2e8f0!important}
+      #add-modal[style*="flex"]{display:flex!important}
+    </style>
+
     <script>
-    async function loadRankings() {
-      const id = document.getElementById('account-select').value;
-      if (!id) return toast('광고주를 선택해주세요.', true);
-      const btn = document.getElementById('rank-btn');
-      btn.disabled = true; btn.textContent = '조회 중...';
-      document.getElementById('rank-wrap').innerHTML = '<div class="empty"><span class="spinner"></span> 순위 조회 중...</div>';
-      try {
-        const res = await fetch('/smart-sa/api/rankings?accountId='+id);
-        const json = await res.json();
-        if (!json.ok) throw new Error(json.error);
-        const r = json.rankings;
-        document.getElementById('rank-status').textContent = r.length+'개 키워드';
-        if (!r.length) { document.getElementById('rank-wrap').innerHTML='<div class="empty">키워드 없음</div>'; return; }
-        document.getElementById('rank-wrap').innerHTML = '<table><thead><tr>'
-          +'<th>#</th><th>키워드</th><th style="text-align:right">입찰가</th><th style="text-align:center">예상순위</th><th>상태</th>'
-          +'</tr></thead><tbody>'
-          +r.map((kw,i)=>'<tr>'
-            +'<td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>'
-            +'<td><strong>'+(kw.keyword||'-')+'</strong></td>'
-            +'<td style="text-align:right">'+(kw.bidAmt!=null?'₩'+Number(kw.bidAmt).toLocaleString():'그룹적용')+'</td>'
-            +'<td style="text-align:center">'+(kw.rank!=null?Number(kw.rank).toFixed(1)+'위':'-')+'</td>'
-            +'<td>'+(kw.error?'<span class="badge badge-red">오류</span>':kw.rank==null?'<span class="badge badge-gray">데이터없음</span>':kw.rank<=3?'<span class="badge badge-green">상위</span>':'<span class="badge badge-blue">보통</span>')+'</td>'
+    let allKwList = [];
+    const accountId = '${selectedId}';
+
+    // 모달
+    function openAddModal(){ document.getElementById('add-modal').style.display='flex'; }
+    function closeAddModal(){ document.getElementById('add-modal').style.display='none'; resetForm(); }
+
+    function resetForm(){
+      document.getElementById('add-keyword').value='';
+      document.getElementById('add-kwid').value='';
+      document.getElementById('add-rank').value='3';
+      document.getElementById('add-maxbid').value='5000';
+      document.getElementById('add-adjust').value='100';
+      document.getElementById('add-device').value='MO';
+      document.querySelectorAll('#add-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
+    }
+
+    function toggleHour(el){
+      el.classList.toggle('on');
+      el.classList.toggle('off');
+    }
+
+    // 키워드 목록 불러오기
+    async function loadKeywordList(){
+      const btn=document.getElementById('load-kw-btn');
+      btn.disabled=true; btn.textContent='불러오는 중...';
+      try{
+        const r=await fetch('/smart-sa/api/autobid/keywords?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        allKwList=j.keywords;
+        document.getElementById('kw-search-wrap').style.display='block';
+        renderKwPickList(allKwList);
+      }catch(e){toast('오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='📋 키워드 목록 새로고침';}
+    }
+
+    function filterKwList(){
+      const q=document.getElementById('kw-search').value.toLowerCase();
+      renderKwPickList(allKwList.filter(k=>(k.keyword||'').toLowerCase().includes(q)||(k.campaignName||'').toLowerCase().includes(q)));
+    }
+
+    function renderKwPickList(list){
+      document.getElementById('kw-pick-list').innerHTML=list.slice(0,100).map(k=>
+        '<div onclick="pickKw(this)" data-id="'+k.keywordId+'" data-kw="'+k.keyword+'" data-camp="'+k.campaignName+'" data-ag="'+k.adgroupName+'" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:13px;display:flex;justify-content:space-between" onmouseover="this.style.background=\\'#f0f9ff\\'" onmouseout="this.style.background=\\'\\'"><span><strong>'+k.keyword+'</strong></span><span style="color:#94a3b8;font-size:11px">'+k.campaignName+' / '+k.adgroupName+'</span></div>'
+      ).join('')||'<div style="padding:12px;color:#94a3b8;text-align:center">검색 결과 없음</div>';
+    }
+
+    function pickKw(el){
+      document.getElementById('add-kwid').value=el.dataset.id;
+      document.getElementById('add-keyword').value=el.dataset.kw;
+      document.getElementById('add-keyword').dataset.camp=el.dataset.camp;
+      document.getElementById('add-keyword').dataset.ag=el.dataset.ag;
+    }
+
+    // 저장
+    async function saveKeyword(){
+      const kwId=document.getElementById('add-kwid').value;
+      if(!kwId) return toast('키워드를 선택해주세요.',true);
+      const hours=Array.from(document.querySelectorAll('#add-schedule .hour-btn')).map(b=>b.classList.contains('on')?'1':'0').join('');
+      const body={
+        accountId, keyword_id:kwId,
+        keyword:document.getElementById('add-keyword').value,
+        campaign_name:document.getElementById('add-keyword').dataset.camp||'',
+        adgroup_name:document.getElementById('add-keyword').dataset.ag||'',
+        device:document.getElementById('add-device').value,
+        target_rank:parseInt(document.getElementById('add-rank').value)||3,
+        max_bid:parseInt(document.getElementById('add-maxbid').value)||5000,
+        adjust_amt:parseInt(document.getElementById('add-adjust').value)||100,
+        schedule:hours, enabled:true,
+      };
+      try{
+        const r=await fetch('/smart-sa/api/autobid/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        toast('키워드 저장 완료');
+        closeAddModal(); loadList();
+      }catch(e){toast('오류: '+e.message,true);}
+    }
+
+    // 목록 로드
+    async function loadList(){
+      try{
+        const r=await fetch('/smart-sa/api/autobid/list?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        const kws=j.keywords;
+        document.getElementById('ab-count').textContent=kws.length+'개 키워드';
+        if(!kws.length){document.getElementById('ab-list').innerHTML='<div class="empty">등록된 자동입찰 키워드가 없습니다.<br><span style="font-size:12px;color:#cbd5e1">+ 키워드 추가 버튼으로 키워드를 등록해주세요.</span></div>';return;}
+
+        const scheduleHtml=(sch)=>Array.from({length:24},(_,h)=>'<span style="display:inline-block;width:14px;height:14px;border-radius:2px;font-size:8px;line-height:14px;text-align:center;margin:0 1px;background:'+(sch[h]==='1'?'#dcfce7':'#f1f5f9')+';color:'+(sch[h]==='1'?'#166534':'#cbd5e1')+'">'+h+'</span>').join('');
+
+        document.getElementById('ab-list').innerHTML='<table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">현재순위</th><th style="text-align:center">현재입찰가</th><th>실행시간</th><th style="text-align:center">상태</th><th></th></tr></thead><tbody>'
+          +kws.map(k=>'<tr>'
+            +'<td><strong>'+k.keyword+'</strong></td>'
+            +'<td style="font-size:12px;color:#64748b">'+k.campaign_name+'<br>'+k.adgroup_name+'</td>'
+            +'<td style="text-align:center"><span class="badge '+(k.device==='PC'?'badge-blue':'badge-green')+'">'+k.device+'</span></td>'
+            +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
+            +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
+            +'<td style="text-align:right">₩'+Number(k.adjust_amt).toLocaleString()+'</td>'
+            +'<td style="text-align:center">'+(k.last_rank>0?Number(k.last_rank).toFixed(1)+'위':'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:center">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
+            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
+            +'<td><button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
             +'</tr>').join('')
           +'</tbody></table>';
-      } catch(e) { toast('오류: '+e.message,true); document.getElementById('rank-wrap').innerHTML='<div class="empty">'+e.message+'</div>'; }
-      finally { btn.disabled=false; btn.textContent='순위 재조회'; }
+      }catch(e){document.getElementById('ab-list').innerHTML='<div class="empty">'+e.message+'</div>';}
     }
+
+    async function toggleEnable(id,enabled){
+      await fetch('/smart-sa/api/autobid/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId,enabled})});
+    }
+
+    async function deleteKw(id){
+      if(!confirm('이 키워드를 삭제하시겠습니까?')) return;
+      const r=await fetch('/smart-sa/api/autobid/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId})});
+      const j=await r.json();
+      if(j.ok) loadList(); else toast('삭제 실패',true);
+    }
+
+    loadList();
     </script>
   `;
-  res.send(appLayout('키워드 순위', content, user, 'rankings', await getLayoutOpts(req)));
+  res.send(appLayout('자동입찰', content, user, 'autobid', await getLayoutOpts(req)));
 });
 
-router.get('/api/rankings', requireLogin, async (req, res) => {
+// ─── 자동입찰 API ──────────────────────────────────────────────────
+// 광고주 키워드 목록 (추가용)
+router.get('/api/autobid/keywords', requireLogin, async (req, res) => {
   try {
     const account = await db.getAccountById(req.query.accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
     const campaigns = await client.getCampaigns();
-    const results = [];
+    const keywords = [];
 
     for (const camp of (campaigns || [])) {
-      const adGroups = await client.getAdGroups(camp.nccCampaignId);
-      for (const ag of (adGroups || [])) {
-        const keywords = await client.getKeywords(ag.nccAdgroupId);
-        for (const kw of (keywords || []).slice(0, 30)) {
-          try {
-            const sim = await client.getBidSimulation(kw.nccKeywordId);
-            results.push({ keyword: kw.keyword, keywordId: kw.nccKeywordId, bidAmt: kw.bidAmt, rank: sim?.avgRnk ?? null });
-          } catch (e) {
-            results.push({ keyword: kw.keyword, keywordId: kw.nccKeywordId, bidAmt: kw.bidAmt, rank: null, error: e.message });
-          }
-          await new Promise(r => setTimeout(r, 150));
+      const ags = await client.getAdGroups(camp.nccCampaignId);
+      for (const ag of (ags || [])) {
+        const kws = await client.getKeywords(ag.nccAdgroupId);
+        for (const kw of (kws || [])) {
+          keywords.push({
+            keywordId: kw.nccKeywordId, keyword: kw.keyword,
+            campaignName: camp.name, adgroupName: ag.name,
+            bidAmt: kw.bidAmt,
+          });
         }
+        await new Promise(r => setTimeout(r, 100));
       }
     }
-    results.sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999));
-    res.json({ ok: true, rankings: results });
+    res.json({ ok: true, keywords });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 등록 키워드 목록
+router.get('/api/autobid/list', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.query.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const keywords = await db.getAutoBidKeywords(account.id);
+    res.json({ ok: true, keywords });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 키워드 저장
+router.post('/api/autobid/save', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    await db.upsertAutoBidKeyword(account.id, req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ON/OFF 토글
+router.post('/api/autobid/toggle', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    await db.pool.query('UPDATE auto_bid_keywords SET enabled = $1 WHERE id = $2 AND account_id = $3',
+      [req.body.enabled ? 1 : 0, req.body.id, account.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 키워드 삭제
+router.post('/api/autobid/delete', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    await db.deleteAutoBidKeyword(req.body.id, account.id);
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

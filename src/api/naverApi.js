@@ -280,6 +280,9 @@ function createApiClient(creds) {
       return results;
     },
 
+    getKeywordInfo: (keywordId) =>
+      apiCall('GET', `/ncc/keywords/${keywordId}`),
+
     updateKeywordBid: (keywordId, bidAmt) =>
       apiCall('PUT', `/ncc/keywords/${keywordId}`, {}, { bidAmt }),
 
