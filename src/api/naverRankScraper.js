@@ -168,12 +168,26 @@ async function getMobileAds(keyword) {
 }
 
 /**
- * URL 정리
+ * URL 정리 - displayUrl에서 실제 도메인만 추출
+ * 예: "포스터메이커스   smartstore.naver.com/postermakers      네이버페이" → "smartstore.naver.com/postermakers"
  */
-function cleanUrl(url) {
-  return (url || '')
+function cleanUrl(rawText) {
+  if (!rawText) return '';
+  // URL 패턴 매칭 (도메인.확장자 형태)
+  const urlMatch = rawText.match(/([a-zA-Z0-9가-힣\-]+\.(?:com|co\.kr|kr|net|org|io|shop|store|me|biz|info|cc|tv|xyz)[a-zA-Z0-9\-_.\/]*)/i);
+  if (urlMatch) {
+    return urlMatch[1]
+      .replace(/^www\./, '')
+      .replace(/\/$/, '')
+      .trim();
+  }
+  // URL 패턴 없으면 원본 정리
+  return rawText
     .replace(/^https?:\/\//, '')
     .replace(/^www\./, '')
+    .replace(/\s+네이버페이.*$/, '')
+    .replace(/\s+네이버톡톡.*$/, '')
+    .replace(/\s+네이버로그인.*$/, '')
     .replace(/\/$/, '')
     .trim();
 }
@@ -191,13 +205,23 @@ async function findAdRank(keyword, device, siteUrl) {
 
   const targetDomain = cleanUrl(siteUrl).toLowerCase();
 
-  // 도메인 매칭으로 광고 찾기
+  // 도메인 매칭으로 광고 찾기 (정밀 매칭)
   const matched = ads.find(ad => {
-    const adDomain = (ad.displayUrl || '').toLowerCase();
-    // 정확한 도메인 매칭 또는 부분 매칭
-    return adDomain === targetDomain
-      || adDomain.includes(targetDomain)
-      || targetDomain.includes(adDomain);
+    const adDomain = cleanUrl(ad.displayUrl).toLowerCase();
+    if (!adDomain || !targetDomain) return false;
+
+    // 정확히 일치
+    if (adDomain === targetDomain) return true;
+
+    // smartstore 등 경로가 있는 URL은 경로까지 정확히 매칭
+    if (targetDomain.includes('/') || adDomain.includes('/')) {
+      return adDomain === targetDomain;
+    }
+
+    // 도메인만 비교 (경로 없는 경우)
+    const adBase = adDomain.split('/')[0];
+    const targetBase = targetDomain.split('/')[0];
+    return adBase === targetBase;
   });
 
   return {
