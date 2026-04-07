@@ -2416,7 +2416,12 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         const r=await fetch('/smart-sa/api/autobid/check-ranks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId})});
         const j=await r.json();
         if(!j.ok) throw new Error(j.error);
-        toast(j.checked+'개 키워드 순위 조회 완료');
+        if(j.details&&j.details.length){
+          const info=j.details.map(d=>d.keyword+': '+(d.error||((d.rank||0)>0?d.rank.toFixed(1)+'위':'-'))).join(', ');
+          toast(j.checked+'개 순위 조회 완료 ('+info+')');
+        } else {
+          toast(j.checked+'개 키워드 순위 조회 완료 (accountId: '+accountId+')');
+        }
         loadList();
       }catch(e){toast('오류: '+e.message,true);}
       finally{btn.disabled=false;btn.textContent='📊 순위 조회';}
@@ -2605,6 +2610,7 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
 
     const client = makeClient(creds, account.customer_id);
     const abKeywords = await db.getAutoBidKeywords(account.id);
+    console.log(`🔍 check-ranks: accountId=${req.body.accountId}, account.id=${account.id}, customer_id=${account.customer_id}, keywords=${abKeywords.length}`);
 
     let checked = 0;
     const details = [];
