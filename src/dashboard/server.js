@@ -700,58 +700,44 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
   const creds = req.apiCreds;
   const msg = req.query.msg || '';
 
-  const existingCids = accounts.map(a => a.customer_id);
-
   const content = `
     ${msg === 'saved' ? '<div class="alert alert-ok">저장되었습니다.</div>' : ''}
     ${msg === 'deleted' ? '<div class="alert alert-err">삭제되었습니다.</div>' : ''}
     ${msg === 'added' ? '<div class="alert alert-ok">광고주가 추가되었습니다.</div>' : ''}
 
-    <p style="color:#64748b;font-size:13px;margin-bottom:16px">마케터 API로 연동된 광고주를 조회하고, 솔루션 적용 대상을 선택합니다.</p>
+    <p style="color:#64748b;font-size:13px;margin-bottom:16px">광고주를 Customer ID로 등록하고, 솔루션 적용 대상을 관리합니다.</p>
 
-    <!-- 연동 광고주 조회 (Customer ID 스캔) -->
-    <div class="card" style="margin-bottom:20px">
-      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
-        <span class="card-title">📡 연동 광고주 조회</span>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-primary btn-sm" id="scan-btn" onclick="scanCustomers()">🔍 광고주 자동 조회</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <p style="font-size:13px;color:#64748b;margin-bottom:12px">
-          운영관리 권한이 있는 광고주의 Customer ID를 입력하면 자동으로 접근 권한을 확인합니다.<br>
-          여러 Customer ID를 쉼표(,)로 구분하여 한 번에 입력할 수 있습니다.
-        </p>
-        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:flex-end">
-          <div style="flex:1">
-            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID (쉼표로 구분)</label>
-            <input id="scan-ids" placeholder="예: 1861934, 1234567, 9876543" style="width:100%">
-          </div>
-          <button class="btn btn-primary btn-sm" id="scan-ids-btn" onclick="scanByIds()">🔍 조회</button>
-        </div>
-        <div id="scan-result"></div>
-      </div>
-    </div>
-
-    <!-- 광고주 수동 추가 -->
+    <!-- 광고주 추가 -->
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <span class="card-title">✏️ 광고주 수동 추가</span>
+        <span class="card-title">➕ 광고주 추가</span>
       </div>
       <div class="card-body">
-        <details style="margin-bottom:10px">
-          <summary style="cursor:pointer;font-size:13px;color:#64748b">자동 조회에 표시되지 않는 광고주를 Customer ID로 직접 추가합니다.</summary>
-          <div style="margin-top:10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 14px;font-size:12px;color:#0369a1">
-            <strong>📌 Customer ID 확인 방법 (광고계정 ID와 다릅니다!)</strong>
-            <ol style="margin:6px 0 0 16px;line-height:1.8;color:#0c4a6e">
-              <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7">검색광고 센터</a>에 로그인</li>
-              <li>관리할 광고주 계정으로 <strong>전환</strong></li>
-              <li>우측 상단의 <strong>검색광고 Key?</strong> 버튼 클릭</li>
-              <li>표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
-            </ol>
-            <p style="margin-top:6px;color:#b45309;font-size:11px">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 1484655)는 서로 다른 값입니다.</p>
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:14px 18px;font-size:13px;color:#0369a1;margin-bottom:16px">
+          <strong>📌 Customer ID 확인 방법</strong>
+          <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:260px">
+              <ol style="margin:0 0 0 16px;line-height:2;color:#0c4a6e">
+                <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7;font-weight:600">검색광고 센터</a>에 로그인</li>
+                <li>좌측 메뉴 하단 <strong>도구 → SA API 사용 관리</strong> 클릭</li>
+                <li>우측 상단 <strong>검색광고 Key?</strong> 버튼 클릭</li>
+                <li>표시된 <strong>CUSTOMER_ID</strong> 숫자를 복사</li>
+              </ol>
+            </div>
+            <div style="flex:0 0 auto;background:#fff;border:1px solid #e0e7ff;border-radius:8px;padding:12px 16px;text-align:center">
+              <div style="font-size:11px;color:#64748b;margin-bottom:6px">검색광고 Key? 버튼 위치</div>
+              <div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px 14px;font-size:12px;background:#fafbfc">
+                <span style="border:1px solid #94a3b8;border-radius:4px;padding:3px 8px;font-size:11px;color:#374151">검색광고 Key ⓘ</span>
+                <div style="margin-top:8px;background:#fff;border:1px solid #dc2626;border-radius:4px;padding:6px 10px;text-align:left;font-size:11px">
+                  <div style="font-weight:600;color:#374151;margin-bottom:4px">검색광고 Key?</div>
+                  <div style="font-family:monospace;font-size:13px;color:#1e293b;background:#f1f5f9;padding:4px 8px;border-radius:3px">242566 📋</div>
+                  <div style="margin-top:4px;color:#64748b;font-size:10px;line-height:1.4">검색광고주센터의 대용량보고서와<br>API 서비스에서 사용되는<br>'CUSTOMER_ID' 입니다.</div>
+                </div>
+              </div>
+            </div>
           </div>
-        </details>
+          <p style="margin-top:10px;color:#b45309;font-size:12px;background:#fffbeb;padding:6px 10px;border-radius:4px;border:1px solid #fde68a">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 242566)는 서로 다른 값입니다. 반드시 검색광고 Key에서 확인한 값을 입력하세요.</p>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div style="flex:1;min-width:200px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">광고주명</label>
@@ -759,7 +745,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           </div>
           <div style="flex:1;min-width:150px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID</label>
-            <input id="add-cid" placeholder="API 사용 관리에서 확인한 ID" style="width:100%">
+            <input id="add-cid" placeholder="검색광고 Key에서 확인한 숫자" style="width:100%">
           </div>
           <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()">🔍 확인 및 추가</button>
         </div>
@@ -774,7 +760,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         <span style="font-size:12px;color:#94a3b8">${accounts.length}개</span>
       </div>
       ${accounts.length === 0
-        ? '<div class="empty">위에서 광고주를 조회하거나 수동 추가하여<br>솔루션을 적용할 광고주를 등록해주세요.</div>'
+        ? '<div class="empty">위에서 광고주를 추가하여<br>솔루션을 적용할 광고주를 등록해주세요.</div>'
         : `<table>
             <thead><tr><th>광고주명</th><th>Customer ID</th><th>네이버 마스터</th><th>활용 기능</th><th style="text-align:center">관리</th></tr></thead>
             <tbody>
@@ -797,8 +783,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                     ${a.feat_weekly_report ? '<span class="badge badge-green" style="margin:2px">주간</span>' : ''}
                     ${a.feat_monthly_report ? '<span class="badge badge-green" style="margin:2px">월간</span>' : ''}
                     ${a.feat_keyword_monitor ? '<span class="badge badge-blue" style="margin:2px">순위모니터</span>' : ''}
-                    ${a.feat_auto_bidding ? '<span class="badge badge-blue" style="margin:2px">자동입찰</span>' : ''}
-                    ${!a.feat_daily_report && !a.feat_weekly_report && !a.feat_monthly_report && !a.feat_keyword_monitor && !a.feat_auto_bidding ? '<span class="badge badge-gray">미설정</span>' : ''}
+                    ${!a.feat_daily_report && !a.feat_weekly_report && !a.feat_monthly_report && !a.feat_keyword_monitor ? '<span class="badge badge-gray">미설정</span>' : ''}
                   </td>
                   <td style="text-align:center">
                     <a href="/smart-sa/accounts/${a.id}/edit" class="btn btn-outline btn-sm">설정</a>
@@ -844,93 +829,6 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <script>
-    const existingCids = ${JSON.stringify(existingCids)};
-
-    async function scanCustomers(testIds) {
-      const btn = document.getElementById('scan-btn');
-      const result = document.getElementById('scan-result');
-      btn.disabled = true; btn.textContent = '조회 중...';
-      result.innerHTML = '<div style="color:#64748b;font-size:13px;padding:8px 0">🔄 연동 광고주 조회 중... 계정 수에 따라 시간이 소요될 수 있습니다.</div>';
-
-      try {
-        const body = {};
-        if (testIds) body.testIds = testIds;
-        const res = await fetch('/smart-sa/api/list-customers', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(body)
-        });
-        const json = await res.json();
-        if (!json.ok) throw new Error(json.error);
-
-        if (json.customers.length === 0) {
-          result.innerHTML = '<div class="alert alert-info">접근 가능한 광고주가 없습니다. Customer ID를 확인해주세요.</div>';
-          return;
-        }
-
-        let html = '<table style="width:100%"><thead><tr><th style="width:40px"></th><th>광고주명</th><th>Customer ID</th><th>캠페인수</th><th>상태</th></tr></thead><tbody>';
-        json.customers.forEach(c => {
-          const already = existingCids.includes(String(c.customerId));
-          html += '<tr>';
-          html += '<td style="text-align:center">' + (already
-            ? '<span class="badge badge-green" style="font-size:10px">등록됨</span>'
-            : (c.accessible ? '<input type="checkbox" class="scan-check" data-cid="'+c.customerId+'" data-name="'+(c.name||c.customerId)+'" checked>' : '')) + '</td>';
-          html += '<td><strong>'+(c.name || '-')+'</strong></td>';
-          html += '<td style="font-family:monospace;font-size:13px;color:#64748b">'+c.customerId+'</td>';
-          html += '<td style="text-align:center">'+(c.campaignCount || 0)+'</td>';
-          html += '<td>' + (c.accessible ? '<span class="badge badge-green">접근가능</span>' : '<span class="badge badge-red">접근불가</span>') + '</td>';
-          html += '</tr>';
-        });
-        html += '</tbody></table>';
-        const hasAddable = json.customers.some(c => c.accessible && !existingCids.includes(String(c.customerId)));
-        if (hasAddable) {
-          html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center">';
-          html += '<button class="btn btn-primary" onclick="addSelectedCustomers()">선택한 광고주 추가</button>';
-          html += '<span style="font-size:12px;color:#94a3b8" id="scan-status"></span>';
-          html += '</div>';
-        }
-        result.innerHTML = html;
-      } catch(e) {
-        result.innerHTML = '<div class="alert alert-err">조회 실패: ' + e.message + '</div>';
-      } finally {
-        btn.disabled = false; btn.textContent = '🔍 광고주 자동 조회';
-      }
-    }
-
-    async function scanByIds() {
-      const idsInput = document.getElementById('scan-ids').value.trim();
-      if (!idsInput) { toast('Customer ID를 입력해주세요.', true); return; }
-      const ids = idsInput.split(/[,\s]+/).map(s => s.trim()).filter(s => s);
-      if (ids.length === 0) { toast('유효한 Customer ID를 입력해주세요.', true); return; }
-      const btn = document.getElementById('scan-ids-btn');
-      btn.disabled = true; btn.textContent = '조회 중...';
-      await scanCustomers(ids);
-      btn.disabled = false; btn.textContent = '🔍 조회';
-    }
-
-    async function addSelectedCustomers() {
-      const checks = document.querySelectorAll('.scan-check:checked');
-      if (checks.length === 0) { toast('추가할 광고주를 선택해주세요.', true); return; }
-      const status = document.getElementById('scan-status');
-      let added = 0;
-      for (const chk of checks) {
-        const cid = chk.dataset.cid;
-        const name = chk.dataset.name;
-        status.textContent = name + ' 추가 중...';
-        try {
-          const res = await fetch('/smart-sa/api/add-customer', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ customerId: cid, name })
-          });
-          const json = await res.json();
-          if (json.ok) added++;
-        } catch(e) {}
-      }
-      toast(added + '개 광고주가 추가되었습니다.');
-      setTimeout(() => location.reload(), 1000);
-    }
-
     async function testAndAddCustomer() {
       const nameEl = document.getElementById('add-name');
       const cidEl = document.getElementById('add-cid');
@@ -1235,11 +1133,11 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><span class="card-title">이메일 발송 설정</span></div>
         <div class="card-body">
-          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 18px;margin-bottom:16px">
-            <div style="font-size:13px;font-weight:600;color:#16a34a">✅ SMTP 자동 연동</div>
-            <div style="font-size:12px;color:#14532d;margin-top:4px">다우오피스 계정으로 자동 발송됩니다. 별도 설정 불필요.</div>
-            <div style="font-size:12px;color:#64748b;margin-top:4px">발신: <strong>${smtpInfo?.daou_email || '미설정'}</strong> → 수신: 위 리포트 수신 이메일</div>
-            ${!smtpInfo?.daou_email ? '<div style="font-size:12px;color:#dc2626;margin-top:4px">⚠️ <a href="/smart-sa/profile" style="color:#dc2626;font-weight:600">내 정보</a>에서 다우오피스 이메일을 설정해주세요.</div>' : ''}
+          <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:14px 18px;margin-bottom:16px">
+            <div style="font-size:13px;font-weight:600;color:#b45309">⚠️ 다우오피스 비밀번호 변경 시 주의</div>
+            <div style="font-size:12px;color:#78350f;margin-top:4px">다우오피스 계정 비밀번호를 변경한 경우, 리포트 이메일 발송이 실패할 수 있습니다.</div>
+            <div style="font-size:12px;color:#78350f;margin-top:2px">비밀번호 변경 후 <a href="/smart-sa/profile" style="color:#0284c7;font-weight:600">내 정보</a>에서 다우오피스 비밀번호를 업데이트해주세요.</div>
+            <div style="font-size:12px;color:#64748b;margin-top:6px">발신: <strong>${smtpInfo?.daou_email || '미설정'}</strong> → 수신: 위 리포트 수신 이메일</div>
           </div>
           <input type="hidden" name="email_host" value="${v('email_host','smtp.daouoffice.com')}">
           <input type="hidden" name="email_port" value="${v('email_port',587)}">
@@ -1256,7 +1154,6 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             ['feat_weekly_report','주간 리포트 자동발송','월요일 09:00'],
             ['feat_monthly_report','월간 리포트 자동발송','매월 1일 09:00'],
             ['feat_keyword_monitor','키워드 순위 모니터',''],
-            ['feat_auto_bidding','자동입찰','주의: 빈번한 API 호출'],
           ].map(([k,label,desc]) => `
             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
               <input type="checkbox" name="${k}" ${chk(k)} style="width:16px;height:16px;flex-shrink:0">
@@ -1266,20 +1163,6 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
               </div>
             </label>
           `).join('')}
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom:20px">
-        <div class="card-header"><span class="card-title">자동입찰 설정</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group"><label>목표 순위</label><input type="number" name="auto_bid_target_rank" value="${v('auto_bid_target_rank',3)}" min="1" max="15"></div>
-            <div class="form-group"><label>실행 간격 (분)</label><input type="number" name="auto_bid_interval" value="${v('auto_bid_interval',5)}" min="1"></div>
-          </div>
-          <div class="form-row">
-            <div class="form-group"><label>최대 입찰가 (원)</label><input type="number" name="auto_bid_max_bid" value="${v('auto_bid_max_bid',5000)}"></div>
-            <div class="form-group"><label>최소 입찰가 (원)</label><input type="number" name="auto_bid_min_bid" value="${v('auto_bid_min_bid',100)}"></div>
-          </div>
         </div>
       </div>
 
@@ -1295,7 +1178,7 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const account = await db.getAccountById(req.params.id, user.id);
   if (!account) return res.redirect('/smart-sa/accounts');
-  ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor','feat_auto_bidding']
+  ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor']
     .forEach(k => { account[k] = !!account[k]; });
   const smtpInfo = await db.getSmtpCredentials(user.id);
   res.send(appLayout(account.name + ' 설정', accountSettingsForm(account, smtpInfo), user, 'accounts', await getLayoutOpts(req)));
@@ -1304,7 +1187,7 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
 router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const data = { ...req.body };
-  ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor','feat_auto_bidding']
+  ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor']
     .forEach(k => { data[k] = k in req.body; });
   await db.updateAccount(req.params.id, user.id, data);
   res.redirect(303, '/smart-sa/accounts?msg=saved');
