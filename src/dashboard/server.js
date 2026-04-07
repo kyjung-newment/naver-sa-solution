@@ -2553,15 +2553,18 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
           currentBid = kwInfo?.bidAmt || 0;
         } catch (e) { /* fallback */ }
 
-        const sim = await client.getBidSimulation(kwId);
-        console.log(`📊 [${req.body.keyword}] save sim 응답:`, JSON.stringify(sim).slice(0, 300));
+        // 순위별 필요 입찰가 조회 → 현재 순위 추정
+        const positions = [1,2,3,4,5,6,7,8,9,10];
+        const estResult = await client.getEstimatedBidsForPositions(kwId, device, positions);
 
         let rank = 0;
-        if (Array.isArray(sim)) {
-          const match = sim.find(s => s.bidAmt === currentBid) || sim[0];
-          rank = match?.avgRnk || match?.avgPosition || 0;
-        } else if (sim) {
-          rank = sim.avgRnk || sim.avgPosition || 0;
+        const estimates = estResult?.estimate || [];
+        if (estimates.length > 0) {
+          const sorted = [...estimates].sort((a, b) => a.position - b.position);
+          for (const est of sorted) {
+            if (currentBid >= est.bid) { rank = est.position; break; }
+          }
+          if (rank === 0 && sorted.length > 0) rank = sorted[sorted.length - 1].position + 1;
         }
 
         await db.updateAutoBidKeywordStatus(kwId, device, rank, currentBid);
@@ -2625,23 +2628,31 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
           console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
         }
 
-        // 순위 시뮬레이션 - 배열 응답 처리
-        const sim = await client.getBidSimulation(abKw.keyword_id);
-        console.log(`  📊 [${abKw.keyword}] sim 응답:`, JSON.stringify(sim).slice(0, 300));
+        // 순위별 필요 입찰가 조회 → 현재 순위 추정
+        const positions = [1,2,3,4,5,6,7,8,9,10];
+        const estResult = await client.getEstimatedBidsForPositions(abKw.keyword_id, abKw.device, positions);
+        console.log(`  📊 [${abKw.keyword}] estimate 응답:`, JSON.stringify(estResult).slice(0, 500));
 
         let rank = 0;
-        if (Array.isArray(sim)) {
-          // 배열인 경우 현재 입찰가에 해당하는 항목 또는 첫 번째 항목
-          const match = sim.find(s => s.bidAmt === currentBid) || sim[0];
-          rank = match?.avgRnk || match?.avgPosition || 0;
-        } else if (sim) {
-          rank = sim.avgRnk || sim.avgPosition || 0;
+        const estimates = estResult?.estimate || [];
+        if (estimates.length > 0) {
+          // 현재 입찰가로 달성 가능한 최상위 순위 계산
+          const sorted = [...estimates].sort((a, b) => a.position - b.position);
+          for (const est of sorted) {
+            if (currentBid >= est.bid) {
+              rank = est.position;
+              break;
+            }
+          }
+          if (rank === 0 && sorted.length > 0) {
+            rank = sorted[sorted.length - 1].position + 1; // 최하위보다 낮음
+          }
         }
 
         await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, rank, currentBid);
-        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid });
+        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid, estimates: estimates.map(e => `${e.position}위=${e.bid}원`).join(', ') });
         checked++;
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 200));
       } catch (e) {
         console.log(`순위 조회 실패 [${abKw.keyword}]:`, e.message);
         details.push({ keyword: abKw.keyword, device: abKw.device, error: e.message });

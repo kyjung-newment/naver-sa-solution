@@ -286,8 +286,19 @@ function createApiClient(creds) {
     updateKeywordBid: (keywordId, bidAmt) =>
       apiCall('PUT', `/ncc/keywords/${keywordId}`, {}, { bidAmt }),
 
-    getBidSimulation: (keywordId) =>
-      apiCall('GET', `/ncc/keywords/${keywordId}/bids`),
+    // 목표 순위에 필요한 입찰가 추정
+    getEstimatedBidForPosition: (keywordId, device, position) =>
+      apiCall('POST', '/estimate/average-position-bid/id', {}, {
+        device: device === 'MO' ? 'MOBILE' : 'PC',
+        items: [{ key: keywordId, position }]
+      }),
+
+    // 여러 순위의 입찰가를 한번에 조회 (현재 순위 추정용)
+    getEstimatedBidsForPositions: (keywordId, device, positions) =>
+      apiCall('POST', '/estimate/average-position-bid/id', {}, {
+        device: device === 'MO' ? 'MOBILE' : 'PC',
+        items: positions.map(p => ({ key: keywordId, position: p }))
+      }),
 
     // ─── 네이버 마스터 동기화 API ────────────────────────────────────
     createMasterReport: (item) =>

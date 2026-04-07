@@ -82,23 +82,30 @@ async function adjustBidForKeyword(client, abKw) {
       currentBid = kwInfo?.bidAmt || currentBid;
     } catch (e) { /* fallback */ }
 
-    // 순위 시뮬레이션 - 배열 응답 처리
-    const simulation = await client.getBidSimulation(keyword_id);
+    // 목표 순위에 필요한 입찰가 조회
+    const estResult = await client.getEstimatedBidForPosition(keyword_id, device, target_rank);
+    const estimates = estResult?.estimate || [];
+    const targetEst = estimates.find(e => e.position === target_rank);
+    const targetBid = targetEst?.bid || 0;
+
+    // 현재 순위 추정 (입찰가 기반)
     let currentRank = 999;
-    if (Array.isArray(simulation)) {
-      const match = simulation.find(s => s.bidAmt === currentBid) || simulation[0];
-      currentRank = match?.avgRnk || match?.avgPosition || 999;
-    } else if (simulation) {
-      currentRank = simulation.avgRnk || simulation.avgPosition || 999;
+    if (targetBid > 0) {
+      if (currentBid >= targetBid) {
+        currentRank = target_rank; // 목표 달성
+      } else {
+        // 목표 미달 - 대략적 순위 추정
+        currentRank = target_rank + Math.ceil((targetBid - currentBid) / (adjust_amt || 100));
+      }
     }
 
     let newBid = currentBid;
 
-    if (currentRank > target_rank) {
-      // 순위 낮음 → 입찰가 상향
+    if (targetBid > 0 && currentBid < targetBid) {
+      // 입찰가 부족 → 상향 (adjust_amt 단위)
       newBid = Math.min(currentBid + adjust_amt, max_bid);
-    } else if (currentRank < target_rank - 1) {
-      // 순위 높음 → 입찰가 하향
+    } else if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
+      // 입찰가 과다 → 하향 (adjust_amt 단위)
       newBid = Math.max(currentBid - adjust_amt, 70);
     }
 
