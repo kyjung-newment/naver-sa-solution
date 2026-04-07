@@ -4,8 +4,9 @@ const db = require('../db/database');
 const runningAccounts = new Set();
 
 /**
- * 자동입찰 실행 (키워드별 설정 기반)
- * - 각 키워드의 희망순위, 최대입찰가, 조정입찰가, 실행시간대 설정에 따라 동작
+ * 자동입찰 실행 (키워드별 간격 + 시간대 설정 기반)
+ * - 크론은 5분마다 실행, 각 키워드는 bid_interval에 따라 차등 처리
+ * - 병렬 10개씩 처리하여 300초 제한 내 완료
  */
 async function runAutoBiddingForAccount(account) {
   if (runningAccounts.has(account.id)) {
@@ -21,32 +22,44 @@ async function runAutoBiddingForAccount(account) {
   });
 
   try {
-    // DB에서 활성화된 키워드 목록 조회
     const abKeywords = await db.getEnabledAutoBidKeywords(account.id);
     if (!abKeywords.length) return;
 
-    // 현재 시간 (KST)
+    // KST 현재 시간
     const kstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const currentHour = kstNow.getUTCHours();
+    const now = Date.now();
 
-    console.log(`\n🤖 [${account.name}] 자동입찰 시작 (${abKeywords.length}개 키워드, ${currentHour}시)`);
+    // 실행 대상 키워드 필터링
+    const targets = abKeywords.filter(kw => {
+      // 시간대 체크
+      const schedule = kw.schedule || '111111111111111111111111';
+      if (schedule[currentHour] !== '1') return false;
 
-    for (const abKw of abKeywords) {
-      // 시간대 체크: schedule은 24자리 문자열 (0=off, 1=on)
-      const schedule = abKw.schedule || '111111111111111111111111';
-      if (schedule[currentHour] !== '1') {
-        continue; // 이 시간대에는 실행하지 않음
-      }
+      // 간격 체크: last_run 이후 bid_interval(분) 경과했는지
+      const interval = (kw.bid_interval || 10) * 60 * 1000;
+      const lastRun = kw.last_run ? new Date(kw.last_run).getTime() : 0;
+      return (now - lastRun) >= interval;
+    });
 
-      try {
-        await adjustBidForKeyword(client, abKw);
-        await new Promise(r => setTimeout(r, 200)); // rate limit
-      } catch (err) {
-        console.error(`  ⚠️ [${abKw.keyword}] 입찰가 조정 실패:`, err.message);
+    if (!targets.length) return;
+
+    console.log(`\n🤖 [${account.name}] 자동입찰: ${targets.length}/${abKeywords.length}개 (${currentHour}시)`);
+
+    // 병렬 10개씩 배치 처리
+    const BATCH = 10;
+    let adjusted = 0;
+    for (let i = 0; i < targets.length; i += BATCH) {
+      const batch = targets.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(kw => adjustBidForKeyword(client, kw))
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) adjusted++;
       }
     }
 
-    console.log(`✅ [${account.name}] 자동입찰 완료`);
+    console.log(`✅ [${account.name}] 자동입찰 완료: ${adjusted}개 조정`);
   } catch (err) {
     console.error(`❌ [${account.name}] 자동입찰 오류:`, err.message);
   } finally {
@@ -56,46 +69,52 @@ async function runAutoBiddingForAccount(account) {
 
 /**
  * 개별 키워드 입찰가 조정
- * - getBidSimulation으로 현재 순위 확인
- * - 희망순위보다 낮으면 조정금액만큼 상향 (최대입찰가 이내)
- * - 희망순위보다 높으면 조정금액만큼 하향 (70원 이상)
+ * @returns {boolean} 입찰가 변경 여부
  */
 async function adjustBidForKeyword(client, abKw) {
   const { keyword_id, keyword, target_rank, max_bid, adjust_amt, device } = abKw;
 
-  // 현재 키워드 정보 조회
-  let currentBid;
   try {
-    // 키워드 상세 정보에서 현재 입찰가 가져오기
-    const kwInfo = await client.getKeywordInfo(keyword_id);
-    currentBid = kwInfo?.bidAmt || 0;
-  } catch (e) {
-    // getKeywordInfo가 없으면 getBidSimulation 결과 사용
-    currentBid = abKw.last_bid || 0;
+    // 현재 입찰가 조회
+    let currentBid = abKw.last_bid || 0;
+    try {
+      const kwInfo = await client.getKeywordInfo(keyword_id);
+      currentBid = kwInfo?.bidAmt || currentBid;
+    } catch (e) { /* fallback */ }
+
+    // 순위 시뮬레이션
+    const simulation = await client.getBidSimulation(keyword_id);
+    const currentRank = simulation?.avgRnk || 999;
+
+    let newBid = currentBid;
+
+    if (currentRank > target_rank) {
+      // 순위 낮음 → 입찰가 상향
+      newBid = Math.min(currentBid + adjust_amt, max_bid);
+    } else if (currentRank < target_rank - 1) {
+      // 순위 높음 → 입찰가 하향
+      newBid = Math.max(currentBid - adjust_amt, 70);
+    }
+
+    const changed = newBid !== currentBid && newBid > 0;
+    if (changed) {
+      await client.updateKeywordBid(keyword_id, newBid);
+      console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (현재:${currentRank.toFixed(1)}위 목표:${target_rank}위)`);
+    }
+
+    // DB 상태 + last_run 갱신
+    await db.updateAutoBidKeywordStatus(keyword_id, device, currentRank, newBid || currentBid).catch(() => {});
+
+    return changed;
+  } catch (err) {
+    console.error(`  ⚠️ [${keyword}] ${device} 실패:`, err.message);
+    // last_run은 갱신하여 다음 interval까지 재시도 방지
+    await db.pool.query(
+      'UPDATE auto_bid_keywords SET last_run = CURRENT_TIMESTAMP WHERE keyword_id = $1 AND device = $2',
+      [keyword_id, device]
+    ).catch(() => {});
+    return false;
   }
-
-  // 입찰 시뮬레이션으로 현재 순위 확인
-  const simulation = await client.getBidSimulation(keyword_id);
-  const currentRank = simulation?.avgRnk || 999;
-
-  let newBid = currentBid;
-
-  if (currentRank > target_rank) {
-    // 순위가 목표보다 낮으면 → 입찰가 상향
-    newBid = Math.min(currentBid + adjust_amt, max_bid);
-  } else if (currentRank < target_rank - 1) {
-    // 순위가 목표보다 높으면 → 입찰가 하향
-    newBid = Math.max(currentBid - adjust_amt, 70); // 네이버 최소 입찰가 70원
-  }
-
-  // 입찰가 변경이 있으면 업데이트
-  if (newBid !== currentBid && newBid > 0) {
-    await client.updateKeywordBid(keyword_id, newBid);
-    console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (현재: ${currentRank.toFixed(1)}위, 목표: ${target_rank}위)`);
-  }
-
-  // DB에 현재 상태 기록
-  await db.updateAutoBidKeywordStatus(keyword_id, device, currentRank, newBid || currentBid).catch(() => {});
 }
 
 module.exports = { runAutoBiddingForAccount };

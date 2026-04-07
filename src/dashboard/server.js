@@ -2367,6 +2367,9 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           <div class="form-group"><label>희망순위</label><input id="f-rank" type="number" value="3" min="1" max="15"></div>
           <div class="form-group"><label>최대입찰가 (원)</label><input id="f-maxbid" type="number" value="5000" step="100"></div>
           <div class="form-group"><label>조정입찰가 (원)</label><input id="f-adjust" type="number" value="100" step="10"></div>
+          <div class="form-group"><label>실행 간격</label>
+            <select id="f-interval"><option value="5">5분</option><option value="10" selected>10분</option><option value="20">20분</option><option value="30">30분</option><option value="60">60분</option></select>
+          </div>
         </div>
 
         <div class="form-group">
@@ -2411,6 +2414,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         document.getElementById('f-maxbid').value = editData.max_bid;
         document.getElementById('f-adjust').value = editData.adjust_amt;
         document.getElementById('f-edit-id').value = editData.id;
+        document.getElementById('f-interval').value = editData.bid_interval || 10;
         // 지면 변경 불가 (수정 모드)
         document.getElementById('f-device').disabled = true;
         // 시간대
@@ -2436,6 +2440,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       document.getElementById('f-maxbid').value='5000';
       document.getElementById('f-adjust').value='100';
       document.getElementById('f-device').value='MO';
+      document.getElementById('f-interval').value='10';
       document.getElementById('f-device').disabled=false;
       document.querySelectorAll('#f-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
     }
@@ -2489,7 +2494,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         target_rank:parseInt(document.getElementById('f-rank').value)||3,
         max_bid:parseInt(document.getElementById('f-maxbid').value)||5000,
         adjust_amt:parseInt(document.getElementById('f-adjust').value)||100,
-        schedule:hours, enabled:true,
+        schedule:hours, bid_interval:parseInt(document.getElementById('f-interval').value)||10, enabled:true,
       };
       try{
         const r=await fetch('/smart-sa/api/autobid/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -2533,7 +2538,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           return '<span style="color:#dc2626;font-weight:600">'+v+'</span>';
         };
 
-        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">간격</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
           +kws.map(k=>{
             const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
             return '<tr>'
@@ -2543,6 +2548,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:right">₩'+Number(k.adjust_amt).toLocaleString()+'</td>'
+            +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
             +'<td style="text-align:center">'+rankBadge(k.last_rank,k.target_rank)+'</td>'
             +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
@@ -2896,6 +2902,38 @@ router.get('/api/cron/sync-backfill', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('❌ Cron [sync-backfill]:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 5분마다 실행: 자동입찰
+router.get('/api/cron/autobid', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  try {
+    const { runAutoBiddingForAccount } = require('../scheduler/autoBid');
+    const accounts = await db.all(`
+      SELECT ad_accounts.*, users.api_key, users.secret_key
+      FROM ad_accounts
+      JOIN users ON users.id = ad_accounts.user_id
+      WHERE users.api_key != '' AND users.secret_key != ''
+    `);
+
+    let totalAdjusted = 0;
+    for (const account of accounts) {
+      try {
+        await runAutoBiddingForAccount(account);
+        totalAdjusted++;
+      } catch (e) {
+        console.error(`❌ 자동입찰 [${account.name}]:`, e.message);
+      }
+    }
+    console.log(`✅ Cron [autobid]: ${accounts.length}개 계정 처리`);
+    res.json({ ok: true, accounts: accounts.length });
+  } catch (err) {
+    console.error('❌ Cron [autobid]:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

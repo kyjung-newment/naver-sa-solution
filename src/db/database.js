@@ -116,6 +116,7 @@ async function initDb() {
       max_bid INTEGER NOT NULL DEFAULT 5000,
       adjust_amt INTEGER NOT NULL DEFAULT 100,
       schedule TEXT NOT NULL DEFAULT '111111111111111111111111',
+      bid_interval INTEGER NOT NULL DEFAULT 10,
       enabled INTEGER NOT NULL DEFAULT 1,
       last_rank REAL DEFAULT 0,
       last_bid INTEGER DEFAULT 0,
@@ -198,6 +199,7 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_weekly_report TIMESTAMP`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_dashboard_sync TIMESTAMP`);
+    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS bid_interval INTEGER NOT NULL DEFAULT 10`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // users에 다우오피스 연동 컬럼 추가
@@ -492,13 +494,14 @@ async function getAutoBidKeywords(accountId) {
 
 async function upsertAutoBidKeyword(accountId, data) {
   return pool.query(`
-    INSERT INTO auto_bid_keywords (account_id, keyword_id, keyword, campaign_name, adgroup_name, device, target_rank, max_bid, adjust_amt, schedule, enabled)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    INSERT INTO auto_bid_keywords (account_id, keyword_id, keyword, campaign_name, adgroup_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     ON CONFLICT (account_id, keyword_id, device)
     DO UPDATE SET keyword = $3, campaign_name = $4, adgroup_name = $5,
-      target_rank = $7, max_bid = $8, adjust_amt = $9, schedule = $10, enabled = $11
+      target_rank = $7, max_bid = $8, adjust_amt = $9, schedule = $10, bid_interval = $11, enabled = $12
   `, [accountId, data.keyword_id, data.keyword, data.campaign_name, data.adgroup_name,
-      data.device, data.target_rank, data.max_bid, data.adjust_amt, data.schedule, data.enabled ? 1 : 0]);
+      data.device, data.target_rank, data.max_bid, data.adjust_amt, data.schedule,
+      parseInt(data.bid_interval) || 10, data.enabled ? 1 : 0]);
 }
 
 async function deleteAutoBidKeyword(id, accountId) {
