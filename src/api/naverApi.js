@@ -300,6 +300,29 @@ function createApiClient(creds) {
         items: positions.map(p => ({ key: keywordId, position: p }))
       }),
 
+    // 노출 최소 입찰가
+    getExposureMinBid: (keywordId, device) =>
+      apiCall('POST', '/estimate/exposure-minimum-bid/id', {}, {
+        device: device === 'MO' ? 'MOBILE' : 'PC',
+        items: [{ key: keywordId }]
+      }),
+
+    // 중간 입찰가
+    getMedianBid: (keywordId, device) =>
+      apiCall('POST', '/estimate/median-bid/id', {}, {
+        device: device === 'MO' ? 'MOBILE' : 'PC',
+        items: [{ key: keywordId }]
+      }),
+
+    // 입찰가별 성과 예측
+    getPerformanceEstimate: (keywordId, device, bids) =>
+      apiCall('POST', '/estimate/performance/id', {}, {
+        device: device === 'MO' ? 'MOBILE' : 'PC',
+        keywordplus: false,
+        key: keywordId,
+        bids,
+      }),
+
     // ─── 네이버 마스터 동기화 API ────────────────────────────────────
     createMasterReport: (item) =>
       apiCall('POST', '/master-reports', {}, { item }),

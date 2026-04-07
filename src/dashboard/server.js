@@ -2228,6 +2228,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           ${accounts.map(a => `<option value="${a.id}" ${a.id==selectedId?'selected':''}>${a.name}</option>`).join('')}
         </select>
         <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
+        <button class="btn btn-outline btn-sm" onclick="debugRank()" id="debug-btn" style="font-size:11px">🔧 API 테스트</button>
         <button class="btn btn-primary" onclick="openModal()">+ 키워드 추가</button>
       </div>
     </div>
@@ -2468,6 +2469,23 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       }catch(e){document.getElementById('ab-list').innerHTML='<div class="empty">'+e.message+'</div>';}
     }
 
+    async function debugRank(){
+      try{
+        const r=await fetch('/smart-sa/api/autobid/list?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok||!j.keywords.length){toast('키워드 없음',true);return;}
+        const kw=j.keywords[0];
+        const btn=document.getElementById('debug-btn');
+        btn.disabled=true;btn.textContent='테스트 중...';
+        const r2=await fetch('/smart-sa/api/autobid/debug-rank',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId,keywordId:kw.keyword_id,device:kw.device})});
+        const j2=await r2.json();
+        btn.disabled=false;btn.textContent='🔧 API 테스트';
+        // 결과를 새 창에 표시
+        const w=window.open('','_blank','width=800,height=600');
+        w.document.write('<html><head><title>API Debug - '+kw.keyword+'</title></head><body><pre style="font-size:12px;white-space:pre-wrap">'+JSON.stringify(j2,null,2)+'</pre></body></html>');
+      }catch(e){toast('디버그 오류: '+e.message,true);}
+    }
+
     async function toggleEnable(id,enabled){
       await fetch('/smart-sa/api/autobid/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId,enabled})});
     }
@@ -2601,6 +2619,85 @@ router.post('/api/autobid/delete', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     await db.deleteAutoBidKeyword(req.body.id, account.id);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 순위 조회 API 디버그 (어떤 방법이 동작하는지 테스트)
+router.post('/api/autobid/debug-rank', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const kwId = req.body.keywordId;
+    const device = req.body.device || 'MO';
+    const results = {};
+
+    // 1. getKeywordInfo
+    try {
+      const kwInfo = await client.getKeywordInfo(kwId);
+      results.keywordInfo = { bidAmt: kwInfo?.bidAmt, status: kwInfo?.status, inspectStatus: kwInfo?.inspectStatus, bidStrategy: kwInfo?.bidStrategy, allFields: Object.keys(kwInfo || {}) };
+    } catch (e) { results.keywordInfo = { error: e.message }; }
+
+    // 2. Stats API - 오늘
+    try {
+      const today = new Date(Date.now() + 9*60*60*1000).toISOString().slice(0,10);
+      const stat = await client.getStatById(kwId, { startDate: today, endDate: today });
+      results.statsToday = stat;
+    } catch (e) { results.statsToday = { error: e.message }; }
+
+    // 3. Stats API - 어제
+    try {
+      const yesterday = new Date(Date.now() + 9*60*60*1000 - 86400000).toISOString().slice(0,10);
+      const stat = await client.getStatById(kwId, { startDate: yesterday, endDate: yesterday });
+      results.statsYesterday = stat;
+    } catch (e) { results.statsYesterday = { error: e.message }; }
+
+    // 4. Stats API - 최근 7일
+    try {
+      const end = new Date(Date.now() + 9*60*60*1000).toISOString().slice(0,10);
+      const start = new Date(Date.now() + 9*60*60*1000 - 7*86400000).toISOString().slice(0,10);
+      const stat = await client.getStatById(kwId, { startDate: start, endDate: end });
+      results.stats7days = stat;
+    } catch (e) { results.stats7days = { error: e.message }; }
+
+    // 5. estimate/average-position-bid/id (단일 포지션)
+    try {
+      const { createApiClient } = require('../api/naverApi');
+      const rawClient = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+      const est = await rawClient.getEstimatedBidForPosition(kwId, device, 3);
+      results.estimatePosition = est;
+    } catch (e) { results.estimatePosition = { error: e.message }; }
+
+    // 6. estimate/exposure-minimum-bid/id
+    try {
+      const { createApiClient } = require('../api/naverApi');
+      const rawClient = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+      const est = await rawClient.getExposureMinBid(kwId, device);
+      results.exposureMinBid = est;
+    } catch (e) { results.exposureMinBid = { error: e.message }; }
+
+    // 7. estimate/median-bid/id
+    try {
+      const { createApiClient } = require('../api/naverApi');
+      const rawClient = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+      const est = await rawClient.getMedianBid(kwId, device);
+      results.medianBid = est;
+    } catch (e) { results.medianBid = { error: e.message }; }
+
+    // 8. estimate/performance/id
+    try {
+      const { createApiClient } = require('../api/naverApi');
+      const rawClient = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+      const est = await rawClient.getPerformanceEstimate(kwId, device, [70, 500, 1000, 2000]);
+      results.performanceEstimate = est;
+    } catch (e) { results.performanceEstimate = { error: e.message }; }
+
+    res.json({ ok: true, kwId, device, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
