@@ -2305,8 +2305,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
-        const labels = {daily:'일간',weekly:'주간',monthly:'월간'};
-        toast(labels[type]+' 리포트 발송 시작! (1~2분 소요)');
+        toast(json.message || '리포트 발송 완료!');
       } catch(e) { toast(e.message, true); }
     }
 
@@ -2353,12 +2352,18 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 
   // account에 API 자격증명 병합
   const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
-  generateAndSend(enriched, type).then(ok => {
+  try {
+    const ok = await generateAndSend(enriched, type);
     if (ok) {
-      db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+      await db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+      res.json({ ok: true, message: '리포트 발송 완료!' });
+    } else {
+      res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. SMTP 설정을 확인해주세요.' });
     }
-  }).catch(console.error);
-  res.json({ ok: true });
+  } catch (err) {
+    console.error('리포트 발송 오류:', err);
+    res.json({ ok: false, error: `발송 실패: ${err.message}` });
+  }
 });
 
 // ─── Vercel Cron 엔드포인트 ────────────────────────────────────────
