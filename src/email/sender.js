@@ -5,10 +5,11 @@ const transporterCache = new Map();
 function getTransporter(account) {
   const key = `${account.email_host}:${account.email_user}`;
   if (!transporterCache.has(key)) {
+    const port = parseInt(account.email_port) || 587;
     transporterCache.set(key, nodemailer.createTransport({
       host: account.email_host || 'smtp.gmail.com',
-      port: account.email_port || 587,
-      secure: false,
+      port,
+      secure: port === 465, // 465=SSL/TLS, 587=STARTTLS
       auth: { user: account.email_user, pass: account.email_pass },
     }));
   }
