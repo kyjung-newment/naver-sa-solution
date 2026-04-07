@@ -1897,31 +1897,44 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     // AD_CONVERSION_DETAIL 다운로드
     const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
 
-    // 키워드별 집계
+    // 키워드별 집계 (파워링크: keywordId 기준, 쇼핑검색: adgroupId 기준)
     const byKw = {};
     for (const { cols } of adRows) {
       if (cols.length < 14) continue;
-      const kwId = cols[4];
       const campId = cols[2];
-      if (!byKw[kwId]) {
-        const info = kwMap[kwId] || {};
-        byKw[kwId] = { keywordId: kwId, keyword: info.keyword || kwId, campaignTp: info.campaignTp || (campMap[campId]?.tp || 0), campaignName: info.campaignName || campMap[campId]?.name || '', adgroupName: info.adgroupName || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      const agId = cols[3];
+      const kwId = cols[4];
+      const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
+
+      // 쇼핑검색은 adgroupId 기준, 파워링크는 keywordId 기준
+      const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
+      if (!byKw[groupKey]) {
+        if (campTp === 2) {
+          const agInfo = agMap[agId] || {};
+          byKw[groupKey] = { keywordId: agId, keyword: agInfo.name || agId, campaignTp: 2, campaignName: campMap[campId]?.name || '', adgroupName: agInfo.name || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+        } else {
+          const info = kwMap[kwId] || {};
+          byKw[groupKey] = { keywordId: kwId, keyword: info.keyword || kwId, campaignTp: campTp, campaignName: info.campaignName || campMap[campId]?.name || '', adgroupName: info.adgroupName || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+        }
       }
-      byKw[kwId].imp += parseInt(cols[11]) || 0;
-      byKw[kwId].clk += parseInt(cols[12]) || 0;
-      byKw[kwId].cost += parseInt(cols[13]) || 0;
+      byKw[groupKey].imp += parseInt(cols[11]) || 0;
+      byKw[groupKey].clk += parseInt(cols[12]) || 0;
+      byKw[groupKey].cost += parseInt(cols[13]) || 0;
     }
 
     // 전환 데이터 병합
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
+      const campId = cols[2];
+      const agId = cols[3];
       const kwId = cols[4];
       const convType = cols[12];
-      if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
-        if (!byKw[kwId]) continue;
-        byKw[kwId].purchaseCnt += parseInt(cols[13]) || 0;
-        byKw[kwId].purchaseAmt += parseInt(cols[14]) || 0;
-      }
+      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
+      const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
+      if (!byKw[groupKey]) continue;
+      byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
+      byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
     }
 
     // 계산 필드 + 분류
@@ -2270,7 +2283,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
                 <td>${time}</td>
                 <td style="display:flex;align-items:center;gap:8px">
                   광고주 설정에서 ON/OFF
-                  <a href="/smart-sa/accounts" class="btn btn-outline" style="font-size:11px;padding:2px 8px">설정 바로가기</a>
+                  <a href="/smart-sa/accounts/${req.session.selectedAccountId || (accounts[0]?.id || '')}/edit" class="btn btn-outline" style="font-size:11px;padding:2px 8px">설정 바로가기</a>
                 </td>
                 <td style="font-size:12px">${lastStr}</td>
               </tr>`;
