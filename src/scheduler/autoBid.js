@@ -115,8 +115,8 @@ async function adjustBidForKeyword(client, abKw) {
       console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${rankStr} → 목표:${target_rank}위, 필요:${targetBid}원)`);
     }
 
-    // DB 상태 + last_run 갱신
-    await db.updateAutoBidKeywordStatus(keyword_id, device, currentRank, newBid || currentBid).catch(() => {});
+    // DB 상태 + last_run 갱신 (last_rank에 targetBid 저장)
+    await db.updateAutoBidKeywordStatus(keyword_id, device, targetBid, newBid || currentBid).catch(() => {});
 
     return changed;
   } catch (err) {

@@ -2440,15 +2440,13 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
 
         const scheduleHtml=(sch)=>Array.from({length:24},(_,h)=>'<span style="display:inline-block;width:14px;height:14px;border-radius:2px;font-size:8px;line-height:14px;text-align:center;margin:0 1px;background:'+(sch[h]==='1'?'#dcfce7':'#f1f5f9')+';color:'+(sch[h]==='1'?'#166534':'#cbd5e1')+'">'+h+'</span>').join('');
 
-        const rankBadge=(rank,target)=>{
-          if(!rank||rank<=0) return '<span style="color:#ef4444;font-size:11px;font-weight:600">순위 밖</span>';
-          if(rank>15) return '<span style="color:#ef4444;font-size:11px;font-weight:600">순위 밖</span>';
-          const v=Number(rank)+'위';
-          if(rank<=target) return '<span style="color:#16a34a;font-weight:600">'+v+'</span>';
-          return '<span style="color:#dc2626;font-weight:600">'+v+'</span>';
+        const rankBadge=(targetBid,currentBid)=>{
+          if(!targetBid||targetBid<=0) return '<span style="color:#cbd5e1">-</span>';
+          if(currentBid>=targetBid) return '<span class="badge badge-green">달성</span>';
+          return '<span class="badge badge-red">미달</span>';
         };
 
-        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">간격</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">간격</th><th style="text-align:right">목표입찰가</th><th style="text-align:right">현재입찰가</th><th style="text-align:center">상태</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
           +kws.map(k=>{
             const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
             return '<tr>'
@@ -2459,8 +2457,9 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:right">₩'+Number(k.adjust_amt).toLocaleString()+'</td>'
             +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
-            +'<td style="text-align:center">'+rankBadge(k.last_rank,k.target_rank)+'</td>'
+            +'<td style="text-align:right">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:center">'+rankBadge(k.last_rank,k.last_bid)+'</td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
             +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
             +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
@@ -2573,21 +2572,19 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
           currentBid = kwInfo?.bidAmt || 0;
         } catch (e) { /* fallback */ }
 
-        // 순위 추정: estimate API로 목표 순위 입찰가 비교
-        let rank = 0;
+        // 목표 순위에 필요한 입찰가 조회 → last_rank에 targetBid 저장
+        let targetBid = 0;
         try {
           const targetRank = parseInt(req.body.target_rank) || 3;
           const est = await client.getEstimatedBidForPosition(kwId, device, targetRank);
-          const targetBid = est?.estimate?.[0]?.bid || 0;
-          if (targetBid > 0) {
-            rank = currentBid >= targetBid ? targetRank : (targetRank + 1);
-          }
+          targetBid = est?.estimate?.[0]?.bid || 0;
         } catch (estErr) {
-          console.log(`  순위 추정 실패 [${req.body.keyword}]:`, estErr.message);
+          console.log(`  입찰가 추정 실패 [${req.body.keyword}]:`, estErr.message);
         }
 
-        await db.updateAutoBidKeywordStatus(kwId, device, rank, currentBid);
-        console.log(`✅ [${req.body.keyword}] ${device} 순위 즉시 조회: ${rank > 0 ? rank.toFixed(1) + '위' : '-'}, 입찰가: ${currentBid}원`);
+        // last_rank 필드에 목표입찰가 저장 (의미: targetBid)
+        await db.updateAutoBidKeywordStatus(kwId, device, targetBid, currentBid);
+        console.log(`✅ [${req.body.keyword}] ${device} 목표입찰가: ₩${targetBid}, 현재: ₩${currentBid} → ${currentBid >= targetBid && targetBid > 0 ? '달성' : '미달'}`);
       } catch (e) {
         console.error(`⚠️ [${req.body.keyword}] 순위 즉시 조회 실패:`, e.message);
       }
@@ -2726,36 +2723,19 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
           console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
         }
 
-        // 2. 순위 추정: estimate API로 각 순위별 필요 입찰가 조회 후 현재 입찰가로 역산
-        let rank = 0;
-        let positionBids = {};
+        // 2. 목표 순위에 필요한 입찰가 조회
+        let targetBid = 0;
         try {
-          // 1위~10위 각각 개별 요청 (한번에 보내면 400 에러)
-          for (let pos = 1; pos <= 10; pos++) {
-            try {
-              const est = await client.getEstimatedBidForPosition(abKw.keyword_id, abKw.device, pos);
-              const item = est?.estimate?.[0];
-              if (item?.bid > 0) positionBids[pos] = item.bid;
-            } catch (e) { /* skip */ }
-          }
-          // 현재 입찰가로 달성 가능한 순위 계산
-          for (let pos = 1; pos <= 10; pos++) {
-            if (positionBids[pos] && currentBid >= positionBids[pos]) {
-              rank = pos;
-              break;
-            }
-          }
-          if (rank === 0) {
-            // 어떤 순위도 달성 못함 → 순위 밖 (0으로 유지)
-            rank = 0;
-          }
-          console.log(`  📊 [${abKw.keyword}] ${abKw.device} 추정순위: ${rank > 0 ? rank + '위' : '-'}, 입찰가: ${currentBid}원, 순위별: ${JSON.stringify(positionBids)}`);
+          const est = await client.getEstimatedBidForPosition(abKw.keyword_id, abKw.device, abKw.target_rank);
+          targetBid = est?.estimate?.[0]?.bid || 0;
+          console.log(`  📊 [${abKw.keyword}] ${abKw.device} ${abKw.target_rank}위 필요입찰가: ₩${targetBid}, 현재: ₩${currentBid} → ${currentBid >= targetBid ? '달성' : '미달'}`);
         } catch (estErr) {
-          console.log(`  순위 추정 실패 [${abKw.keyword}]:`, estErr.message);
+          console.log(`  입찰가 추정 실패 [${abKw.keyword}]:`, estErr.message);
         }
 
-        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, rank, currentBid);
-        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid, positionBids });
+        // last_rank 필드에 목표입찰가 저장 (의미 변경: rank → targetBid)
+        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, targetBid, currentBid);
+        details.push({ keyword: abKw.keyword, device: abKw.device, targetBid, currentBid, status: currentBid >= targetBid ? '달성' : '미달' });
         checked++;
         await new Promise(r => setTimeout(r, 200));
       } catch (e) {
