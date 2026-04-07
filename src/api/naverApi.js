@@ -200,23 +200,7 @@ function createApiClient(creds) {
       totals.ctr = totals.impCnt > 0 ? (totals.clkCnt / totals.impCnt * 100) : 0;
       totals.cpc = totals.clkCnt > 0 ? Math.round(totals.salesAmt / totals.clkCnt) : 0;
 
-      // 구매완료 전환매출 조회 (AD_CONVERSION_DETAIL)
-      try {
-        const purchaseData = await getPurchaseConversions(dateRange);
-        totals.purchaseAmt = purchaseData.totalAmt;
-        totals.purchaseCnt = purchaseData.totalCnt;
-        // 캠페인별 구매완료 매핑
-        for (const cs of campStats) {
-          const p = purchaseData.byCampaign[cs.id] || { amt: 0, cnt: 0 };
-          cs.purchaseAmt = p.amt;
-          cs.purchaseCnt = p.cnt;
-        }
-      } catch (e) {
-        console.log('구매완료 전환 조회 실패:', e.message);
-      }
-
-      // ROAS = 구매완료전환매출 / 총비용 × 100
-      totals.roas = totals.salesAmt > 0 ? Math.round(totals.purchaseAmt / totals.salesAmt * 100) : 0;
+      // 구매완료 전환 데이터는 dashboard에서 별도 캐시+병렬로 처리
       totals.campStats = campStats;
       return totals;
     },
@@ -307,26 +291,34 @@ function createApiClient(creds) {
 }
 
 // ─── 날짜 유틸리티 ──────────────────────────────────────────────────
+// KST(UTC+9) 기준 날짜 포맷
+function fmtKST(d) {
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10);
+}
+
 function resolveDateRange(timeRange, startDate, endDate) {
+  // 명시적 날짜 범위가 있으면 우선 사용
+  if (startDate && endDate) return { since: startDate, until: endDate };
+  const now = new Date();
   if (timeRange === 'yesterday') {
-    const d = new Date(); d.setDate(d.getDate() - 1);
-    const s = d.toISOString().slice(0, 10);
+    const d = new Date(now); d.setDate(d.getDate() - 1);
+    const s = fmtKST(d);
     return { since: s, until: s };
   }
   if (timeRange === 'last7days') {
-    const end = new Date(); end.setDate(end.getDate() - 1);
-    const start = new Date(); start.setDate(start.getDate() - 7);
-    return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
+    const end = new Date(now); end.setDate(end.getDate() - 1);
+    const start = new Date(now); start.setDate(start.getDate() - 7);
+    return { since: fmtKST(start), until: fmtKST(end) };
   }
   if (timeRange === 'last30days') {
-    const end = new Date(); end.setDate(end.getDate() - 1);
-    const start = new Date(); start.setDate(start.getDate() - 30);
-    return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
+    const end = new Date(now); end.setDate(end.getDate() - 1);
+    const start = new Date(now); start.setDate(start.getDate() - 30);
+    return { since: fmtKST(start), until: fmtKST(end) };
   }
   if (startDate && endDate) return { since: startDate, until: endDate };
-  const d = new Date(); d.setDate(d.getDate() - 1);
-  const s = d.toISOString().slice(0, 10);
-  return { since: s, until: s };
+  const d = new Date(now); d.setDate(d.getDate() - 1);
+  return { since: fmtKST(d), until: fmtKST(d) };
 }
 
 // since~until 사이의 날짜 배열 반환 (YYYY-MM-DD)

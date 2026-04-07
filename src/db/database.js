@@ -109,6 +109,9 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS campaign_count INTEGER DEFAULT 0`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS adgroup_count INTEGER DEFAULT 0`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS keyword_count INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_daily_report TIMESTAMP`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_weekly_report TIMESTAMP`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   console.log('✅ DB 초기화 완료 (Supabase PostgreSQL)');
@@ -354,6 +357,35 @@ async function getMasterKeywords(accountId, adgroupId) {
   return all('SELECT * FROM master_keywords WHERE account_id = $1 ORDER BY keyword', [accountId]);
 }
 
+// 키워드ID → { keyword, campaignTp } 매핑 빌드
+async function buildKeywordMaps(accountId) {
+  const campaigns = await getMasterCampaigns(accountId);
+  const adgroups = await getMasterAdgroups(accountId);
+  const keywords = await getMasterKeywords(accountId);
+
+  const campMap = {};   // campaignId → { name, tp }
+  for (const c of campaigns) campMap[c.campaign_id] = { name: c.campaign_name, tp: c.campaign_tp };
+
+  const agMap = {};     // adgroupId → { name, campaignId }
+  for (const ag of adgroups) agMap[ag.adgroup_id] = { name: ag.adgroup_name, campaignId: ag.campaign_id };
+
+  const kwMap = {};     // keywordId → { keyword, adgroupId, adgroupName, campaignId, campaignName, campaignTp }
+  for (const kw of keywords) {
+    const ag = agMap[kw.adgroup_id] || {};
+    const camp = campMap[ag.campaignId] || {};
+    kwMap[kw.keyword_id] = {
+      keyword: kw.keyword,
+      adgroupId: kw.adgroup_id,
+      adgroupName: ag.name || '',
+      campaignId: ag.campaignId || '',
+      campaignName: camp.name || '',
+      campaignTp: camp.tp || 1,
+    };
+  }
+
+  return { campMap, agMap, kwMap };
+}
+
 module.exports = Object.assign(module.exports, {
   initDb,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
@@ -363,5 +395,5 @@ module.exports = Object.assign(module.exports, {
   addSelectedAccount, updateAccount, deleteAccount,
   resetAdminPassword, deleteAllUsers,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
-  getMasterCampaigns, getMasterAdgroups, getMasterKeywords,
+  getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
 });

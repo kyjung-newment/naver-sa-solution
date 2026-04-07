@@ -169,13 +169,15 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
   <table width="100%" cellspacing="0" cellpadding="0"><tr>`;
   kpiCards.forEach((card, i) => {
     if (i > 0 && i % 5 === 0) html += '</tr></table><table width="100%" cellspacing="0" cellpadding="0" style="margin-top:8px"><tr>';
-    html += `<td style="width:20%;padding:4px 5px">
-      <div style="background:#f9fafb;border-radius:10px;padding:14px 12px;text-align:center;border:1px solid #f0f0f0">
-        <div style="font-size:18px;margin-bottom:6px">${card.icon}</div>
-        <div style="font-size:10px;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">${card.label}</div>
-        <div style="font-size:17px;font-weight:800;color:${card.color || '#111827'}">${card.value}</div>
-        ${card.trend ? `<div style="margin-top:4px">${card.trend}</div>` : ''}
-      </div>
+    html += `<td style="width:20%;padding:4px 5px;vertical-align:top">
+      <table width="100%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border-radius:10px;border:1px solid #f0f0f0;height:110px">
+        <tr><td style="text-align:center;padding:12px 8px;vertical-align:middle">
+          <div style="font-size:18px;margin-bottom:4px">${card.icon}</div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:3px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap">${card.label}</div>
+          <div style="font-size:17px;font-weight:800;color:${card.color || '#111827'}">${card.value}</div>
+          ${card.trend ? `<div style="margin-top:2px;font-size:11px">${card.trend}</div>` : ''}
+        </td></tr>
+      </table>
     </td>`;
   });
   html += '</tr></table></div>';

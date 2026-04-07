@@ -1116,12 +1116,52 @@ function accountSettingsForm(account = {}) {
         <div class="card-header"><span class="card-title">이메일 발송 설정 (SMTP)</span></div>
         <div class="card-body">
           <div class="form-row">
-            <div class="form-group"><label>SMTP 서버</label><input name="email_host" value="${v('email_host','smtp.gmail.com')}" placeholder="smtp.gmail.com"></div>
+            <div class="form-group"><label>SMTP 서버</label><input name="email_host" value="${v('email_host','smtp.daouoffice.com')}" placeholder="smtp.daouoffice.com"></div>
             <div class="form-group"><label>포트</label><input name="email_port" type="number" value="${v('email_port',587)}" placeholder="587"></div>
           </div>
           <div class="form-row">
-            <div class="form-group"><label>발송 이메일</label><input name="email_user" value="${v('email_user')}" placeholder="sender@gmail.com"></div>
-            <div class="form-group"><label>앱 비밀번호</label><input type="password" name="email_pass" value="${v('email_pass')}" placeholder="16자리 앱 비밀번호"></div>
+            <div class="form-group"><label>발송 이메일</label><input name="email_user" value="${v('email_user')}" placeholder="user@newment.co.kr"></div>
+            <div class="form-group"><label>비밀번호</label><input type="password" name="email_pass" value="${v('email_pass')}" placeholder="다우오피스 로그인 비밀번호"></div>
+          </div>
+
+          <div style="margin-top:16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:16px 18px">
+            <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:10px">📮 다우오피스 메일 SMTP 설정 가이드</div>
+            <div style="font-size:12px;color:#0c4a6e;line-height:2">
+              <strong>다우오피스 메일을 사용하는 경우 아래 정보를 입력하세요:</strong>
+              <table style="width:100%;margin:8px 0;border-collapse:collapse;font-size:12px">
+                <tr style="background:#e0f2fe">
+                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd;width:120px">SMTP 서버</td>
+                  <td style="padding:6px 10px;border:1px solid #bae6fd;font-family:monospace">smtp.daouoffice.com</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">포트</td>
+                  <td style="padding:6px 10px;border:1px solid #bae6fd;font-family:monospace">587</td>
+                </tr>
+                <tr style="background:#e0f2fe">
+                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">발송 이메일</td>
+                  <td style="padding:6px 10px;border:1px solid #bae6fd">다우오피스 메일 주소 (예: <code>user@newment.co.kr</code>)</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">비밀번호</td>
+                  <td style="padding:6px 10px;border:1px solid #bae6fd">다우오피스 로그인 비밀번호</td>
+                </tr>
+              </table>
+              <div style="margin-top:8px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e">
+                <strong>⚠️ 다우오피스 외부메일(SMTP) 활성화 방법:</strong>
+                <ol style="margin:6px 0 0 16px;padding:0;line-height:2.2">
+                  <li>다우오피스에 로그인 후 <strong>메일</strong> 클릭</li>
+                  <li>좌측 하단 <strong>메일환경설정</strong> 클릭</li>
+                  <li>상단 탭에서 <strong>외부메일</strong> 클릭</li>
+                  <li><strong>+ 추가</strong> 버튼 클릭</li>
+                  <li>POP3 서버: <code>pop.daouoffice.com</code> / 포트: <code>995</code> / 보안연결(SSL) 체크</li>
+                  <li>아이디: 메일 주소 전체 입력 (예: <code>user@newment.co.kr</code>)</li>
+                  <li>비밀번호: 로그인 비밀번호 입력 후 <strong>확인</strong></li>
+                </ol>
+              </div>
+              <div style="margin-top:8px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;color:#14532d">
+                <strong>💡 Gmail 사용 시:</strong> SMTP 서버 <code>smtp.gmail.com</code> / 포트 <code>587</code> / <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#16a34a">앱 비밀번호</a> 발급 필요
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1199,11 +1239,21 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
   const accounts = await db.getAccountsByUser(user.id);
 
   const content = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
-      <div class="period-tabs">
-        <button class="period-btn active" data-period="yesterday">어제</button>
-        <button class="period-btn" data-period="7days">최근 7일</button>
-        <button class="period-btn" data-period="30days">최근 30일</button>
+    <!-- 기간 선택 + 광고주 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="period-tabs">
+          <button class="period-btn active" data-period="yesterday">어제</button>
+          <button class="period-btn" data-period="7days">최근 7일</button>
+          <button class="period-btn" data-period="30days">최근 30일</button>
+          <button class="period-btn" data-period="custom" id="custom-period-btn">기간 선택</button>
+        </div>
+        <div id="custom-date-wrap" style="display:none;align-items:center;gap:6px">
+          <input type="date" id="date-start" style="width:140px;padding:6px 10px;font-size:13px">
+          <span style="color:#94a3b8">~</span>
+          <input type="date" id="date-end" style="width:140px;padding:6px 10px;font-size:13px">
+          <button class="btn btn-primary btn-sm" onclick="applyCustomDate()">적용</button>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:13px;color:#64748b" id="selected-account-label">
@@ -1211,99 +1261,163 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
             ? accounts.find(a => String(a.id) === String(req.session.selectedAccountId))?.name || '전체'
             : '전체 광고주'}
         </span>
-        <button class="btn btn-outline btn-sm" onclick="loadStats()">↻ 조회</button>
       </div>
     </div>
 
-    <div class="kpi-grid" id="kpi-grid">
-      ${['👁 노출수','🖱 클릭수','📊 CTR','💰 총비용','🛒 구매완료전환매출','📈 ROAS','🎯 평균순위','🔄 구매완료전환수'].map(l => `
-        <div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:#e2e8f0">—</div></div>
-      `).join('')}
+    <!-- 탭 메뉴 -->
+    <div style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:20px">
+      ${['summary','keywords','hourly','target','adgroups'].map((tab, i) => {
+        const labels = ['요약','키워드별','시간대별','타겟별','그룹별'];
+        return `<button class="dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')"
+          style="padding:10px 20px;font-size:13px;font-weight:600;background:none;border:none;cursor:pointer;color:${i===0?'#03c75a':'#94a3b8'};border-bottom:2px solid ${i===0?'#03c75a':'transparent'};margin-bottom:-2px;transition:all .15s">${labels[i]}</button>`;
+      }).join('')}
     </div>
 
-    <!-- 캠페인별 차트 영역 -->
-    <div id="chart-wrap" class="card" style="margin-bottom:20px;display:none">
-      <div class="card-header"><span class="card-title">📊 캠페인별 비용 vs 구매완료매출</span></div>
-      <div class="card-body" id="chart-body"></div>
+    <!-- 요약 탭 -->
+    <div id="tab-summary" class="tab-content">
+      <div class="kpi-grid" id="kpi-grid">
+        ${['노출수','클릭수','CTR','총비용','구매완료전환매출','ROAS','평균순위','구매완료전환수'].map(l => `
+          <div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:#e2e8f0">—</div></div>
+        `).join('')}
+      </div>
+      <div id="chart-wrap" class="card" style="margin-bottom:20px;display:none">
+        <div class="card-header"><span class="card-title">캠페인별 비용 vs 구매완료매출</span></div>
+        <div class="card-body" id="chart-body"></div>
+      </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">🔑 키워드별 성과</span>
-        <span id="kw-count" style="font-size:12px;color:#94a3b8"></span>
-      </div>
-      <div id="kw-table-wrap">
-        ${accounts.length === 0
-          ? `<div class="empty">광고주를 먼저 선택해주세요.<br><a href="/smart-sa/accounts" style="color:#03c75a;margin-top:8px;display:inline-block">광고주 관리</a></div>`
-          : '<div class="empty"><span class="spinner"></span> 광고주를 선택하고 조회를 눌러주세요.</div>'}
-      </div>
+    <!-- 키워드별 탭 -->
+    <div id="tab-keywords" class="tab-content" style="display:none">
+      <div id="kw-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
+    <!-- 시간대별 탭 -->
+    <div id="tab-hourly" class="tab-content" style="display:none">
+      <div id="hourly-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
+    <!-- 타겟별 탭 -->
+    <div id="tab-target" class="tab-content" style="display:none">
+      <div id="target-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
+    <!-- 그룹별 탭 -->
+    <div id="tab-adgroups" class="tab-content" style="display:none">
+      <div id="adgroups-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
     </div>
 
     <script>
     let currentPeriod = 'yesterday';
+    let customStart = '', customEnd = '';
+    const tabLoaded = {};
+    const selectedAccountId = '${req.session.selectedAccountId || ''}';
+    // firstAccountId 제거 - 광고주 선택 필수
+
+    function getAccountId() { return selectedAccountId; }
+    function periodParams() {
+      let p = 'period='+currentPeriod+'&accountId='+getAccountId();
+      if (currentPeriod === 'custom') p += '&startDate='+customStart+'&endDate='+customEnd;
+      return p;
+    }
+
+    // 기간 버튼
     document.querySelectorAll('.period-btn').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (btn.dataset.period === 'custom') {
+          document.getElementById('custom-date-wrap').style.display = 'flex';
+          // 기본값: 최근 7일
+          const today = new Date();
+          const end = new Date(today); end.setDate(end.getDate()-1);
+          const start = new Date(today); start.setDate(start.getDate()-7);
+          document.getElementById('date-start').value = start.toISOString().slice(0,10);
+          document.getElementById('date-end').value = end.toISOString().slice(0,10);
+          return;
+        }
+        document.getElementById('custom-date-wrap').style.display = 'none';
         document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         currentPeriod = btn.dataset.period;
-        loadStats();
+        resetTabs();
+        loadCurrentTab();
       });
     });
 
-    const selectedAccountId = '${req.session.selectedAccountId || ''}';
-    // 페이지 로드 시 자동 조회
-    if (selectedAccountId) { setTimeout(() => loadStats(), 300); }
+    function applyCustomDate() {
+      const s = document.getElementById('date-start').value;
+      const e = document.getElementById('date-end').value;
+      if (!s || !e) return toast('시작/종료일을 선택해주세요.', true);
+      if (s > e) return toast('시작일이 종료일보다 큽니다.', true);
+      customStart = s; customEnd = e;
+      currentPeriod = 'custom';
+      document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('custom-period-btn').classList.add('active');
+      resetTabs();
+      loadCurrentTab();
+    }
 
-    async function loadStats() {
-      const accountId = selectedAccountId || '${accounts[0]?.id || ''}';
-      if (!accountId) return toast('사이드바에서 광고주를 선택해주세요.', true);
+    function resetTabs() { for (const k in tabLoaded) tabLoaded[k] = false; }
 
-      document.getElementById('kpi-grid').innerHTML = ${JSON.stringify(
-        ['👁 노출수','🖱 클릭수','📊 CTR','💰 총비용','🛒 구매완료전환매출','📈 ROAS','🎯 평균순위','🔄 구매완료전환수'].map(l =>
+    let currentTab = 'summary';
+    function switchTab(name) {
+      currentTab = name;
+      document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+      document.getElementById('tab-'+name).style.display = 'block';
+      document.querySelectorAll('.dash-tab').forEach(b => {
+        const isActive = b.dataset.tab === name;
+        b.style.color = isActive ? '#03c75a' : '#94a3b8';
+        b.style.borderBottomColor = isActive ? '#03c75a' : 'transparent';
+        if (isActive) b.classList.add('active'); else b.classList.remove('active');
+      });
+      loadCurrentTab();
+    }
+
+    function loadCurrentTab() {
+      if (!getAccountId()) { toast('사이드바에서 광고주를 선택해주세요.', true); return; }
+      if (currentTab === 'summary') loadSummary();
+      else if (currentTab === 'keywords' && !tabLoaded.keywords) loadKeywords();
+      else if (currentTab === 'hourly' && !tabLoaded.hourly) loadHourly();
+      else if (currentTab === 'target' && !tabLoaded.target) loadDevice();
+      else if (currentTab === 'adgroups' && !tabLoaded.adgroups) loadAdgroups();
+    }
+
+    // 페이지 로드 시 자동 조회 (광고주 선택된 경우만)
+    if (getAccountId()) {
+      setTimeout(() => loadSummary(), 300);
+    } else {
+      document.getElementById('kpi-grid').innerHTML = '<div class="empty" style="grid-column:1/-1;padding:40px">사이드바에서 광고주를 선택해주세요.</div>';
+    }
+
+    // ── 요약 탭 ──
+    async function loadSummary() {
+      const grid = document.getElementById('kpi-grid');
+      grid.innerHTML = ${JSON.stringify(
+        ['노출수','클릭수','CTR','총비용','구매완료전환매출','ROAS','평균순위','구매완료전환수'].map(l =>
           `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value"><span class="spinner"></span></div></div>`
         ).join('')
       )};
-      document.getElementById('kw-table-wrap').innerHTML = '<div class="empty"><span class="spinner"></span> 로딩 중...</div>';
-
       try {
-        // 1단계: KPI 먼저 빠르게 로드
-        const res = await fetch('/smart-sa/api/stats?period='+currentPeriod+'&accountId='+accountId);
+        const res = await fetch('/smart-sa/api/stats?'+periodParams());
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         renderKpi(json.stats);
-      } catch(e) {
-        toast('조회 실패: '+e.message, true);
-      }
-
-      // 2단계: 키워드 통계 별도 로드
-      document.getElementById('kw-table-wrap').innerHTML = '<div class="empty"><span class="spinner"></span> 키워드 데이터 로딩 중...</div>';
-      try {
-        const kwRes = await fetch('/smart-sa/api/keyword-stats?period='+currentPeriod+'&accountId='+accountId);
-        const kwJson = await kwRes.json();
-        if (kwJson.ok) renderKwTable(kwJson.keywordStats || []);
-        else document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">키워드 데이터를 불러올 수 없습니다.</div>';
-      } catch(e) {
-        document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">키워드 조회 실패</div>';
-      }
+      } catch(e) { toast('조회 실패: '+e.message, true); }
     }
 
     function renderKpi(s) {
       const roas = s?.roas || 0;
       const cards = [
-        {l:'👁 노출수', v:num(s?.impCnt)},
-        {l:'🖱 클릭수', v:num(s?.clkCnt)},
-        {l:'📊 CTR',    v:pct(s?.ctr)},
-        {l:'💰 총비용', v:won(s?.salesAmt)},
-        {l:'🛒 구매완료전환매출',v:won(s?.purchaseAmt)},
-        {l:'📈 ROAS',   v:roas+'%'},
-        {l:'🎯 평균순위',v:rnk(s?.avgRnk)},
-        {l:'🔄 구매완료전환수', v:num(s?.purchaseCnt)},
+        {l:'노출수', v:num(s?.impCnt)},
+        {l:'클릭수', v:num(s?.clkCnt)},
+        {l:'CTR',    v:pct(s?.ctr)},
+        {l:'총비용', v:won(s?.salesAmt)},
+        {l:'구매완료전환매출',v:won(s?.purchaseAmt)},
+        {l:'ROAS',   v:roas+'%'},
+        {l:'평균순위',v:rnk(s?.avgRnk)},
+        {l:'구매완료전환수', v:num(s?.purchaseCnt)},
       ];
       document.getElementById('kpi-grid').innerHTML = cards.map(c =>
         '<div class="kpi-card"><div class="kpi-label">'+c.l+'</div><div class="kpi-value">'+c.v+'</div></div>'
       ).join('');
-
-      // 캠페인별 차트 렌더링
       if (s?.campStats?.length) renderChart(s.campStats);
     }
 
@@ -1315,62 +1429,249 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const maxCost = Math.max(...campStats.map(c => c.salesAmt || 0), 1);
       const maxPurchase = Math.max(...campStats.map(c => c.purchaseAmt || 0), 1);
       let html = '<div style="display:flex;gap:20px;flex-wrap:wrap">';
-      // 비용 vs 구매완료매출 바 차트
       html += '<div style="flex:1;min-width:300px">';
       campStats.forEach(c => {
         const costW = Math.max((c.salesAmt||0)/maxCost*100, 2);
         const purchW = maxPurchase > 0 ? Math.max((c.purchaseAmt||0)/maxPurchase*100, 2) : 2;
-        html += '<div style="margin-bottom:10px">';
-        html += '<div style="font-size:12px;font-weight:500;margin-bottom:3px;color:#374151">'+c.name+'</div>';
-        html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">';
-        html += '<span style="font-size:10px;color:#94a3b8;width:60px">총비용</span>';
-        html += '<div style="flex:1;background:#fee2e2;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+costW+'%;background:#ef4444;height:100%;border-radius:4px;min-width:2px"></div></div>';
-        html += '<span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.salesAmt)+'</span>';
-        html += '</div>';
-        html += '<div style="display:flex;align-items:center;gap:6px">';
-        html += '<span style="font-size:10px;color:#94a3b8;width:60px">구매매출</span>';
-        html += '<div style="flex:1;background:#d1fae5;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+purchW+'%;background:#10b981;height:100%;border-radius:4px;min-width:2px"></div></div>';
-        html += '<span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.purchaseAmt)+'</span>';
-        html += '</div>';
+        html += '<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:500;margin-bottom:3px;color:#374151">'+c.name+'</div>';
+        html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span style="font-size:10px;color:#94a3b8;width:60px">총비용</span><div style="flex:1;background:#fee2e2;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+costW+'%;background:#ef4444;height:100%;border-radius:4px;min-width:2px"></div></div><span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.salesAmt)+'</span></div>';
+        html += '<div style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:#94a3b8;width:60px">구매매출</span><div style="flex:1;background:#d1fae5;border-radius:4px;height:16px;overflow:hidden"><div style="width:'+purchW+'%;background:#10b981;height:100%;border-radius:4px;min-width:2px"></div></div><span style="font-size:11px;font-weight:500;width:80px;text-align:right">'+won(c.purchaseAmt)+'</span></div>';
         html += '</div>';
       });
       html += '</div>';
-      // KPI 요약 테이블
       html += '<div style="flex:1;min-width:280px"><h4 style="font-size:13px;font-weight:600;margin-bottom:12px;color:#374151">캠페인별 주요 지표</h4>';
       html += '<table style="width:100%;font-size:12px"><thead><tr><th style="text-align:left">캠페인</th><th style="text-align:right">클릭</th><th style="text-align:right">총비용</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th></tr></thead><tbody>';
       campStats.forEach(c => {
         const roas = c.salesAmt > 0 ? Math.round((c.purchaseAmt||0)/c.salesAmt*100) : 0;
         html += '<tr><td>'+c.name+'</td><td style="text-align:right">'+num(c.clkCnt)+'</td><td style="text-align:right">'+won(c.salesAmt)+'</td><td style="text-align:right;color:#16a34a">'+won(c.purchaseAmt)+'</td><td style="text-align:right;color:'+(roas>=100?'#16a34a':'#ef4444')+'">'+roas+'%</td></tr>';
       });
-      html += '</tbody></table></div>';
-      html += '</div>';
+      html += '</tbody></table></div></div>';
       chartBody.innerHTML = html;
     }
 
-    function renderKwTable(kwStats) {
-      const sorted = [...kwStats].sort((a,b)=>(b.clkCnt||0)-(a.clkCnt||0));
-      document.getElementById('kw-count').textContent = sorted.length+'개';
-      if (!sorted.length) {
-        document.getElementById('kw-table-wrap').innerHTML = '<div class="empty">키워드 데이터가 없습니다.</div>';
-        return;
+    // ── 키워드별 탭 ──
+    let kwShowAll = { powerlink: false, shopping: false };
+    let kwData = null;
+
+    async function loadKeywords(showAll) {
+      const wrap = document.getElementById('kw-tab-content');
+      if (!kwData || showAll === undefined) {
+        wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 키워드 데이터 로딩 중... (10~30초 소요)</div>';
+        try {
+          const lim = (showAll === 'powerlink' || showAll === 'shopping') ? 'all' : '10';
+          const res = await fetch('/smart-sa/api/tab/keywords?'+periodParams()+'&limit='+lim);
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error);
+          kwData = json;
+          tabLoaded.keywords = true;
+        } catch(e) { wrap.innerHTML = '<div class="empty">키워드 조회 실패: '+e.message+'</div>'; return; }
       }
-      document.getElementById('kw-table-wrap').innerHTML = '<table><thead><tr>'
-        +'<th>#</th><th>키워드</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'
-        +'<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">순위</th>'
-        +'</tr></thead><tbody>'
-        +sorted.map((kw,i)=>'<tr>'
-          +'<td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>'
-          +'<td><strong>'+(kw.keyword||kw.keywordId||'-')+'</strong></td>'
-          +'<td style="text-align:right">'+num(kw.impCnt)+'</td>'
-          +'<td style="text-align:right;color:#2563eb;font-weight:600">'+num(kw.clkCnt)+'</td>'
-          +'<td style="text-align:right">'+pct(kw.ctr)+'</td>'
-          +'<td style="text-align:right">'+won(kw.salesAmt)+'</td>'
-          +'<td style="text-align:right">'+won(kw.cpc)+'</td>'
-          +'<td style="text-align:right">'+rnk(kw.avgRnk)+'</td>'
-          +'</tr>').join('')
-        +'</tbody></table>';
+      renderKeywordTab(kwData);
     }
 
+    function renderKeywordTab(d) {
+      const wrap = document.getElementById('kw-tab-content');
+      let html = '';
+      // 파워링크
+      html += kwSection('파워링크', d.powerlink, d.powerlinkTotal, 'powerlink');
+      // 쇼핑검색
+      html += kwSection('쇼핑검색', d.shopping, d.shoppingTotal, 'shopping');
+      if (d.other?.length) html += kwSection('기타', d.other, d.otherTotal, 'other');
+      wrap.innerHTML = html;
+    }
+
+    function kwSection(title, items, total, type) {
+      if (!items?.length) return '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span></div><div class="card-body"><div class="empty">데이터 없음</div></div></div>';
+      let html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span><span style="font-size:12px;color:#94a3b8">총 '+total+'개 키워드</span></div><div class="card-body" style="overflow-x:auto">';
+      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="min-width:140px">키워드</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환수</th><th style="text-align:right">구매전환매출</th><th style="text-align:right">ROAS</th></tr></thead><tbody>';
+      items.forEach((kw,i) => {
+        html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
+        html += '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong><br><span style="font-size:11px;color:#94a3b8">'+kw.campaignName+'</span></td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+won(kw.cost)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+won(kw.cpc)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(kw.purchaseCnt)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(kw.purchaseAmt)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(kw.roas>=100?'#16a34a':'#ef4444')+'">'+kw.roas+'%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      if (items.length < total) {
+        html += '<div style="text-align:center;padding:12px"><button class="btn btn-outline" onclick="loadAllKeywords(\\\''+type+'\\\')">더보기 (전체 '+total+'개)</button></div>';
+      }
+      html += '</div></div>';
+      return html;
+    }
+
+    async function loadAllKeywords(type) {
+      tabLoaded.keywords = false;
+      kwData = null;
+      const wrap = document.getElementById('kw-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 전체 키워드 로딩 중...</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/keywords?'+periodParams()+'&limit=all');
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        kwData = json;
+        tabLoaded.keywords = true;
+        renderKeywordTab(kwData);
+      } catch(e) { wrap.innerHTML = '<div class="empty">오류: '+e.message+'</div>'; }
+    }
+
+    // ── 시간대별 탭 ──
+    async function loadHourly() {
+      const wrap = document.getElementById('hourly-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 시간대별 데이터 로딩 중... (10~30초 소요)</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/hourly?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        tabLoaded.hourly = true;
+        renderHourlyTab(json);
+      } catch(e) { wrap.innerHTML = '<div class="empty">시간대별 조회 실패: '+e.message+'</div>'; }
+    }
+
+    function renderHourlyTab(d) {
+      const wrap = document.getElementById('hourly-tab-content');
+      let html = '';
+      // 시간대별 히트맵
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span></div><div class="card-body" style="overflow-x:auto">';
+      const maxCost = Math.max(...d.byHour.map(h => h.cost), 1);
+      html += '<table><thead><tr><th>시간</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th><th style="width:120px">비용비중</th></tr></thead><tbody>';
+      d.byHour.forEach(h => {
+        const barW = Math.max((h.cost/maxCost)*100, 1);
+        html += '<tr><td style="font-weight:600">'+String(h.hour).padStart(2,'0')+':00</td>';
+        html += '<td style="text-align:right">'+num(h.imp)+'</td>';
+        html += '<td style="text-align:right;color:#2563eb">'+num(h.clk)+'</td>';
+        html += '<td style="text-align:right">'+pct(h.ctr)+'</td>';
+        html += '<td style="text-align:right">'+won(h.cost)+'</td>';
+        html += '<td style="text-align:right">'+won(h.cpc)+'</td>';
+        html += '<td style="text-align:right;color:#7c3aed">'+num(h.purchaseCnt)+'</td>';
+        html += '<td style="text-align:right;color:#16a34a">'+won(h.purchaseAmt)+'</td>';
+        html += '<td style="text-align:right;font-weight:600;color:'+(h.roas>=100?'#16a34a':'#ef4444')+'">'+h.roas+'%</td>';
+        html += '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden"><div style="width:'+barW+'%;background:#3b82f6;height:100%;border-radius:4px"></div></div></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+
+      // 요일별
+      html += '<div class="card"><div class="card-header"><span class="card-title">요일별 성과</span></div><div class="card-body" style="overflow-x:auto">';
+      const maxDayCost = Math.max(...d.byDay.map(d2 => d2.cost), 1);
+      html += '<table><thead><tr><th>요일</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th><th style="width:120px">비용비중</th></tr></thead><tbody>';
+      d.byDay.forEach(day => {
+        const barW = Math.max((day.cost/maxDayCost)*100, 1);
+        html += '<tr><td style="font-weight:600">'+day.day+'요일</td>';
+        html += '<td style="text-align:right">'+num(day.imp)+'</td>';
+        html += '<td style="text-align:right;color:#2563eb">'+num(day.clk)+'</td>';
+        html += '<td style="text-align:right">'+pct(day.ctr)+'</td>';
+        html += '<td style="text-align:right">'+won(day.cost)+'</td>';
+        html += '<td style="text-align:right">'+won(day.cpc)+'</td>';
+        html += '<td style="text-align:right;color:#7c3aed">'+num(day.purchaseCnt)+'</td>';
+        html += '<td style="text-align:right;color:#16a34a">'+won(day.purchaseAmt)+'</td>';
+        html += '<td style="text-align:right;font-weight:600;color:'+(day.roas>=100?'#16a34a':'#ef4444')+'">'+day.roas+'%</td>';
+        html += '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden"><div style="width:'+barW+'%;background:#f59e0b;height:100%;border-radius:4px"></div></div></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      wrap.innerHTML = html;
+    }
+
+    // ── 타겟별 탭 ──
+    async function loadDevice() {
+      const wrap = document.getElementById('target-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 타겟별 데이터 로딩 중... (10~30초 소요)</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/device?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        tabLoaded.target = true;
+        renderDeviceTab(json);
+      } catch(e) { wrap.innerHTML = '<div class="empty">타겟별 조회 실패: '+e.message+'</div>'; }
+    }
+
+    function renderDeviceTab(d) {
+      const wrap = document.getElementById('target-tab-content');
+      const total = { imp: d.pc.imp+d.mobile.imp, clk: d.pc.clk+d.mobile.clk, cost: d.pc.cost+d.mobile.cost };
+      function devCard(label, icon, data, color) {
+        const costShare = total.cost > 0 ? (data.cost/total.cost*100).toFixed(1) : 0;
+        const clkShare = total.clk > 0 ? (data.clk/total.clk*100).toFixed(1) : 0;
+        return '<div class="card" style="flex:1;min-width:280px"><div class="card-header"><span class="card-title">'+icon+' '+label+'</span><span class="badge" style="background:'+color+'20;color:'+color+'">비용 '+costShare+'%</span></div><div class="card-body">'
+          +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+          +'<div><div style="font-size:11px;color:#94a3b8">노출수</div><div style="font-size:18px;font-weight:700">'+num(data.imp)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">클릭수</div><div style="font-size:18px;font-weight:700;color:#2563eb">'+num(data.clk)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">CTR</div><div style="font-size:18px;font-weight:700">'+pct(data.ctr)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">총비용</div><div style="font-size:18px;font-weight:700">'+won(data.cost)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">CPC</div><div style="font-size:18px;font-weight:700">'+won(data.cpc)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">구매전환수</div><div style="font-size:18px;font-weight:700;color:#7c3aed">'+num(data.purchaseCnt)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">구매전환매출</div><div style="font-size:18px;font-weight:700;color:#16a34a">'+won(data.purchaseAmt)+'</div></div>'
+          +'<div><div style="font-size:11px;color:#94a3b8">ROAS</div><div style="font-size:18px;font-weight:700;color:'+(data.roas>=100?'#16a34a':'#ef4444')+'">'+data.roas+'%</div></div>'
+          +'</div></div></div>';
+      }
+      let html = '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">';
+      html += devCard('PC', '🖥', d.pc, '#3b82f6');
+      html += devCard('모바일', '📱', d.mobile, '#f59e0b');
+      html += '</div>';
+
+      // PC vs MO 비교 바
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">PC vs 모바일 비교</span></div><div class="card-body">';
+      ['비용','클릭','노출','구매매출'].forEach(metric => {
+        const pcV = metric==='비용'?d.pc.cost:metric==='클릭'?d.pc.clk:metric==='노출'?d.pc.imp:d.pc.purchaseAmt;
+        const moV = metric==='비용'?d.mobile.cost:metric==='클릭'?d.mobile.clk:metric==='노출'?d.mobile.imp:d.mobile.purchaseAmt;
+        const t = pcV+moV||1;
+        const pcPct = (pcV/t*100).toFixed(0);
+        const moPct = (moV/t*100).toFixed(0);
+        html += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;margin-bottom:4px">'+metric+'</div>';
+        html += '<div style="display:flex;height:22px;border-radius:6px;overflow:hidden">';
+        html += '<div style="width:'+pcPct+'%;background:#3b82f6;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;min-width:30px">PC '+pcPct+'%</div>';
+        html += '<div style="width:'+moPct+'%;background:#f59e0b;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;min-width:30px">MO '+moPct+'%</div>';
+        html += '</div></div>';
+      });
+      html += '</div></div>';
+
+      html += '<div class="card"><div class="card-body" style="text-align:center;padding:24px;color:#94a3b8;font-size:13px">연령대/성별 데이터는 네이버 검색광고 API에서 제공하지 않습니다.<br>네이버 광고 관리 시스템에서 직접 확인해주세요.</div></div>';
+      wrap.innerHTML = html;
+    }
+
+    // ── 그룹별 탭 ──
+    async function loadAdgroups() {
+      const wrap = document.getElementById('adgroups-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 광고그룹 데이터 로딩 중... (10~30초 소요)</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/adgroups?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        tabLoaded.adgroups = true;
+        renderAdgroupTab(json.adgroups);
+      } catch(e) { wrap.innerHTML = '<div class="empty">광고그룹 조회 실패: '+e.message+'</div>'; }
+    }
+
+    function renderAdgroupTab(adgroups) {
+      const wrap = document.getElementById('adgroups-tab-content');
+      if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
+      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span></div><div class="card-body" style="overflow-x:auto">';
+      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="white-space:nowrap">광고그룹</th><th style="white-space:nowrap">캠페인</th><th style="text-align:right;white-space:nowrap">노출</th><th style="text-align:right;white-space:nowrap">클릭</th><th style="text-align:right;white-space:nowrap">CTR</th><th style="text-align:right;white-space:nowrap">총비용</th><th style="text-align:right;white-space:nowrap">CPC</th><th style="text-align:right;white-space:nowrap">구매전환</th><th style="text-align:right;white-space:nowrap">구매매출</th><th style="text-align:right;white-space:nowrap">ROAS</th></tr></thead><tbody>';
+      adgroups.forEach((ag,i) => {
+        const tpBadge = ag.campaignTp===2?'<span class="badge badge-blue" style="margin-left:4px;font-size:10px">쇼핑</span>':'';
+        html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
+        html += '<td style="white-space:nowrap"><strong>'+ag.adgroupName+'</strong></td>';
+        html += '<td style="white-space:nowrap">'+ag.campaignName+tpBadge+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+num(ag.imp)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(ag.clk)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+pct(ag.ctr)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+won(ag.cost)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap">'+won(ag.cpc)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(ag.purchaseCnt)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(ag.purchaseAmt)+'</td>';
+        html += '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(ag.roas>=100?'#16a34a':'#ef4444')+'">'+ag.roas+'%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      wrap.innerHTML = html;
+    }
+
+    // ── 공통 유틸 ──
     function num(v){return Number(v||0).toLocaleString('ko-KR')}
     function pct(v){return Number(v||0).toFixed(2)+'%'}
     function won(v){return '₩'+Number(v||0).toLocaleString('ko-KR')}
@@ -1385,7 +1686,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 router.get('/api/stats', requireLogin, async (req, res) => {
   try {
     const { period = 'yesterday', accountId } = req.query;
-    if (!accountId) return res.status(400).json({ ok: false, error: '광고주 ID 필요' });
+    if (!accountId) return res.status(400).json({ ok: false, error: '광고주를 선택해주세요.' });
 
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다' });
@@ -1394,13 +1695,48 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
-    const timeMap = { yesterday: 'yesterday', '7days': 'last7days', '30days': 'last30days' };
-    const timeRange = timeMap[period] || 'yesterday';
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
-    // 캠페인 합산 통계만 빠르게 조회
-    const stats = await client.getStats({ timeRange }).catch(() => ({ impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 }));
+    // Stats API로 기본 지표 (빠름)
+    const stats = await client.getStats({
+      startDate: dateRange.since,
+      endDate: dateRange.until,
+    }).catch(() => ({ impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 }));
 
-    res.json({ ok: true, stats, keywordStats: [] });
+    // 구매완료 전환 데이터 (캐시+병렬 fetch)
+    try {
+      const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+      let purchaseAmt = 0, purchaseCnt = 0;
+      const byCampaign = {};
+      for (const { cols } of convRows) {
+        if (cols.length < 15) continue;
+        const convType = cols[12];
+        if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+          const campaignId = cols[2];
+          const cnt = parseInt(cols[13]) || 0;
+          const amt = parseInt(cols[14]) || 0;
+          purchaseAmt += amt;
+          purchaseCnt += cnt;
+          if (!byCampaign[campaignId]) byCampaign[campaignId] = { amt: 0, cnt: 0 };
+          byCampaign[campaignId].amt += amt;
+          byCampaign[campaignId].cnt += cnt;
+        }
+      }
+      stats.purchaseAmt = purchaseAmt;
+      stats.purchaseCnt = purchaseCnt;
+      stats.roas = stats.salesAmt > 0 ? Math.round(purchaseAmt / stats.salesAmt * 100) : 0;
+      if (stats.campStats) {
+        for (const cs of stats.campStats) {
+          const p = byCampaign[cs.id] || { amt: 0, cnt: 0 };
+          cs.purchaseAmt = p.amt;
+          cs.purchaseCnt = p.cnt;
+        }
+      }
+    } catch (e) {
+      console.log('구매완료 전환 조회 실패:', e.message);
+    }
+
+    res.json({ ok: true, stats });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1424,6 +1760,373 @@ router.get('/api/keyword-stats', requireLogin, async (req, res) => {
 
     const keywordStats = await client.getKeywordStats({ timeRange });
     res.json({ ok: true, keywordStats });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── Stat Report 캐시 레이어 ─────────────────────────────────────────
+const statCache = new Map(); // key: "customerId:reportTp:date" → parsed rows
+const CACHE_TTL = 4 * 60 * 60 * 1000; // 4시간
+
+function getCacheKey(customerId, reportTp, dt) { return `${customerId}:${reportTp}:${dt}`; }
+
+async function cachedStatReport(client, customerId, reportTp, dt) {
+  const key = getCacheKey(customerId, reportTp, dt);
+  const cached = statCache.get(key);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.rows;
+  const rows = await client.createAndDownloadStatReport(reportTp, dt);
+  statCache.set(key, { rows, ts: Date.now() });
+  // LRU: 500개 초과 시 오래된 것 제거
+  if (statCache.size > 500) {
+    const oldest = [...statCache.entries()].sort((a,b) => a[1].ts - b[1].ts)[0];
+    if (oldest) statCache.delete(oldest[0]);
+  }
+  return rows;
+}
+
+function getDatesBetween(since, until) {
+  const dates = [];
+  const s = new Date(since), e = new Date(until);
+  for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) dates.push(d.toISOString().slice(0, 10));
+  return dates;
+}
+
+// KST(UTC+9) 기준 날짜 포맷
+function fmtKST(d) {
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10);
+}
+
+function resolvePeriodDates(period, startDate, endDate) {
+  if (period === 'custom' && startDate && endDate) {
+    return { since: startDate, until: endDate };
+  }
+  const now = new Date();
+  if (period === '7days') {
+    const end = new Date(now); end.setDate(end.getDate() - 1);
+    const start = new Date(now); start.setDate(start.getDate() - 7);
+    return { since: fmtKST(start), until: fmtKST(end) };
+  }
+  if (period === '30days') {
+    const end = new Date(now); end.setDate(end.getDate() - 1);
+    const start = new Date(now); start.setDate(start.getDate() - 30);
+    return { since: fmtKST(start), until: fmtKST(end) };
+  }
+  const d = new Date(now); d.setDate(d.getDate() - 1);
+  return { since: fmtKST(d), until: fmtKST(d) };
+}
+
+async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
+  const dates = getDatesBetween(dateRange.since, dateRange.until);
+  const allRows = [];
+  // 동시 3개씩 병렬 다운로드
+  for (let i = 0; i < dates.length; i += 3) {
+    const batch = dates.slice(i, i + 3);
+    const results = await Promise.allSettled(
+      batch.map(dt => cachedStatReport(client, customerId, reportTp, dt).then(rows => rows.map(r => ({ date: dt, cols: r }))))
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled') allRows.push(...r.value);
+    }
+  }
+  return allRows;
+}
+
+// 마스터 데이터 없을 때 API에서 이름 매핑 빌드
+// Naver API campaignTp: 정수 또는 문자열 모두 처리
+function normalizeCampaignTp(tp) {
+  if (tp === 1 || tp === '1' || tp === 'WEB_SITE') return 1;
+  if (tp === 2 || tp === '2' || tp === 'SHOPPING') return 2;
+  if (tp === 4 || tp === '4' || tp === 'BRAND') return 4;
+  return parseInt(tp) || 1;
+}
+
+async function buildNameMapsFromApi(client) {
+  const campMap = {}, agMap = {}, kwMap = {};
+  try {
+    const campaigns = await client.getCampaigns();
+    for (const c of (campaigns || [])) {
+      campMap[c.nccCampaignId] = { name: c.name, tp: normalizeCampaignTp(c.campaignTp) };
+      try {
+        const adgroups = await client.getAdGroups(c.nccCampaignId);
+        for (const ag of (adgroups || [])) {
+          agMap[ag.nccAdgroupId] = { name: ag.name, campaignId: c.nccCampaignId };
+          try {
+            const keywords = await client.getKeywords(ag.nccAdgroupId);
+            for (const kw of (keywords || [])) {
+              kwMap[kw.nccKeywordId] = {
+                keyword: kw.keyword, adgroupId: ag.nccAdgroupId,
+                adgroupName: ag.name, campaignId: c.nccCampaignId,
+                campaignName: c.name, campaignTp: normalizeCampaignTp(c.campaignTp),
+              };
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return { campMap, agMap, kwMap };
+}
+
+async function getNameMaps(client, accountId) {
+  const master = await db.buildKeywordMaps(accountId);
+  const hasMaster = Object.keys(master.kwMap).length > 0;
+  if (hasMaster) return { ...master, hasMaster: true };
+  const api = await buildNameMapsFromApi(client);
+  return { ...api, hasMaster: false };
+}
+
+// ─── API: 탭 데이터 (키워드별) ──────────────────────────────────────
+router.get('/api/tab/keywords', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId, limit: lim } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    // 이름 매핑 (마스터 우선, 없으면 API fallback)
+    const { kwMap, agMap, campMap, hasMaster } = await getNameMaps(client, account.id);
+
+    // AD_DETAIL 다운로드
+    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
+    // AD_CONVERSION_DETAIL 다운로드
+    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+
+    // 키워드별 집계
+    const byKw = {};
+    for (const { cols } of adRows) {
+      if (cols.length < 14) continue;
+      const kwId = cols[4];
+      const campId = cols[2];
+      if (!byKw[kwId]) {
+        const info = kwMap[kwId] || {};
+        byKw[kwId] = { keywordId: kwId, keyword: info.keyword || kwId, campaignTp: info.campaignTp || (campMap[campId]?.tp || 0), campaignName: info.campaignName || campMap[campId]?.name || '', adgroupName: info.adgroupName || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      }
+      byKw[kwId].imp += parseInt(cols[11]) || 0;
+      byKw[kwId].clk += parseInt(cols[12]) || 0;
+      byKw[kwId].cost += parseInt(cols[13]) || 0;
+    }
+
+    // 전환 데이터 병합
+    for (const { cols } of convRows) {
+      if (cols.length < 15) continue;
+      const kwId = cols[4];
+      const convType = cols[12];
+      if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+        if (!byKw[kwId]) continue;
+        byKw[kwId].purchaseCnt += parseInt(cols[13]) || 0;
+        byKw[kwId].purchaseAmt += parseInt(cols[14]) || 0;
+      }
+    }
+
+    // 계산 필드 + 분류
+    const all = Object.values(byKw).map(kw => ({
+      ...kw,
+      ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0,
+      cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0,
+      roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0,
+    }));
+
+    const powerlink = all.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
+    const shopping = all.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
+    const other = all.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
+
+    const maxItems = lim === 'all' ? 99999 : 10;
+    res.json({
+      ok: true,
+      hasMaster,
+      powerlink: powerlink.slice(0, maxItems),
+      shopping: shopping.slice(0, maxItems),
+      other: other.slice(0, maxItems),
+      powerlinkTotal: powerlink.length,
+      shoppingTotal: shopping.length,
+      otherTotal: other.length,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 탭 데이터 (시간대별) ──────────────────────────────────────
+router.get('/api/tab/hourly', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
+    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+
+    // 시간대별 집계
+    const byHour = {};
+    for (let h = 0; h < 24; h++) byHour[h] = { hour: h, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+
+    // 요일별 집계
+    const dayNames = ['일','월','화','수','목','금','토'];
+    const byDay = {};
+    for (let d = 0; d < 7; d++) byDay[d] = { day: dayNames[d], dayIdx: d, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+
+    for (const { date, cols } of adRows) {
+      if (cols.length < 14) continue;
+      const hour = parseInt(cols[7]) || 0;
+      const imp = parseInt(cols[11]) || 0;
+      const clk = parseInt(cols[12]) || 0;
+      const cost = parseInt(cols[13]) || 0;
+
+      byHour[hour].imp += imp;
+      byHour[hour].clk += clk;
+      byHour[hour].cost += cost;
+
+      const dow = new Date(date).getDay();
+      byDay[dow].imp += imp;
+      byDay[dow].clk += clk;
+      byDay[dow].cost += cost;
+    }
+
+    // 전환
+    for (const { date, cols } of convRows) {
+      if (cols.length < 15) continue;
+      const convType = cols[12];
+      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const hour = parseInt(cols[7]) || 0;
+      const cnt = parseInt(cols[13]) || 0;
+      const amt = parseInt(cols[14]) || 0;
+      byHour[hour].purchaseCnt += cnt;
+      byHour[hour].purchaseAmt += amt;
+      const dow = new Date(date).getDay();
+      byDay[dow].purchaseCnt += cnt;
+      byDay[dow].purchaseAmt += amt;
+    }
+
+    const enrich = obj => ({
+      ...obj,
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
+      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
+    });
+
+    res.json({
+      ok: true,
+      byHour: Object.values(byHour).map(enrich),
+      byDay: [1,2,3,4,5,6,0].map(d => enrich(byDay[d])), // 월~일 순
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 탭 데이터 (타겟별 - PC/MO) ───────────────────────────────
+router.get('/api/tab/device', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
+    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+
+    const byDevice = { PC: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 }, MO: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 } };
+
+    for (const { cols } of adRows) {
+      if (cols.length < 14) continue;
+      const dev = cols[10] === 'P' ? 'PC' : 'MO';
+      byDevice[dev].imp += parseInt(cols[11]) || 0;
+      byDevice[dev].clk += parseInt(cols[12]) || 0;
+      byDevice[dev].cost += parseInt(cols[13]) || 0;
+    }
+
+    for (const { cols } of convRows) {
+      if (cols.length < 15) continue;
+      const convType = cols[12];
+      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const dev = cols[10] === 'P' ? 'PC' : 'MO';
+      byDevice[dev].purchaseCnt += parseInt(cols[13]) || 0;
+      byDevice[dev].purchaseAmt += parseInt(cols[14]) || 0;
+    }
+
+    const enrich = obj => ({
+      ...obj,
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
+      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
+    });
+
+    res.json({ ok: true, pc: enrich(byDevice.PC), mobile: enrich(byDevice.MO) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 탭 데이터 (그룹별) ────────────────────────────────────────
+router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    const { agMap, campMap } = await getNameMaps(client, account.id);
+
+    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
+    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+
+    const byAg = {};
+    for (const { cols } of adRows) {
+      if (cols.length < 14) continue;
+      const agId = cols[3];
+      const campId = cols[2];
+      if (!byAg[agId]) {
+        const info = agMap[agId] || {};
+        const camp = campMap[info.campaignId || campId] || {};
+        byAg[agId] = { adgroupId: agId, adgroupName: info.name || agId, campaignName: camp.name || campId, campaignTp: camp.tp || 0, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      }
+      byAg[agId].imp += parseInt(cols[11]) || 0;
+      byAg[agId].clk += parseInt(cols[12]) || 0;
+      byAg[agId].cost += parseInt(cols[13]) || 0;
+    }
+
+    for (const { cols } of convRows) {
+      if (cols.length < 15) continue;
+      const convType = cols[12];
+      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const agId = cols[3];
+      if (!byAg[agId]) continue;
+      byAg[agId].purchaseCnt += parseInt(cols[13]) || 0;
+      byAg[agId].purchaseAmt += parseInt(cols[14]) || 0;
+    }
+
+    const enrich = obj => ({
+      ...obj,
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
+      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
+    });
+
+    const adgroups = Object.values(byAg).map(enrich).sort((a, b) => {
+      const cmp = (a.campaignName || '').localeCompare(b.campaignName || '');
+      if (cmp !== 0) return cmp;
+      return (a.adgroupName || '').localeCompare(b.adgroupName || '');
+    });
+    res.json({ ok: true, adgroups });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1551,11 +2254,27 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       <div class="card-header"><span class="card-title">⏰ 자동 발송 스케줄</span></div>
       <div class="card-body">
         <table>
-          <thead><tr><th>리포트</th><th>스케줄</th><th>시각</th><th>광고주별 설정</th></tr></thead>
+          <thead><tr><th>리포트</th><th>발송 시각</th><th>광고주별 설정</th><th>최근 발송</th></tr></thead>
           <tbody>
-            <tr><td>일간</td><td><code>0 9 * * *</code></td><td>매일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
-            <tr><td>주간</td><td><code>0 9 * * 1</code></td><td>매주 월요일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
-            <tr><td>월간</td><td><code>0 9 1 * *</code></td><td>매월 1일 09:00 KST</td><td>광고주 설정에서 ON/OFF</td></tr>
+            ${['daily','weekly','monthly'].map(t => {
+              const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
+              const time = {daily:'매일 09:00 KST',weekly:'매주 월요일 09:00 KST',monthly:'매월 1일 09:00 KST'}[t];
+              const col = 'last_' + t + '_report';
+              const lastDates = accounts.filter(a => a[col]).map(a => {
+                const d = new Date(a[col]);
+                return a.name + ' ' + d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+              });
+              const lastStr = lastDates.length > 0 ? lastDates.join('<br>') : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              return `<tr>
+                <td><strong>${label}</strong></td>
+                <td>${time}</td>
+                <td style="display:flex;align-items:center;gap:8px">
+                  광고주 설정에서 ON/OFF
+                  <a href="/smart-sa/accounts" class="btn btn-outline" style="font-size:11px;padding:2px 8px">설정 바로가기</a>
+                </td>
+                <td style="font-size:12px">${lastStr}</td>
+              </tr>`;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -1619,7 +2338,11 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 
   // account에 API 자격증명 병합
   const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
-  generateAndSend(enriched, type).catch(console.error);
+  generateAndSend(enriched, type).then(ok => {
+    if (ok) {
+      db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+    }
+  }).catch(console.error);
   res.json({ ok: true });
 });
 
@@ -1640,7 +2363,10 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       const accounts = await db.getAllAccountsWithFeature(`${type}_report`);
       let sent = 0;
       for (const account of accounts) {
-        await generateAndSend(account, type).catch(console.error);
+        const ok = await generateAndSend(account, type).catch(() => false);
+        if (ok) {
+          await db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+        }
         sent++;
       }
       console.log(`✅ Vercel Cron [${type}]: ${sent}개 계정 처리`);
