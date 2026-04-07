@@ -1697,15 +1697,19 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const client = makeClient(creds, account.customer_id);
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
-    // Stats API로 기본 지표 (빠름)
-    const stats = await client.getStats({
-      startDate: dateRange.since,
-      endDate: dateRange.until,
-    }).catch(() => ({ impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 }));
+    // Stats API + 전환 데이터 + AD_DETAIL 을 병렬로 fetch (속도 향상)
+    const [statsResult, convResult, adResult] = await Promise.allSettled([
+      client.getStats({ startDate: dateRange.since, endDate: dateRange.until }),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange), // 탭 전환 시 캐시 활용
+    ]);
 
-    // 구매완료 전환 데이터 (캐시+병렬 fetch)
-    try {
-      const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+    const stats = statsResult.status === 'fulfilled' ? statsResult.value
+      : { impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 };
+
+    // 구매완료 전환 데이터 병합
+    if (convResult.status === 'fulfilled') {
+      const convRows = convResult.value;
       let purchaseAmt = 0, purchaseCnt = 0;
       const byCampaign = {};
       for (const { cols } of convRows) {
@@ -1732,8 +1736,6 @@ router.get('/api/stats', requireLogin, async (req, res) => {
           cs.purchaseCnt = p.cnt;
         }
       }
-    } catch (e) {
-      console.log('구매완료 전환 조회 실패:', e.message);
     }
 
     res.json({ ok: true, stats });
@@ -1820,9 +1822,9 @@ function resolvePeriodDates(period, startDate, endDate) {
 async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const allRows = [];
-  // 동시 3개씩 병렬 다운로드
-  for (let i = 0; i < dates.length; i += 3) {
-    const batch = dates.slice(i, i + 3);
+  // 동시 5개씩 병렬 다운로드
+  for (let i = 0; i < dates.length; i += 5) {
+    const batch = dates.slice(i, i + 5);
     const results = await Promise.allSettled(
       batch.map(dt => cachedStatReport(client, customerId, reportTp, dt).then(rows => rows.map(r => ({ date: dt, cols: r }))))
     );

@@ -175,38 +175,43 @@ function createApiClient(creds) {
       let campCount = 0;
       const campStats = [];
 
-      for (const camp of (campaigns || [])) {
-        try {
-          const result = await apiCall('GET', '/stats', {
+      // 모든 캠페인 Stats API 병렬 호출 (속도 향상)
+      const statsResults = await Promise.allSettled(
+        (campaigns || []).map(camp =>
+          apiCall('GET', '/stats', {
             id: camp.nccCampaignId,
             fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto']),
             timeRange: JSON.stringify(dateRange),
-          });
-          if (result?.data?.length > 0) {
-            // 다일 조회 시 data 배열에 날짜별 항목이 들어옴 → 전체 합산
-            const campTotal = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0 };
-            let campRankCount = 0;
-            for (const d of result.data) {
-              campTotal.impCnt += d.impCnt || 0;
-              campTotal.clkCnt += d.clkCnt || 0;
-              campTotal.salesAmt += d.salesAmt || 0;
-              campTotal.convAmt += d.convAmt || 0;
-              campTotal.ccnt += d.ccnt || 0;
-              if (d.avgRnk > 0) { campTotal.avgRnk += d.avgRnk; campRankCount++; }
-            }
-            if (campRankCount > 0) campTotal.avgRnk = campTotal.avgRnk / campRankCount;
-            campTotal.cpc = campTotal.clkCnt > 0 ? Math.round(campTotal.salesAmt / campTotal.clkCnt) : 0;
+          }).then(result => ({ camp, result }))
+        )
+      );
 
-            totals.impCnt += campTotal.impCnt;
-            totals.clkCnt += campTotal.clkCnt;
-            totals.salesAmt += campTotal.salesAmt;
-            totals.convAmt += campTotal.convAmt;
-            totals.ccnt += campTotal.ccnt;
-            totals.avgRnk += campTotal.avgRnk;
-            campCount++;
-            campStats.push({ name: camp.name, id: camp.nccCampaignId, ...campTotal });
+      for (const sr of statsResults) {
+        if (sr.status !== 'fulfilled') continue;
+        const { camp, result } = sr.value;
+        if (result?.data?.length > 0) {
+          const campTotal = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0 };
+          let campRankCount = 0;
+          for (const d of result.data) {
+            campTotal.impCnt += d.impCnt || 0;
+            campTotal.clkCnt += d.clkCnt || 0;
+            campTotal.salesAmt += d.salesAmt || 0;
+            campTotal.convAmt += d.convAmt || 0;
+            campTotal.ccnt += d.ccnt || 0;
+            if (d.avgRnk > 0) { campTotal.avgRnk += d.avgRnk; campRankCount++; }
           }
-        } catch (e) { /* 개별 캠페인 오류 무시 */ }
+          if (campRankCount > 0) campTotal.avgRnk = campTotal.avgRnk / campRankCount;
+          campTotal.cpc = campTotal.clkCnt > 0 ? Math.round(campTotal.salesAmt / campTotal.clkCnt) : 0;
+
+          totals.impCnt += campTotal.impCnt;
+          totals.clkCnt += campTotal.clkCnt;
+          totals.salesAmt += campTotal.salesAmt;
+          totals.convAmt += campTotal.convAmt;
+          totals.ccnt += campTotal.ccnt;
+          totals.avgRnk += campTotal.avgRnk;
+          campCount++;
+          campStats.push({ name: camp.name, id: camp.nccCampaignId, ...campTotal });
+        }
       }
 
       if (campCount > 0) totals.avgRnk = totals.avgRnk / campCount;
