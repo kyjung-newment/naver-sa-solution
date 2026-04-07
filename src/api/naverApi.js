@@ -323,6 +323,24 @@ function createApiClient(creds) {
         bids,
       }),
 
+    // ─── 광고 노출 진단 (실시간 순위) ──────────────────────────────────
+    getImpressionPreviewPowerLink: (keyword, device, regionalCode = '09140103') => {
+      const channelAlias = device === 'MO'
+        ? 'naver.search.mo.plsearch'
+        : 'naver.search.pc.plsearch';
+      return apiCall('GET', '/ncc/impression-preview/power-link', {
+        keyword,
+        channelAlias,
+        regionalCode,
+      });
+    },
+
+    getImpressionStatus: (keyword, nccKeywordId) =>
+      apiCall('GET', '/ncc/impression-preview/impression-status', {
+        keyword,
+        nccKeywordId,
+      }),
+
     // ─── 네이버 마스터 동기화 API ────────────────────────────────────
     createMasterReport: (item) =>
       apiCall('POST', '/master-reports', {}, { item }),

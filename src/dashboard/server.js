@@ -2229,6 +2229,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         </select>
         <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
         <button class="btn btn-outline btn-sm" onclick="debugRank()" id="debug-btn" style="font-size:11px">🔧 API 테스트</button>
+        <button class="btn btn-outline btn-sm" onclick="testRealRank()" id="realrank-btn" style="font-size:11px">📡 실시간순위 테스트</button>
         <button class="btn btn-primary" onclick="openModal()">+ 키워드 추가</button>
       </div>
     </div>
@@ -2487,6 +2488,26 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       }catch(e){toast('디버그 오류: '+e.message,true);}
     }
 
+    async function testRealRank(){
+      try{
+        const r=await fetch('/smart-sa/api/autobid/list?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok||!j.keywords.length){toast('키워드 없음',true);return;}
+        const kw=j.keywords[0];
+        const btn=document.getElementById('realrank-btn');
+        btn.disabled=true;btn.textContent='조회 중...';
+        const r2=await fetch('/smart-sa/api/autobid/test-realrank',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId,keyword:kw.keyword,device:kw.device,nccKeywordId:kw.keyword_id})});
+        const j2=await r2.json();
+        btn.disabled=false;btn.textContent='📡 실시간순위 테스트';
+        let modal=document.getElementById('debug-modal');
+        if(modal) modal.remove();
+        modal=document.createElement('div');modal.id='debug-modal';modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+        modal.innerHTML='<div style="background:#fff;border-radius:12px;width:90%;max-width:800px;max-height:80vh;overflow:auto;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">실시간 순위 테스트 ('+kw.keyword+' / '+kw.device+')</h3><button onclick="this.closest(\\'#debug-modal\\').remove()" style="background:none;border:none;font-size:20px;cursor:pointer">&times;</button></div><pre id="debug-content" style="font-size:11px;white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:8px;max-height:60vh;overflow:auto"></pre></div>';
+        document.body.appendChild(modal);
+        document.getElementById('debug-content').textContent=JSON.stringify(j2,null,2);
+      }catch(e){toast('실시간 순위 오류: '+e.message,true);}
+    }
+
     async function toggleEnable(id,enabled){
       await fetch('/smart-sa/api/autobid/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId,enabled})});
     }
@@ -2693,6 +2714,44 @@ router.post('/api/autobid/debug-rank', requireLogin, async (req, res) => {
     } catch (e) { results.performanceEstimate = { error: e.message }; }
 
     res.json({ ok: true, kwId, device, results });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 실시간 순위 조회 테스트 (power-link API)
+router.post('/api/autobid/test-realrank', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const keyword = req.body.keyword || '일본포스터';
+    const device = req.body.device || 'PC';
+    const results = {};
+
+    // 1. impression-preview/power-link 테스트
+    try {
+      const powerLink = await client.getImpressionPreviewPowerLink(keyword, device);
+      results.powerLink = powerLink;
+    } catch (e) {
+      results.powerLink = { error: e.message, status: e.statusCode };
+    }
+
+    // 2. impression-status 테스트
+    try {
+      const nccKeywordId = req.body.nccKeywordId;
+      if (nccKeywordId) {
+        const status = await client.getImpressionStatus(keyword, nccKeywordId);
+        results.impressionStatus = status;
+      }
+    } catch (e) {
+      results.impressionStatus = { error: e.message, status: e.statusCode };
+    }
+
+    res.json({ ok: true, keyword, device, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
