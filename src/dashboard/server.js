@@ -2452,8 +2452,9 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           return '<span class="badge badge-red">미달</span>';
         };
 
-        const realRankBadge=(r)=>{
-          if(!r||r<=0) return '<span style="color:#cbd5e1">-</span>';
+        const realRankBadge=(r, lastRun)=>{
+          if(!lastRun) return '<span style="color:#cbd5e1">-</span>';
+          if(!r||r<=0) return '<span class="badge badge-red">순위밖</span>';
           if(r<=3) return '<span class="badge badge-green">'+r+'위</span>';
           if(r<=7) return '<span class="badge badge-blue">'+r+'위</span>';
           return '<span class="badge badge-gray">'+r+'위</span>';
@@ -2467,7 +2468,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="font-size:12px;color:#64748b">'+k.campaign_name+'<br>'+k.adgroup_name+'</td>'
             +'<td style="text-align:center"><span class="badge '+(k.device==='PC'?'badge-blue':'badge-green')+'">'+k.device+'</span></td>'
             +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
-            +'<td style="text-align:center">'+realRankBadge(k.last_real_rank)+'</td>'
+            +'<td style="text-align:center">'+realRankBadge(k.last_real_rank, k.last_run)+'</td>'
             +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="text-align:right">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="text-align:center">'+rankBadge(k.last_rank,k.last_bid)+'</td>'
