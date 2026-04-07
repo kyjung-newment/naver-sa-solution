@@ -1099,6 +1099,23 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
     if (!customerId) return res.status(400).json({ ok: false, error: 'Customer ID 필요' });
     const id = await db.addSelectedAccount(req.session.userId, String(customerId), name || String(customerId));
     res.json({ ok: true, id });
+
+    // 백그라운드: 전일 성과 데이터 즉시 동기화
+    (async () => {
+      try {
+        const creds = await db.getApiCredentials(req.session.userId);
+        if (!creds) return;
+        const account = await db.getAccountById(id, req.session.userId);
+        if (!account) return;
+        const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+        const now = new Date();
+        const yesterday = new Date(now.getTime() + 9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        await syncAccountDate(enriched, yesterday);
+        console.log(`✅ [${name}] 신규 광고주 전일 데이터 즉시 동기화 완료`);
+      } catch (e) {
+        console.error(`⚠️ [${name}] 신규 광고주 즉시 동기화 실패:`, e.message);
+      }
+    })();
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2512,6 +2529,31 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     await db.upsertAutoBidKeyword(account.id, req.body);
     res.json({ ok: true });
+
+    // 백그라운드: 저장된 키워드 순위 즉시 조회
+    (async () => {
+      try {
+        const creds = await db.getApiCredentials(req.session.userId);
+        if (!creds) return;
+        const client = makeClient(creds, account.customer_id);
+        const kwId = req.body.keyword_id;
+        const device = req.body.device;
+
+        let currentBid = 0;
+        try {
+          const kwInfo = await client.getKeywordInfo(kwId);
+          currentBid = kwInfo?.bidAmt || 0;
+        } catch (e) { /* fallback */ }
+
+        const sim = await client.getBidSimulation(kwId);
+        const rank = sim?.avgRnk || 0;
+
+        await db.updateAutoBidKeywordStatus(kwId, device, rank, currentBid);
+        console.log(`✅ [${req.body.keyword}] ${device} 순위 즉시 조회: ${rank > 0 ? rank.toFixed(1) + '위' : '-'}, 입찰가: ${currentBid}원`);
+      } catch (e) {
+        console.error(`⚠️ [${req.body.keyword}] 순위 즉시 조회 실패:`, e.message);
+      }
+    })();
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2789,7 +2831,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 });
 
 // ─── 대시보드 데이터 동기화 Cron ──────────────────────────────────────
-const { runDashboardSync, runBackfill } = require('../sync/dashboardSync');
+const { syncAccountDate, runDashboardSync, runBackfill } = require('../sync/dashboardSync');
 
 // 30분마다 실행: 어제+오늘 데이터 동기화
 router.get('/api/cron/sync-dashboard', async (req, res) => {
