@@ -82,9 +82,15 @@ async function adjustBidForKeyword(client, abKw) {
       currentBid = kwInfo?.bidAmt || currentBid;
     } catch (e) { /* fallback */ }
 
-    // 순위 시뮬레이션
+    // 순위 시뮬레이션 - 배열 응답 처리
     const simulation = await client.getBidSimulation(keyword_id);
-    const currentRank = simulation?.avgRnk || 999;
+    let currentRank = 999;
+    if (Array.isArray(simulation)) {
+      const match = simulation.find(s => s.bidAmt === currentBid) || simulation[0];
+      currentRank = match?.avgRnk || match?.avgPosition || 999;
+    } else if (simulation) {
+      currentRank = simulation.avgRnk || simulation.avgPosition || 999;
+    }
 
     let newBid = currentBid;
 

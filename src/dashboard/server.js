@@ -2400,8 +2400,11 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         const r=await fetch('/smart-sa/api/autobid/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const j=await r.json();
         if(!j.ok) throw new Error(j.error);
-        toast(editMode?'설정 수정 완료':'키워드 저장 완료');
+        toast(editMode?'설정 수정 완료':'키워드 저장 완료 (순위 조회 중...)');
         closeModal(); loadList();
+        // 백그라운드 순위 조회 완료 후 자동 새로고침
+        setTimeout(()=>loadList(), 3000);
+        setTimeout(()=>loadList(), 6000);
       }catch(e){toast('오류: '+e.message,true);}
     }
 
@@ -2546,7 +2549,15 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
         } catch (e) { /* fallback */ }
 
         const sim = await client.getBidSimulation(kwId);
-        const rank = sim?.avgRnk || 0;
+        console.log(`📊 [${req.body.keyword}] save sim 응답:`, JSON.stringify(sim).slice(0, 300));
+
+        let rank = 0;
+        if (Array.isArray(sim)) {
+          const match = sim.find(s => s.bidAmt === currentBid) || sim[0];
+          rank = match?.avgRnk || match?.avgPosition || 0;
+        } else if (sim) {
+          rank = sim.avgRnk || sim.avgPosition || 0;
+        }
 
         await db.updateAutoBidKeywordStatus(kwId, device, rank, currentBid);
         console.log(`✅ [${req.body.keyword}] ${device} 순위 즉시 조회: ${rank > 0 ? rank.toFixed(1) + '위' : '-'}, 입찰가: ${currentBid}원`);
@@ -2596,6 +2607,7 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
     const abKeywords = await db.getAutoBidKeywords(account.id);
 
     let checked = 0;
+    const details = [];
     for (const abKw of abKeywords) {
       try {
         // 현재 입찰가 조회
@@ -2603,20 +2615,33 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
         try {
           const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
           currentBid = kwInfo?.bidAmt || currentBid;
-        } catch (e) { /* fallback to last_bid */ }
+        } catch (e) {
+          console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
+        }
 
-        // 순위 시뮬레이션
+        // 순위 시뮬레이션 - 배열 응답 처리
         const sim = await client.getBidSimulation(abKw.keyword_id);
-        const rank = sim?.avgRnk || 0;
+        console.log(`  📊 [${abKw.keyword}] sim 응답:`, JSON.stringify(sim).slice(0, 300));
+
+        let rank = 0;
+        if (Array.isArray(sim)) {
+          // 배열인 경우 현재 입찰가에 해당하는 항목 또는 첫 번째 항목
+          const match = sim.find(s => s.bidAmt === currentBid) || sim[0];
+          rank = match?.avgRnk || match?.avgPosition || 0;
+        } else if (sim) {
+          rank = sim.avgRnk || sim.avgPosition || 0;
+        }
 
         await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, rank, currentBid);
+        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid });
         checked++;
-        await new Promise(r => setTimeout(r, 150)); // rate limit
+        await new Promise(r => setTimeout(r, 150));
       } catch (e) {
         console.log(`순위 조회 실패 [${abKw.keyword}]:`, e.message);
+        details.push({ keyword: abKw.keyword, device: abKw.device, error: e.message });
       }
     }
-    res.json({ ok: true, checked });
+    res.json({ ok: true, checked, details });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
