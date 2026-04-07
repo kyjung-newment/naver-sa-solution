@@ -2327,7 +2327,8 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         <select id="ab-account" style="width:200px" onchange="location.href='/smart-sa/autobid?accountId='+this.value">
           ${accounts.map(a => `<option value="${a.id}" ${a.id==selectedId?'selected':''}>${a.name}</option>`).join('')}
         </select>
-        <button class="btn btn-primary" onclick="openAddModal()">+ 키워드 추가</button>
+        <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
+        <button class="btn btn-primary" onclick="openModal()">+ 키워드 추가</button>
       </div>
     </div>
 
@@ -2340,15 +2341,15 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       <div id="ab-list"><div class="empty"><span class="spinner"></span> 로딩 중...</div></div>
     </div>
 
-    <!-- 키워드 추가 모달 -->
-    <div id="add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;display:none;align-items:center;justify-content:center">
+    <!-- 키워드 추가/수정 모달 -->
+    <div id="kw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center">
       <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;padding:24px;margin:16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <h3 style="margin:0;font-size:16px">키워드 추가</h3>
-          <button onclick="closeAddModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
+          <h3 id="modal-title" style="margin:0;font-size:16px">키워드 추가</h3>
+          <button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
         </div>
 
-        <div style="margin-bottom:16px">
+        <div id="kw-picker" style="margin-bottom:16px">
           <button class="btn" onclick="loadKeywordList()" id="load-kw-btn" style="width:100%">📋 광고주 키워드 목록 불러오기</button>
           <div id="kw-search-wrap" style="display:none;margin-top:10px">
             <input id="kw-search" placeholder="키워드 검색..." style="width:100%;margin-bottom:8px" oninput="filterKwList()">
@@ -2356,62 +2357,92 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           </div>
         </div>
 
-        <div class="form-group"><label>키워드</label><input id="add-keyword" readonly style="background:#f8fafc"></div>
-        <input type="hidden" id="add-kwid">
+        <div class="form-group"><label>키워드</label><input id="f-keyword" readonly style="background:#f8fafc"></div>
+        <input type="hidden" id="f-kwid"><input type="hidden" id="f-edit-id">
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="form-group"><label>지면</label>
-            <select id="add-device"><option value="PC">PC</option><option value="MO" selected>MOBILE</option></select>
+            <select id="f-device"><option value="PC">PC</option><option value="MO" selected>MOBILE</option></select>
           </div>
-          <div class="form-group"><label>희망순위</label><input id="add-rank" type="number" value="3" min="1" max="15"></div>
-          <div class="form-group"><label>최대입찰가 (원)</label><input id="add-maxbid" type="number" value="5000" step="100"></div>
-          <div class="form-group"><label>조정입찰가 (원)</label><input id="add-adjust" type="number" value="100" step="10"></div>
+          <div class="form-group"><label>희망순위</label><input id="f-rank" type="number" value="3" min="1" max="15"></div>
+          <div class="form-group"><label>최대입찰가 (원)</label><input id="f-maxbid" type="number" value="5000" step="100"></div>
+          <div class="form-group"><label>조정입찰가 (원)</label><input id="f-adjust" type="number" value="100" step="10"></div>
         </div>
 
         <div class="form-group">
           <label>실행 시간대 <span style="font-size:11px;color:#94a3b8">(클릭하여 ON/OFF)</span></label>
-          <div id="add-schedule" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:4px">
-            ${Array.from({length:24},(_,h)=>`<div class="hour-btn on" data-h="${h}" onclick="toggleHour(this)" style="text-align:center;padding:6px 0;font-size:11px;border-radius:4px;cursor:pointer;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;user-select:none">${h}시</div>`).join('')}
+          <div id="f-schedule" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:4px">
+            ${Array.from({length:24},(_,h)=>`<div class="hour-btn on" data-h="${h}" onclick="toggleHour(this)" style="text-align:center;padding:6px 0;font-size:11px;border-radius:4px;cursor:pointer;user-select:none">${h}시</div>`).join('')}
           </div>
         </div>
 
         <div style="display:flex;gap:8px;margin-top:16px">
-          <button class="btn btn-primary" onclick="saveKeyword()" style="flex:1">저장</button>
-          <button class="btn" onclick="closeAddModal()" style="flex:1">취소</button>
+          <button class="btn btn-primary" onclick="saveKeyword()" style="flex:1" id="modal-save-btn">저장</button>
+          <button class="btn" onclick="closeModal()" style="flex:1">취소</button>
         </div>
       </div>
     </div>
 
     <style>
-      .hour-btn.on{background:#dcfce7!important;color:#166534!important;border-color:#bbf7d0!important}
-      .hour-btn.off{background:#f1f5f9!important;color:#94a3b8!important;border-color:#e2e8f0!important}
-      #add-modal[style*="flex"]{display:flex!important}
+      .hour-btn.on{background:#dcfce7;color:#166534;border:1px solid #bbf7d0}
+      .hour-btn.off{background:#f1f5f9;color:#94a3b8;border:1px solid #e2e8f0}
+      #kw-modal[style*="flex"]{display:flex!important}
     </style>
 
     <script>
     let allKwList = [];
     const accountId = '${selectedId}';
+    let editMode = false;
 
-    // 모달
-    function openAddModal(){ document.getElementById('add-modal').style.display='flex'; }
-    function closeAddModal(){ document.getElementById('add-modal').style.display='none'; resetForm(); }
+    // ─── 모달 열기/닫기 ─────────────────────────────────────────
+    function openModal(editData){
+      editMode = !!editData;
+      document.getElementById('modal-title').textContent = editMode ? '키워드 설정 수정' : '키워드 추가';
+      document.getElementById('modal-save-btn').textContent = editMode ? '수정' : '저장';
+      document.getElementById('kw-picker').style.display = editMode ? 'none' : 'block';
+
+      if (editData) {
+        document.getElementById('f-kwid').value = editData.keyword_id;
+        document.getElementById('f-keyword').value = editData.keyword;
+        document.getElementById('f-keyword').dataset.camp = editData.campaign_name;
+        document.getElementById('f-keyword').dataset.ag = editData.adgroup_name;
+        document.getElementById('f-device').value = editData.device;
+        document.getElementById('f-rank').value = editData.target_rank;
+        document.getElementById('f-maxbid').value = editData.max_bid;
+        document.getElementById('f-adjust').value = editData.adjust_amt;
+        document.getElementById('f-edit-id').value = editData.id;
+        // 지면 변경 불가 (수정 모드)
+        document.getElementById('f-device').disabled = true;
+        // 시간대
+        const sch = editData.schedule || '111111111111111111111111';
+        document.querySelectorAll('#f-schedule .hour-btn').forEach((b,i) => {
+          b.classList.toggle('on', sch[i]==='1');
+          b.classList.toggle('off', sch[i]!=='1');
+        });
+      } else {
+        resetForm();
+        document.getElementById('f-device').disabled = false;
+      }
+      document.getElementById('kw-modal').style.display = 'flex';
+    }
+
+    function closeModal(){ document.getElementById('kw-modal').style.display='none'; resetForm(); }
 
     function resetForm(){
-      document.getElementById('add-keyword').value='';
-      document.getElementById('add-kwid').value='';
-      document.getElementById('add-rank').value='3';
-      document.getElementById('add-maxbid').value='5000';
-      document.getElementById('add-adjust').value='100';
-      document.getElementById('add-device').value='MO';
-      document.querySelectorAll('#add-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
+      document.getElementById('f-keyword').value='';
+      document.getElementById('f-kwid').value='';
+      document.getElementById('f-edit-id').value='';
+      document.getElementById('f-rank').value='3';
+      document.getElementById('f-maxbid').value='5000';
+      document.getElementById('f-adjust').value='100';
+      document.getElementById('f-device').value='MO';
+      document.getElementById('f-device').disabled=false;
+      document.querySelectorAll('#f-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
     }
 
-    function toggleHour(el){
-      el.classList.toggle('on');
-      el.classList.toggle('off');
-    }
+    function toggleHour(el){ el.classList.toggle('on'); el.classList.toggle('off'); }
 
-    // 키워드 목록 불러오기
+    // ─── 키워드 목록 불러오기 ───────────────────────────────────
     async function loadKeywordList(){
       const btn=document.getElementById('load-kw-btn');
       btn.disabled=true; btn.textContent='불러오는 중...';
@@ -2438,38 +2469,52 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
     }
 
     function pickKw(el){
-      document.getElementById('add-kwid').value=el.dataset.id;
-      document.getElementById('add-keyword').value=el.dataset.kw;
-      document.getElementById('add-keyword').dataset.camp=el.dataset.camp;
-      document.getElementById('add-keyword').dataset.ag=el.dataset.ag;
+      document.getElementById('f-kwid').value=el.dataset.id;
+      document.getElementById('f-keyword').value=el.dataset.kw;
+      document.getElementById('f-keyword').dataset.camp=el.dataset.camp;
+      document.getElementById('f-keyword').dataset.ag=el.dataset.ag;
     }
 
-    // 저장
+    // ─── 저장 (추가/수정 공용) ──────────────────────────────────
     async function saveKeyword(){
-      const kwId=document.getElementById('add-kwid').value;
+      const kwId=document.getElementById('f-kwid').value;
       if(!kwId) return toast('키워드를 선택해주세요.',true);
-      const hours=Array.from(document.querySelectorAll('#add-schedule .hour-btn')).map(b=>b.classList.contains('on')?'1':'0').join('');
+      const hours=Array.from(document.querySelectorAll('#f-schedule .hour-btn')).map(b=>b.classList.contains('on')?'1':'0').join('');
       const body={
         accountId, keyword_id:kwId,
-        keyword:document.getElementById('add-keyword').value,
-        campaign_name:document.getElementById('add-keyword').dataset.camp||'',
-        adgroup_name:document.getElementById('add-keyword').dataset.ag||'',
-        device:document.getElementById('add-device').value,
-        target_rank:parseInt(document.getElementById('add-rank').value)||3,
-        max_bid:parseInt(document.getElementById('add-maxbid').value)||5000,
-        adjust_amt:parseInt(document.getElementById('add-adjust').value)||100,
+        keyword:document.getElementById('f-keyword').value,
+        campaign_name:document.getElementById('f-keyword').dataset.camp||'',
+        adgroup_name:document.getElementById('f-keyword').dataset.ag||'',
+        device:document.getElementById('f-device').value,
+        target_rank:parseInt(document.getElementById('f-rank').value)||3,
+        max_bid:parseInt(document.getElementById('f-maxbid').value)||5000,
+        adjust_amt:parseInt(document.getElementById('f-adjust').value)||100,
         schedule:hours, enabled:true,
       };
       try{
         const r=await fetch('/smart-sa/api/autobid/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const j=await r.json();
         if(!j.ok) throw new Error(j.error);
-        toast('키워드 저장 완료');
-        closeAddModal(); loadList();
+        toast(editMode?'설정 수정 완료':'키워드 저장 완료');
+        closeModal(); loadList();
       }catch(e){toast('오류: '+e.message,true);}
     }
 
-    // 목록 로드
+    // ─── 순위 일괄 조회 ─────────────────────────────────────────
+    async function checkRanks(){
+      const btn=document.getElementById('rank-btn');
+      btn.disabled=true; btn.textContent='조회 중...';
+      try{
+        const r=await fetch('/smart-sa/api/autobid/check-ranks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId})});
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        toast(j.checked+'개 키워드 순위 조회 완료');
+        loadList();
+      }catch(e){toast('오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='📊 순위 조회';}
+    }
+
+    // ─── 목록 로드 ──────────────────────────────────────────────
     async function loadList(){
       try{
         const r=await fetch('/smart-sa/api/autobid/list?accountId='+accountId);
@@ -2481,21 +2526,31 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
 
         const scheduleHtml=(sch)=>Array.from({length:24},(_,h)=>'<span style="display:inline-block;width:14px;height:14px;border-radius:2px;font-size:8px;line-height:14px;text-align:center;margin:0 1px;background:'+(sch[h]==='1'?'#dcfce7':'#f1f5f9')+';color:'+(sch[h]==='1'?'#166534':'#cbd5e1')+'">'+h+'</span>').join('');
 
-        document.getElementById('ab-list').innerHTML='<table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">현재순위</th><th style="text-align:center">현재입찰가</th><th>실행시간</th><th style="text-align:center">상태</th><th></th></tr></thead><tbody>'
-          +kws.map(k=>'<tr>'
+        const rankBadge=(rank,target)=>{
+          if(!rank||rank<=0) return '<span style="color:#cbd5e1">-</span>';
+          const v=Number(rank).toFixed(1)+'위';
+          if(rank<=target) return '<span style="color:#16a34a;font-weight:600">'+v+'</span>';
+          return '<span style="color:#dc2626;font-weight:600">'+v+'</span>';
+        };
+
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+          +kws.map(k=>{
+            const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
+            return '<tr>'
             +'<td><strong>'+k.keyword+'</strong></td>'
             +'<td style="font-size:12px;color:#64748b">'+k.campaign_name+'<br>'+k.adgroup_name+'</td>'
             +'<td style="text-align:center"><span class="badge '+(k.device==='PC'?'badge-blue':'badge-green')+'">'+k.device+'</span></td>'
             +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:right">₩'+Number(k.adjust_amt).toLocaleString()+'</td>'
-            +'<td style="text-align:center">'+(k.last_rank>0?Number(k.last_rank).toFixed(1)+'위':'<span style="color:#cbd5e1">-</span>')+'</td>'
-            +'<td style="text-align:center">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:center">'+rankBadge(k.last_rank,k.target_rank)+'</td>'
+            +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
             +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
-            +'<td><button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
-            +'</tr>').join('')
-          +'</tbody></table>';
+            +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
+            +'</tr>';
+          }).join('')
+          +'</tbody></table></div>';
       }catch(e){document.getElementById('ab-list').innerHTML='<div class="empty">'+e.message+'</div>';}
     }
 
@@ -2593,6 +2648,44 @@ router.post('/api/autobid/delete', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     await db.deleteAutoBidKeyword(req.body.id, account.id);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 순위 일괄 조회
+router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const abKeywords = await db.getAutoBidKeywords(account.id);
+
+    let checked = 0;
+    for (const abKw of abKeywords) {
+      try {
+        // 현재 입찰가 조회
+        let currentBid = abKw.last_bid || 0;
+        try {
+          const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
+          currentBid = kwInfo?.bidAmt || currentBid;
+        } catch (e) { /* fallback to last_bid */ }
+
+        // 순위 시뮬레이션
+        const sim = await client.getBidSimulation(abKw.keyword_id);
+        const rank = sim?.avgRnk || 0;
+
+        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, rank, currentBid);
+        checked++;
+        await new Promise(r => setTimeout(r, 150)); // rate limit
+      } catch (e) {
+        console.log(`순위 조회 실패 [${abKw.keyword}]:`, e.message);
+      }
+    }
+    res.json({ ok: true, checked });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
