@@ -2584,8 +2584,13 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
 router.get('/reports', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
+  const selId = req.session.selectedAccountId || (accounts[0]?.id || '');
+  const selAccount = accounts.find(a => String(a.id) === String(selId)) || accounts[0] || {};
 
   const content = `
+    ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
+    <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${selAccount.name || ''}</strong></p>
+
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
@@ -2595,9 +2600,6 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
             <div style="font-size:32px;margin-bottom:12px">${{daily:'📅',weekly:'📆',monthly:'🗓'}[t]}</div>
             <h3 style="font-weight:600;margin-bottom:6px">${label} 리포트</h3>
             <p style="color:#64748b;font-size:12px;margin-bottom:16px">${desc}</p>
-            <select id="acc-${t}" style="margin-bottom:10px">
-              ${accounts.map(a=>`<option value="${a.id}" ${String(a.id) === String(req.session.selectedAccountId) ? 'selected' : ''}>${a.name}</option>`).join('')||'<option value="">광고주 없음</option>'}
-            </select>
             <div style="display:flex;gap:6px">
               <button class="btn btn-outline" style="flex:1;justify-content:center" onclick="previewReport('${t}')">미리보기</button>
               <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="triggerReport('${t}')">이메일 발송</button>
@@ -2610,39 +2612,56 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       <div class="card-header"><span class="card-title">⏰ 자동 발송 스케줄</span></div>
       <div class="card-body">
         <table>
-          <thead><tr><th>리포트</th><th>발송 시각</th><th>광고주별 설정</th><th>최근 발송</th></tr></thead>
+          <thead><tr><th>리포트</th><th>발송 시각</th><th>자동 발송</th><th>최근 발송</th></tr></thead>
           <tbody>
             ${['daily','weekly','monthly'].map(t => {
               const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
               const time = {daily:'매일 09:00 KST',weekly:'매주 월요일 09:00 KST',monthly:'매월 1일 09:00 KST'}[t];
+              const featKey = 'feat_' + t + '_report';
+              const isOn = !!selAccount[featKey];
               const col = 'last_' + t + '_report';
-              const lastDates = accounts.filter(a => a[col]).map(a => {
-                const d = new Date(a[col]);
-                return a.name + ' ' + d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
-              });
-              const lastStr = lastDates.length > 0 ? lastDates.join('<br>') : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              const lastDate = selAccount[col] ? (() => { const d = new Date(selAccount[col]); return d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}); })() : '<span style="color:#94a3b8">발송 내역 없음</span>';
               return `<tr>
                 <td><strong>${label}</strong></td>
                 <td>${time}</td>
-                <td style="display:flex;align-items:center;gap:8px">
-                  광고주 설정에서 ON/OFF
-                  <a href="/smart-sa/accounts/${req.session.selectedAccountId || (accounts[0]?.id || '')}/edit" class="btn btn-outline" style="font-size:11px;padding:2px 8px">설정 바로가기</a>
+                <td>
+                  <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+                    <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleReportFeat('${featKey}',this.checked)" style="width:16px;height:16px;accent-color:#03c75a">
+                    <span style="font-size:13px;color:${isOn ? '#16a34a' : '#94a3b8'}" id="label-${featKey}">${isOn ? 'ON' : 'OFF'}</span>
+                  </label>
                 </td>
-                <td style="font-size:12px">${lastStr}</td>
+                <td style="font-size:12px">${lastDate}</td>
               </tr>`;
             }).join('')}
           </tbody>
         </table>
       </div>
     </div>
+    `}
     <script>
+    const reportAccountId = '${selId}';
+
+    async function toggleReportFeat(feat, enabled) {
+      const label = document.getElementById('label-'+feat);
+      try {
+        const res = await fetch('/smart-sa/api/report/toggle-feat', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({accountId: reportAccountId, feat, enabled})
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        label.textContent = enabled ? 'ON' : 'OFF';
+        label.style.color = enabled ? '#16a34a' : '#94a3b8';
+        toast(enabled ? '자동 발송 활성화' : '자동 발송 비활성화');
+      } catch(e) { toast(e.message, true); }
+    }
+
     async function triggerReport(type) {
-      const id = document.getElementById('acc-'+type).value;
-      if (!id) return toast('광고주를 선택해주세요.', true);
+      if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
       try {
         const res = await fetch('/smart-sa/api/report/trigger', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({type, accountId: id})
+          body: JSON.stringify({type, accountId: reportAccountId})
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
@@ -2651,9 +2670,8 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     }
 
     function previewReport(type) {
-      const id = document.getElementById('acc-'+type).value;
-      if (!id) return toast('광고주를 선택해주세요.', true);
-      window.open('/smart-sa/api/report/preview?type='+type+'&accountId='+id, '_blank');
+      if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
+      window.open('/smart-sa/api/report/preview?type='+type+'&accountId='+reportAccountId, '_blank');
     }
     </script>
   `;
@@ -2679,6 +2697,22 @@ router.get('/api/report/preview', requireLogin, async (req, res) => {
     res.send(html);
   } catch (err) {
     res.status(500).send(`<h2>리포트 생성 오류</h2><pre>${err.message}</pre>`);
+  }
+});
+
+// 리포트 자동발송 ON/OFF 토글
+router.post('/api/report/toggle-feat', requireLogin, async (req, res) => {
+  try {
+    const { accountId, feat, enabled } = req.body;
+    const validFeats = ['feat_daily_report','feat_weekly_report','feat_monthly_report'];
+    if (!validFeats.includes(feat)) return res.status(400).json({ ok: false, error: '잘못된 기능' });
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    await db.pool.query(`UPDATE ad_accounts SET ${feat} = $1 WHERE id = $2 AND user_id = $3`,
+      [enabled ? 1 : 0, accountId, req.session.userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
