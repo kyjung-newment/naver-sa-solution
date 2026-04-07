@@ -2355,7 +2355,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   try {
     const ok = await generateAndSend(enriched, type);
     if (ok) {
-      await db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+      await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
     } else {
       res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. SMTP 설정을 확인해주세요.' });
@@ -2385,7 +2385,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       for (const account of accounts) {
         const ok = await generateAndSend(account, type).catch(() => false);
         if (ok) {
-          await db.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+          await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
         }
         sent++;
       }
