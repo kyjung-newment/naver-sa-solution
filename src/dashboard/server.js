@@ -2719,39 +2719,22 @@ router.post('/api/autobid/debug-rank', requireLogin, async (req, res) => {
   }
 });
 
-// 실시간 순위 조회 테스트 (power-link API)
+// 실시간 순위 조회 테스트 (검색결과 HTML 파싱)
 router.post('/api/autobid/test-realrank', requireLogin, async (req, res) => {
   try {
-    const account = await db.getAccountById(req.body.accountId, req.session.userId);
-    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
-    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
-
-    const client = makeClient(creds, account.customer_id);
     const keyword = req.body.keyword || '일본포스터';
     const device = req.body.device || 'PC';
-    const results = {};
 
-    // 1. impression-preview/power-link 테스트
-    try {
-      const powerLink = await client.getImpressionPreviewPowerLink(keyword, device);
-      results.powerLink = powerLink;
-    } catch (e) {
-      results.powerLink = { error: e.message, status: e.statusCode };
-    }
+    const { getPowerLinkAds } = require('../api/naverRankScraper');
+    const ads = await getPowerLinkAds(keyword, device);
 
-    // 2. impression-status 테스트
-    try {
-      const nccKeywordId = req.body.nccKeywordId;
-      if (nccKeywordId) {
-        const status = await client.getImpressionStatus(keyword, nccKeywordId);
-        results.impressionStatus = status;
-      }
-    } catch (e) {
-      results.impressionStatus = { error: e.message, status: e.statusCode };
-    }
-
-    res.json({ ok: true, keyword, device, results });
+    res.json({
+      ok: true,
+      keyword,
+      device,
+      totalAds: ads.length,
+      ads,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
