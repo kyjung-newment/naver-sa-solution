@@ -14,6 +14,14 @@
   ],
   "crons": [
     {
+      "path": "/smart-sa/api/cron/sync-dashboard",
+      "schedule": "5,35 * * * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/sync-backfill",
+      "schedule": "0 16 * * *"
+    },
+    {
       "path": "/smart-sa/api/cron/daily",
       "schedule": "0 23 * * *"
     },

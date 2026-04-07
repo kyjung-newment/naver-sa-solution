@@ -102,6 +102,68 @@ async function initDb() {
     )
   `);
 
+  // ─── 대시보드 데이터 동기화 테이블 ────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stat_daily_detail (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      stat_date DATE NOT NULL,
+      campaign_id TEXT NOT NULL DEFAULT '',
+      adgroup_id TEXT NOT NULL DEFAULT '',
+      keyword_id TEXT NOT NULL DEFAULT '',
+      ad_id TEXT NOT NULL DEFAULT '',
+      hour SMALLINT NOT NULL DEFAULT 0,
+      device TEXT NOT NULL DEFAULT '',
+      imp INTEGER DEFAULT 0,
+      clk INTEGER DEFAULT 0,
+      cost BIGINT DEFAULT 0,
+      rank_val REAL DEFAULT 0,
+      purchase_cnt INTEGER DEFAULT 0,
+      purchase_amt BIGINT DEFAULT 0,
+      cart_cnt INTEGER DEFAULT 0,
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stat_campaign_daily (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      stat_date DATE NOT NULL,
+      campaign_id TEXT NOT NULL,
+      campaign_name TEXT NOT NULL DEFAULT '',
+      imp INTEGER DEFAULT 0,
+      clk INTEGER DEFAULT 0,
+      sales_amt BIGINT DEFAULT 0,
+      avg_rnk REAL DEFAULT 0,
+      purchase_cnt INTEGER DEFAULT 0,
+      purchase_amt BIGINT DEFAULT 0,
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sync_log (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      sync_type TEXT NOT NULL,
+      stat_date DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_msg TEXT DEFAULT '',
+      started_at TIMESTAMP,
+      completed_at TIMESTAMP,
+      row_count INTEGER DEFAULT 0
+    )
+  `);
+
+  // 인덱스 생성 (이미 있으면 무시)
+  try {
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_detail_acct_date ON stat_daily_detail (account_id, stat_date)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_detail_campaign ON stat_daily_detail (account_id, stat_date, campaign_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_camp_daily ON stat_campaign_daily (account_id, stat_date)`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uix_sync_log ON sync_log (account_id, sync_type, stat_date)`);
+  } catch (e) { /* 이미 존재 */ }
+
   // ad_accounts에 동기화 상태 컬럼 추가
   try {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_status TEXT DEFAULT 'none'`);
@@ -112,6 +174,7 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_daily_report TIMESTAMP`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_weekly_report TIMESTAMP`);
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_dashboard_sync TIMESTAMP`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // users에 다우오피스 연동 컬럼 추가
@@ -399,8 +462,154 @@ async function buildKeywordMaps(accountId) {
   return { campMap, agMap, kwMap };
 }
 
+// ─── 대시보드 동기화 데이터 조회 ─────────────────────────────────────
+
+/** 해당 기간의 동기화 상태 확인 */
+async function isSynced(accountId, since, until) {
+  const dates = [];
+  const s = new Date(since), e = new Date(until);
+  for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) dates.push(d.toISOString().slice(0, 10));
+
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM sync_log
+     WHERE account_id = $1 AND sync_type = 'detail' AND status = 'done'
+     AND stat_date >= $2 AND stat_date <= $3`,
+    [accountId, since, until]
+  );
+  return result.rows[0].cnt >= dates.length;
+}
+
+/** 요약 탭: 캠페인별 Stats API 데이터 (정확한 salesAmt) */
+async function queryStatsSummary(accountId, since, until) {
+  const totals = await get(`
+    SELECT COALESCE(SUM(imp),0)::int AS "impCnt", COALESCE(SUM(clk),0)::int AS "clkCnt",
+           COALESCE(SUM(sales_amt),0)::bigint AS "salesAmt",
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_campaign_daily WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+  `, [accountId, since, until]);
+
+  const campaigns = await all(`
+    SELECT campaign_id AS id, campaign_name AS name,
+           COALESCE(SUM(imp),0)::int AS "impCnt", COALESCE(SUM(clk),0)::int AS "clkCnt",
+           COALESCE(SUM(sales_amt),0)::bigint AS "salesAmt",
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt",
+           CASE WHEN COUNT(NULLIF(avg_rnk,0)) > 0 THEN AVG(NULLIF(avg_rnk,0)) ELSE 0 END AS "avgRnk"
+    FROM stat_campaign_daily WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    GROUP BY campaign_id, campaign_name ORDER BY SUM(sales_amt) DESC
+  `, [accountId, since, until]);
+
+  // 계산 필드
+  const t = totals || { impCnt: 0, clkCnt: 0, salesAmt: 0, purchaseCnt: 0, purchaseAmt: 0 };
+  t.ctr = t.impCnt > 0 ? (t.clkCnt / t.impCnt * 100) : 0;
+  t.cpc = t.clkCnt > 0 ? Math.round(Number(t.salesAmt) / t.clkCnt) : 0;
+  t.roas = Number(t.salesAmt) > 0 ? Math.round(Number(t.purchaseAmt) / Number(t.salesAmt) * 100) : 0;
+  // avgRnk from campaigns
+  const rankedCamps = campaigns.filter(c => Number(c.avgRnk) > 0);
+  t.avgRnk = rankedCamps.length > 0 ? rankedCamps.reduce((s, c) => s + Number(c.avgRnk), 0) / rankedCamps.length : 0;
+
+  const campStats = campaigns.map(c => ({
+    ...c,
+    salesAmt: Number(c.salesAmt),
+    purchaseAmt: Number(c.purchaseAmt),
+    avgRnk: Number(c.avgRnk),
+    ctr: c.impCnt > 0 ? (c.clkCnt / c.impCnt * 100) : 0,
+    cpc: c.clkCnt > 0 ? Math.round(Number(c.salesAmt) / c.clkCnt) : 0,
+    convAmt: Number(c.purchaseAmt),
+    ccnt: c.purchaseCnt,
+  }));
+
+  return {
+    impCnt: t.impCnt, clkCnt: t.clkCnt, salesAmt: Number(t.salesAmt),
+    ctr: t.ctr, cpc: t.cpc, avgRnk: t.avgRnk,
+    purchaseAmt: Number(t.purchaseAmt), purchaseCnt: t.purchaseCnt, roas: t.roas,
+    convAmt: Number(t.purchaseAmt), ccnt: t.purchaseCnt,
+    campStats,
+  };
+}
+
+/** 키워드 탭 */
+async function queryStatsKeywords(accountId, since, until) {
+  // AD_DETAIL 기반 키워드별 집계 + 마스터 데이터 조인
+  return all(`
+    SELECT d.keyword_id, d.adgroup_id, d.campaign_id,
+           COALESCE(mk.keyword, d.keyword_id) AS keyword,
+           COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
+           COALESCE(mc.campaign_tp, 1) AS "campaignTp",
+           COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+           COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
+           COALESCE(SUM(d.cost),0)::bigint AS cost,
+           COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(d.purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail d
+    LEFT JOIN master_keywords mk ON mk.account_id = d.account_id AND mk.keyword_id = d.keyword_id
+    LEFT JOIN master_adgroups ma ON ma.account_id = d.account_id AND ma.adgroup_id = d.adgroup_id
+    LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
+    WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+    GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, mk.keyword, mc.campaign_name, mc.campaign_tp, ma.adgroup_name
+    ORDER BY SUM(d.cost) DESC
+  `, [accountId, since, until]);
+}
+
+/** 시간대별 탭 */
+async function queryStatsHourly(accountId, since, until) {
+  const byHour = await all(`
+    SELECT hour, COALESCE(SUM(imp),0)::int AS imp, COALESCE(SUM(clk),0)::int AS clk,
+           COALESCE(SUM(cost),0)::bigint AS cost,
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    GROUP BY hour ORDER BY hour
+  `, [accountId, since, until]);
+
+  const byDay = await all(`
+    SELECT EXTRACT(DOW FROM stat_date)::int AS dow,
+           COALESCE(SUM(imp),0)::int AS imp, COALESCE(SUM(clk),0)::int AS clk,
+           COALESCE(SUM(cost),0)::bigint AS cost,
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    GROUP BY dow ORDER BY dow
+  `, [accountId, since, until]);
+
+  return { byHour, byDay };
+}
+
+/** 디바이스별 탭 */
+async function queryStatsDevice(accountId, since, until) {
+  return all(`
+    SELECT device, COALESCE(SUM(imp),0)::int AS imp, COALESCE(SUM(clk),0)::int AS clk,
+           COALESCE(SUM(cost),0)::bigint AS cost,
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    GROUP BY device
+  `, [accountId, since, until]);
+}
+
+/** 광고그룹별 탭 */
+async function queryStatsAdgroups(accountId, since, until) {
+  return all(`
+    SELECT d.adgroup_id, d.campaign_id,
+           COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+           COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
+           COALESCE(mc.campaign_tp, 1) AS "campaignTp",
+           COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
+           COALESCE(SUM(d.cost),0)::bigint AS cost,
+           COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(d.purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail d
+    LEFT JOIN master_adgroups ma ON ma.account_id = d.account_id AND ma.adgroup_id = d.adgroup_id
+    LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
+    WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+    GROUP BY d.adgroup_id, d.campaign_id, ma.adgroup_name, mc.campaign_name, mc.campaign_tp
+    ORDER BY SUM(d.cost) DESC
+  `, [accountId, since, until]);
+}
+
 module.exports = Object.assign(module.exports, {
-  initDb,
+  initDb, query, get, all,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
   getAllUsers, getPendingUsers, approveUser, rejectUser,
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
@@ -409,4 +618,5 @@ module.exports = Object.assign(module.exports, {
   resetAdminPassword, deleteAllUsers,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
+  isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups,
 });

@@ -1774,13 +1774,21 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다' });
 
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    // DB 동기화 데이터 우선 조회 (빠른 경로)
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const stats = await db.queryStatsSummary(account.id, dateRange.since, dateRange.until);
+      return res.json({ ok: true, stats, source: 'db' });
+    }
+
+    // Fallback: 실시간 API 호출
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
-    // Stats API + 전환 데이터를 병렬로 fetch (AD_DETAIL은 탭에서만 로드)
     const [statsResult, convResult] = await Promise.allSettled([
       client.getStats({ startDate: dateRange.since, endDate: dateRange.until }),
       fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
@@ -1789,7 +1797,6 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const stats = statsResult.status === 'fulfilled' ? statsResult.value
       : { impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 };
 
-    // 구매완료 전환 데이터 병합
     if (convResult.status === 'fulfilled') {
       const convRows = convResult.value;
       let purchaseAmt = 0, purchaseCnt = 0;
@@ -1820,7 +1827,7 @@ router.get('/api/stats', requireLogin, async (req, res) => {
       }
     }
 
-    res.json({ ok: true, stats });
+    res.json({ ok: true, stats, source: 'api' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2000,30 +2007,69 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     const { period = 'yesterday', accountId, limit: lim } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    // DB 동기화 데이터 우선 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const rows = await db.queryStatsKeywords(account.id, dateRange.since, dateRange.until);
+      // 쇼핑검색은 adgroupId 기준으로 재집계
+      const byKw = {};
+      for (const r of rows) {
+        const campTp = normalizeCampaignTp(r.campaignTp);
+        const groupKey = (campTp === 2) ? `ag:${r.adgroup_id}` : `kw:${r.keyword_id}`;
+        if (!byKw[groupKey]) {
+          byKw[groupKey] = {
+            keywordId: campTp === 2 ? r.adgroup_id : r.keyword_id,
+            keyword: campTp === 2 ? r.adgroupName : r.keyword,
+            campaignTp: campTp,
+            campaignName: r.campaignName,
+            adgroupName: r.adgroupName,
+            imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
+          };
+        }
+        byKw[groupKey].imp += r.imp;
+        byKw[groupKey].clk += r.clk;
+        byKw[groupKey].cost += Number(r.cost);
+        byKw[groupKey].purchaseCnt += r.purchaseCnt;
+        byKw[groupKey].purchaseAmt += Number(r.purchaseAmt);
+      }
+
+      const allKw = Object.values(byKw).map(kw => ({
+        ...kw,
+        ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0,
+        cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0,
+        roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0,
+      }));
+
+      const powerlink = allKw.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
+      const shopping = allKw.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
+      const other = allKw.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
+      const maxItems = lim === 'all' ? 99999 : 10;
+      return res.json({
+        ok: true, hasMaster: true, source: 'db',
+        powerlink: powerlink.slice(0, maxItems), shopping: shopping.slice(0, maxItems), other: other.slice(0, maxItems),
+        powerlinkTotal: powerlink.length, shoppingTotal: shopping.length, otherTotal: other.length,
+      });
+    }
+
+    // Fallback: API 실시간 호출
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
-    // 이름 매핑 (마스터 우선, 없으면 API fallback)
     const { kwMap, agMap, campMap, hasMaster } = await getNameMaps(client, account.id);
 
-    // AD_DETAIL 다운로드
     const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    // AD_CONVERSION_DETAIL 다운로드
     const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
 
-    // 키워드별 집계 (파워링크: keywordId 기준, 쇼핑검색: adgroupId 기준)
     const byKw = {};
     for (const { cols } of adRows) {
       if (cols.length < 14) continue;
-      const campId = cols[2];
-      const agId = cols[3];
-      const kwId = cols[4];
+      const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
       const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
-
-      // 쇼핑검색은 adgroupId 기준, 파워링크는 keywordId 기준
       const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
       if (!byKw[groupKey]) {
         if (campTp === 2) {
@@ -2038,14 +2084,9 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].clk += parseInt(cols[12]) || 0;
       byKw[groupKey].cost += parseInt(cols[13]) || 0;
     }
-
-    // 전환 데이터 병합
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
-      const campId = cols[2];
-      const agId = cols[3];
-      const kwId = cols[4];
-      const convType = cols[12];
+      const campId = cols[2]; const agId = cols[3]; const kwId = cols[4]; const convType = cols[12];
       if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
       const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
       const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
@@ -2054,29 +2095,12 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
     }
 
-    // 계산 필드 + 분류
-    const all = Object.values(byKw).map(kw => ({
-      ...kw,
-      ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0,
-      cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0,
-      roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0,
-    }));
-
-    const powerlink = all.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
-    const shopping = all.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
-    const other = all.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
-
+    const allKw = Object.values(byKw).map(kw => ({ ...kw, ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0, cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0, roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0 }));
+    const powerlink = allKw.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
+    const shopping = allKw.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
+    const other = allKw.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
     const maxItems = lim === 'all' ? 99999 : 10;
-    res.json({
-      ok: true,
-      hasMaster,
-      powerlink: powerlink.slice(0, maxItems),
-      shopping: shopping.slice(0, maxItems),
-      other: other.slice(0, maxItems),
-      powerlinkTotal: powerlink.length,
-      shoppingTotal: shopping.length,
-      otherTotal: other.length,
-    });
+    res.json({ ok: true, hasMaster, source: 'api', powerlink: powerlink.slice(0, maxItems), shopping: shopping.slice(0, maxItems), other: other.slice(0, maxItems), powerlinkTotal: powerlink.length, shoppingTotal: shopping.length, otherTotal: other.length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2088,20 +2112,46 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     const { period = 'yesterday', accountId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const enrich = obj => ({
+      ...obj, cost: Number(obj.cost || 0), purchaseAmt: Number(obj.purchaseAmt || 0),
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(Number(obj.cost) / obj.clk) : 0,
+      roas: Number(obj.cost) > 0 ? Math.round(Number(obj.purchaseAmt) / Number(obj.cost) * 100) : 0,
+    });
+
+    // DB 우선 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const { byHour: dbHour, byDay: dbDay } = await db.queryStatsHourly(account.id, dateRange.since, dateRange.until);
+      // 시간대 0~23 전체 채우기
+      const hourMap = {};
+      for (let h = 0; h < 24; h++) hourMap[h] = { hour: h, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      for (const r of dbHour) hourMap[r.hour] = { hour: r.hour, imp: r.imp, clk: r.clk, cost: r.cost, purchaseCnt: r.purchaseCnt, purchaseAmt: r.purchaseAmt };
+
+      const dayNames = ['일','월','화','수','목','금','토'];
+      const dayMap = {};
+      for (let d = 0; d < 7; d++) dayMap[d] = { day: dayNames[d], dayIdx: d, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      for (const r of dbDay) dayMap[r.dow] = { day: dayNames[r.dow], dayIdx: r.dow, imp: r.imp, clk: r.clk, cost: r.cost, purchaseCnt: r.purchaseCnt, purchaseAmt: r.purchaseAmt };
+
+      return res.json({
+        ok: true, source: 'db',
+        byHour: Object.values(hourMap).map(enrich),
+        byDay: [1,2,3,4,5,6,0].map(d => enrich(dayMap[d])),
+      });
+    }
+
+    // Fallback: API
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
-
     const client = makeClient(creds, account.customer_id);
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
     const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
     const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
 
-    // 시간대별 집계
     const byHour = {};
     for (let h = 0; h < 24; h++) byHour[h] = { hour: h, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
-
-    // 요일별 집계
     const dayNames = ['일','월','화','수','목','금','토'];
     const byDay = {};
     for (let d = 0; d < 7; d++) byDay[d] = { day: dayNames[d], dayIdx: d, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
@@ -2109,47 +2159,27 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     for (const { date, cols } of adRows) {
       if (cols.length < 14) continue;
       const hour = parseInt(cols[7]) || 0;
-      const imp = parseInt(cols[11]) || 0;
-      const clk = parseInt(cols[12]) || 0;
-      const cost = parseInt(cols[13]) || 0;
-
-      byHour[hour].imp += imp;
-      byHour[hour].clk += clk;
-      byHour[hour].cost += cost;
-
+      byHour[hour].imp += parseInt(cols[11]) || 0;
+      byHour[hour].clk += parseInt(cols[12]) || 0;
+      byHour[hour].cost += parseInt(cols[13]) || 0;
       const dow = new Date(date).getDay();
-      byDay[dow].imp += imp;
-      byDay[dow].clk += clk;
-      byDay[dow].cost += cost;
+      byDay[dow].imp += parseInt(cols[11]) || 0;
+      byDay[dow].clk += parseInt(cols[12]) || 0;
+      byDay[dow].cost += parseInt(cols[13]) || 0;
     }
-
-    // 전환
     for (const { date, cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
       if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
       const hour = parseInt(cols[7]) || 0;
-      const cnt = parseInt(cols[13]) || 0;
-      const amt = parseInt(cols[14]) || 0;
-      byHour[hour].purchaseCnt += cnt;
-      byHour[hour].purchaseAmt += amt;
+      byHour[hour].purchaseCnt += parseInt(cols[13]) || 0;
+      byHour[hour].purchaseAmt += parseInt(cols[14]) || 0;
       const dow = new Date(date).getDay();
-      byDay[dow].purchaseCnt += cnt;
-      byDay[dow].purchaseAmt += amt;
+      byDay[dow].purchaseCnt += parseInt(cols[13]) || 0;
+      byDay[dow].purchaseAmt += parseInt(cols[14]) || 0;
     }
 
-    const enrich = obj => ({
-      ...obj,
-      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
-      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
-      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
-    });
-
-    res.json({
-      ok: true,
-      byHour: Object.values(byHour).map(enrich),
-      byDay: [1,2,3,4,5,6,0].map(d => enrich(byDay[d])), // 월~일 순
-    });
+    res.json({ ok: true, source: 'api', byHour: Object.values(byHour).map(enrich), byDay: [1,2,3,4,5,6,0].map(d => enrich(byDay[d])) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2161,17 +2191,33 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     const { period = 'yesterday', accountId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const enrich = obj => ({
+      ...obj, cost: Number(obj.cost || 0), purchaseAmt: Number(obj.purchaseAmt || 0),
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(Number(obj.cost) / obj.clk) : 0,
+      roas: Number(obj.cost) > 0 ? Math.round(Number(obj.purchaseAmt) / Number(obj.cost) * 100) : 0,
+    });
+
+    // DB 우선 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const rows = await db.queryStatsDevice(account.id, dateRange.since, dateRange.until);
+      const byDev = { PC: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 }, MO: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 } };
+      for (const r of rows) byDev[r.device] = { imp: r.imp, clk: r.clk, cost: r.cost, purchaseCnt: r.purchaseCnt, purchaseAmt: r.purchaseAmt };
+      return res.json({ ok: true, source: 'db', pc: enrich(byDev.PC), mobile: enrich(byDev.MO) });
+    }
+
+    // Fallback: API
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
-
     const client = makeClient(creds, account.customer_id);
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
     const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
     const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
 
     const byDevice = { PC: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 }, MO: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 } };
-
     for (const { cols } of adRows) {
       if (cols.length < 14) continue;
       const dev = cols[10] === 'P' ? 'PC' : 'MO';
@@ -2179,7 +2225,6 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
       byDevice[dev].clk += parseInt(cols[12]) || 0;
       byDevice[dev].cost += parseInt(cols[13]) || 0;
     }
-
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
@@ -2189,14 +2234,7 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
       byDevice[dev].purchaseAmt += parseInt(cols[14]) || 0;
     }
 
-    const enrich = obj => ({
-      ...obj,
-      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
-      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
-      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
-    });
-
-    res.json({ ok: true, pc: enrich(byDevice.PC), mobile: enrich(byDevice.MO) });
+    res.json({ ok: true, source: 'api', pc: enrich(byDevice.PC), mobile: enrich(byDevice.MO) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2208,12 +2246,34 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     const { period = 'yesterday', accountId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const enrich = obj => ({
+      ...obj, cost: Number(obj.cost || 0), purchaseAmt: Number(obj.purchaseAmt || 0),
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(Number(obj.cost) / obj.clk) : 0,
+      roas: Number(obj.cost) > 0 ? Math.round(Number(obj.purchaseAmt) / Number(obj.cost) * 100) : 0,
+    });
+
+    // DB 우선 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const rows = await db.queryStatsAdgroups(account.id, dateRange.since, dateRange.until);
+      const adgroups = rows.map(r => enrich({
+        adgroupId: r.adgroup_id, adgroupName: r.adgroupName,
+        campaignName: r.campaignName, campaignTp: r.campaignTp,
+        imp: r.imp, clk: r.clk, cost: r.cost, purchaseCnt: r.purchaseCnt, purchaseAmt: r.purchaseAmt,
+      })).sort((a, b) => {
+        const cmp = (a.campaignName || '').localeCompare(b.campaignName || '');
+        return cmp !== 0 ? cmp : (a.adgroupName || '').localeCompare(b.adgroupName || '');
+      });
+      return res.json({ ok: true, source: 'db', adgroups });
+    }
+
+    // Fallback: API
     const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
-
     const client = makeClient(creds, account.customer_id);
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
-
     const { agMap, campMap } = await getNameMaps(client, account.id);
 
     const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
@@ -2222,18 +2282,15 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     const byAg = {};
     for (const { cols } of adRows) {
       if (cols.length < 14) continue;
-      const agId = cols[3];
-      const campId = cols[2];
+      const agId = cols[3]; const campId = cols[2];
       if (!byAg[agId]) {
-        const info = agMap[agId] || {};
-        const camp = campMap[info.campaignId || campId] || {};
+        const info = agMap[agId] || {}; const camp = campMap[info.campaignId || campId] || {};
         byAg[agId] = { adgroupId: agId, adgroupName: info.name || agId, campaignName: camp.name || campId, campaignTp: camp.tp || 0, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
       }
       byAg[agId].imp += parseInt(cols[11]) || 0;
       byAg[agId].clk += parseInt(cols[12]) || 0;
       byAg[agId].cost += parseInt(cols[13]) || 0;
     }
-
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
@@ -2244,19 +2301,11 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
       byAg[agId].purchaseAmt += parseInt(cols[14]) || 0;
     }
 
-    const enrich = obj => ({
-      ...obj,
-      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
-      cpc: obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0,
-      roas: obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0,
-    });
-
     const adgroups = Object.values(byAg).map(enrich).sort((a, b) => {
       const cmp = (a.campaignName || '').localeCompare(b.campaignName || '');
-      if (cmp !== 0) return cmp;
-      return (a.adgroupName || '').localeCompare(b.adgroupName || '');
+      return cmp !== 0 ? cmp : (a.adgroupName || '').localeCompare(b.adgroupName || '');
     });
-    res.json({ ok: true, adgroups });
+    res.json({ ok: true, source: 'api', adgroups });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2526,6 +2575,51 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+});
+
+// ─── 대시보드 데이터 동기화 Cron ──────────────────────────────────────
+const { runDashboardSync, runBackfill } = require('../sync/dashboardSync');
+
+// 30분마다 실행: 어제+오늘 데이터 동기화
+router.get('/api/cron/sync-dashboard', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  try {
+    const result = await runDashboardSync(50000);
+    console.log(`✅ Cron [sync-dashboard]: ${result.totalSynced}건, ${result.elapsed}초`);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('❌ Cron [sync-dashboard]:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 매일 새벽 1시(KST) 실행: 과거 30일 백필
+router.get('/api/cron/sync-backfill', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  try {
+    const result = await runBackfill(50000, 30);
+    console.log(`✅ Cron [sync-backfill]: ${result.totalSynced}건, ${result.elapsed}초`);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('❌ Cron [sync-backfill]:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 수동 동기화 트리거 (관리자용)
+router.post('/api/sync/trigger', requireLogin, async (req, res) => {
+  try {
+    const result = await runDashboardSync(50000);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 module.exports = { router };
