@@ -114,9 +114,10 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
-  // users에 SMTP 비밀번호 컬럼 추가 (다우오피스 연동용)
+  // users에 다우오피스 연동 컬럼 추가
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS daou_email TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   console.log('✅ DB 초기화 완료 (Supabase PostgreSQL)');
@@ -201,7 +202,7 @@ async function rejectUser(userId) {
 
 // ─── SMTP 자격증명 (다우오피스 자동 연동) ──────────────────────────────
 async function getSmtpCredentials(userId) {
-  return get('SELECT username, smtp_pass FROM users WHERE id = $1', [userId]);
+  return get('SELECT username, smtp_pass, daou_email FROM users WHERE id = $1', [userId]);
 }
 
 // ─── API 자격증명 ─────────────────────────────────────────────────────

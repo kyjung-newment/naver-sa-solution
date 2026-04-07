@@ -179,8 +179,10 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
       `).join('')}
     </div>
     <div class="sidebar-footer">
-      <div class="sidebar-user">👤 ${user?.name || user?.username}</div>
-      <a href="/smart-sa/logout" class="sidebar-link" style="margin:8px 0 0;padding:6px 12px">↩ 로그아웃</a>
+      <a href="/smart-sa/profile" class="sidebar-link ${activeMenu === 'profile' ? 'active' : ''}" style="margin-bottom:4px">
+        <span>👤</span><span>${user?.name || user?.username}</span>
+      </a>
+      <a href="/smart-sa/logout" class="sidebar-link" style="padding:6px 12px">↩ 로그아웃</a>
     </div>
   </div>`;
 
@@ -217,14 +219,23 @@ router.get('/login', async (req, res) => {
             <form method="POST" action="${isFirst ? '/smart-sa/register' : '/smart-sa/login'}">
               <div class="form-group">
                 <label>${isFirst ? '아이디 (영문)' : '아이디'}</label>
-                <input name="username" required placeholder="username" autocomplete="username">
+                <input name="username" id="login-username" required placeholder="username" autocomplete="username">
               </div>
               ${isFirst ? `<div class="form-group"><label>이름</label><input name="name" required placeholder="홍길동"></div>` : ''}
               <div class="form-group">
                 <label>비밀번호</label>
                 <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
               </div>
-              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px">
+              ${!isFirst ? `
+              <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;color:#64748b">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="save-id" style="accent-color:#03c75a"> 아이디 저장
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" name="remember" value="1" style="accent-color:#03c75a"> 로그인 유지
+                </label>
+              </div>` : ''}
+              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px">
                 ${isFirst ? '계정 생성 후 로그인' : '로그인'}
               </button>
             </form>
@@ -235,7 +246,18 @@ router.get('/login', async (req, res) => {
             </div>
             <div style="text-align:center;margin-top:8px">
               <a href="/smart-sa/reset-password" style="font-size:12px;color:#94a3b8">비밀번호를 잊으셨나요?</a>
-            </div>` : ''}
+            </div>
+            <script>
+            (function(){
+              var saved = localStorage.getItem('savedUsername');
+              if(saved){document.getElementById('login-username').value=saved;document.getElementById('save-id').checked=true;}
+              document.querySelector('form').addEventListener('submit',function(){
+                var cb=document.getElementById('save-id');
+                if(cb&&cb.checked) localStorage.setItem('savedUsername',document.getElementById('login-username').value);
+                else localStorage.removeItem('savedUsername');
+              });
+            })();
+            </script>` : ''}
           </div>
         </div>
       </div>
@@ -244,9 +266,11 @@ router.get('/login', async (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, remember } = req.body;
   const user = await db.authenticateUser(username, password);
   if (!user) return res.redirect(303, '/smart-sa/login?err=invalid');
+  // 로그인 유지: 30일, 기본: 8시간
+  if (remember === '1') req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
   req.session.userId = user.id;
   req.session.userName = user.name;
   req.session.isAdmin = !!user.is_admin;
@@ -276,7 +300,7 @@ router.get('/signup', (req, res) => {
   const err = req.query.err || '';
   res.send(layout('회원가입', `
     <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f9ff,#f0fdf4)">
-      <div style="width:100%;max-width:400px;padding:16px">
+      <div style="width:100%;max-width:440px;padding:16px">
         <div style="text-align:center;margin-bottom:32px">
           <div style="font-size:40px;margin-bottom:8px">📊</div>
           <h1 style="font-size:22px;font-weight:700;color:#111827">네이버 SA 솔루션</h1>
@@ -286,6 +310,7 @@ router.get('/signup', (req, res) => {
           <div class="card-body">
             ${err === 'taken' ? '<div class="alert alert-err">이미 사용 중인 아이디입니다.</div>' : ''}
             <form method="POST" action="/smart-sa/signup">
+              <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e5e7eb">솔루션 계정</div>
               <div class="form-group">
                 <label>아이디 (영문)</label>
                 <input name="username" required placeholder="username" autocomplete="username">
@@ -298,7 +323,22 @@ router.get('/signup', (req, res) => {
                 <label>비밀번호</label>
                 <input type="password" name="password" required placeholder="••••••••" autocomplete="new-password">
               </div>
-              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px">계정 생성</button>
+
+              <div style="font-size:13px;font-weight:600;color:#374151;margin:20px 0 8px;padding-bottom:6px;border-bottom:1px solid #e5e7eb">다우오피스 연동</div>
+              <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400e;line-height:1.6">
+                <strong>⚠️ 리포트 이메일 발송에 사용됩니다.</strong><br>
+                다우오피스 정보가 정확해야 리포트 발송이 정상적으로 진행됩니다.
+              </div>
+              <div class="form-group">
+                <label>다우오피스 이메일</label>
+                <input name="daou_email" required placeholder="user@newment.co.kr" type="email">
+              </div>
+              <div class="form-group">
+                <label>다우오피스 비밀번호</label>
+                <input type="password" name="daou_pass" required placeholder="다우오피스 로그인 비밀번호">
+              </div>
+
+              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px">계정 생성</button>
             </form>
             <div style="text-align:center;margin-top:16px;padding-top:16px;border-top:1px solid #f1f5f9">
               <a href="/smart-sa/login" style="font-size:13px;color:#03c75a;font-weight:600">← 로그인으로 돌아가기</a>
@@ -311,10 +351,14 @@ router.get('/signup', (req, res) => {
 });
 
 router.post('/signup', async (req, res) => {
-  const { username, password, name } = req.body;
+  const { username, password, name, daou_email, daou_pass } = req.body;
   try {
     // 승인 대기(approved=0) 상태로 생성
     const id = await db.createUser(username, password, name || username, { isAdmin: false, approved: false });
+    // 다우오피스 정보 저장
+    if (daou_email && daou_pass) {
+      await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2 WHERE id = $3', [daou_email, daou_pass, id]).catch(() => {});
+    }
     req.session.userId = id;
     req.session.userName = name || username;
     req.session.isAdmin = false;
@@ -323,6 +367,82 @@ router.post('/signup', async (req, res) => {
   } catch (e) {
     res.redirect(303, '/smart-sa/signup?err=taken');
   }
+});
+
+// ─── 내 정보 ──────────────────────────────────────────────────────────
+router.get('/profile', requireLogin, async (req, res) => {
+  const user = await getUser(req);
+  const smtp = await db.getSmtpCredentials(req.session.userId);
+  const msg = req.query.msg || '';
+  const content = `
+    <h2>내 정보</h2>
+    ${msg === 'saved' ? '<div class="alert alert-ok">저장되었습니다.</div>' : ''}
+    ${msg === 'smtp_ok' ? '<div class="alert alert-ok">다우오피스 정보가 업데이트되었습니다.</div>' : ''}
+    ${msg === 'pw_err' ? '<div class="alert alert-err">현재 비밀번호가 올바르지 않습니다.</div>' : ''}
+    ${msg === 'pw_ok' ? '<div class="alert alert-ok">솔루션 비밀번호가 변경되었습니다.</div>' : ''}
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">계정 정보</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>아이디</label><input value="${user.username}" disabled></div>
+          <div class="form-group"><label>이름</label><input value="${user.name}" disabled></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">다우오피스 연동 (이메일 발송용)</span></div>
+      <div class="card-body">
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#92400e;line-height:1.6">
+          <strong>⚠️ 다우오피스 정보가 정확해야 리포트 이메일 발송이 정상적으로 진행됩니다.</strong><br>
+          다우오피스 비밀번호를 변경한 경우, 아래에서 반드시 업데이트해주세요.
+        </div>
+        <form method="POST" action="/smart-sa/profile/smtp">
+          <div class="form-row">
+            <div class="form-group"><label>다우오피스 이메일</label><input name="daou_email" value="${smtp?.daou_email || ''}" required placeholder="user@newment.co.kr" type="email"></div>
+            <div class="form-group"><label>다우오피스 비밀번호</label><input type="password" name="daou_pass" value="${smtp?.smtp_pass || ''}" required placeholder="다우오피스 로그인 비밀번호"></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:8px">저장</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">솔루션 비밀번호 변경</span></div>
+      <div class="card-body">
+        <form method="POST" action="/smart-sa/profile/password">
+          <div class="form-group"><label>현재 비밀번호</label><input type="password" name="current_pw" required></div>
+          <div class="form-row">
+            <div class="form-group"><label>새 비밀번호</label><input type="password" name="new_pw" required minlength="6"></div>
+            <div class="form-group"><label>새 비밀번호 확인</label><input type="password" name="new_pw2" required minlength="6"></div>
+          </div>
+          <button class="btn btn-outline" style="margin-top:8px">비밀번호 변경</button>
+        </form>
+      </div>
+    </div>
+  `;
+  res.send(appLayout('내 정보', content, user, 'profile', await getLayoutOpts(req)));
+});
+
+router.post('/profile/smtp', requireLogin, async (req, res) => {
+  const { daou_email, daou_pass } = req.body;
+  await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2 WHERE id = $3', [daou_email, daou_pass, req.session.userId]);
+  res.redirect(303, '/smart-sa/profile?msg=smtp_ok');
+});
+
+router.post('/profile/password', requireLogin, async (req, res) => {
+  const { current_pw, new_pw, new_pw2 } = req.body;
+  if (new_pw !== new_pw2) return res.redirect(303, '/smart-sa/profile?msg=pw_err');
+  const user = await db.getUserByUsername((await getUser(req)).username);
+  const { verifyPassword, hashPassword } = require('../db/database');
+  // verifyPassword is not exported, check inline
+  const [salt, hash] = user.password_hash.split(':');
+  const crypto = require('crypto');
+  const attempt = crypto.scryptSync(current_pw, salt, 64).toString('hex');
+  if (attempt !== hash) return res.redirect(303, '/smart-sa/profile?msg=pw_err');
+  const newHash = (() => { const s = crypto.randomBytes(16).toString('hex'); return s + ':' + crypto.scryptSync(new_pw, s, 64).toString('hex'); })();
+  await db.pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.session.userId]);
+  res.redirect(303, '/smart-sa/profile?msg=pw_ok');
 });
 
 router.get('/logout', (req, res) => {
@@ -1087,7 +1207,7 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
 });
 
 // 광고주 기능 설정 폼
-function accountSettingsForm(account = {}) {
+function accountSettingsForm(account = {}, smtpInfo = {}) {
   const v = (k, def = '') => account[k] ?? def;
   const chk = k => account[k] ? 'checked' : '';
   return `
@@ -1117,8 +1237,9 @@ function accountSettingsForm(account = {}) {
         <div class="card-body">
           <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 18px;margin-bottom:16px">
             <div style="font-size:13px;font-weight:600;color:#16a34a">✅ SMTP 자동 연동</div>
-            <div style="font-size:12px;color:#14532d;margin-top:4px">로그인 계정(다우오피스)으로 자동 발송됩니다. 별도 설정 불필요.</div>
-            <div style="font-size:12px;color:#64748b;margin-top:4px">발신: <strong>${user.username}</strong> → 수신: 위 리포트 수신 이메일</div>
+            <div style="font-size:12px;color:#14532d;margin-top:4px">다우오피스 계정으로 자동 발송됩니다. 별도 설정 불필요.</div>
+            <div style="font-size:12px;color:#64748b;margin-top:4px">발신: <strong>${smtpInfo?.daou_email || '미설정'}</strong> → 수신: 위 리포트 수신 이메일</div>
+            ${!smtpInfo?.daou_email ? '<div style="font-size:12px;color:#dc2626;margin-top:4px">⚠️ <a href="/smart-sa/profile" style="color:#dc2626;font-weight:600">내 정보</a>에서 다우오피스 이메일을 설정해주세요.</div>' : ''}
           </div>
           <input type="hidden" name="email_host" value="${v('email_host','smtp.daouoffice.com')}">
           <input type="hidden" name="email_port" value="${v('email_port',587)}">
@@ -1176,7 +1297,8 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
   if (!account) return res.redirect('/smart-sa/accounts');
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor','feat_auto_bidding']
     .forEach(k => { account[k] = !!account[k]; });
-  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account), user, 'accounts', await getLayoutOpts(req)));
+  const smtpInfo = await db.getSmtpCredentials(user.id);
+  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account, smtpInfo), user, 'accounts', await getLayoutOpts(req)));
 });
 
 router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
@@ -2316,11 +2438,11 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   const enriched = {
     ...account,
     api_key: creds.api_key, secret_key: creds.secret_key,
-    // SMTP: 사용자 로그인 정보로 자동 연동 (다우오피스)
-    email_host: account.email_host && account.email_host !== 'smtp.gmail.com' ? account.email_host : 'smtp.daouoffice.com',
-    email_port: account.email_port || 587,
-    email_user: account.email_user || smtp?.username || '',
-    email_pass: account.email_pass || smtp?.smtp_pass || '',
+    // SMTP: 다우오피스 자동 연동
+    email_host: 'smtp.daouoffice.com',
+    email_port: 587,
+    email_user: smtp?.daou_email || smtp?.username || '',
+    email_pass: smtp?.smtp_pass || '',
   };
   try {
     const ok = await generateAndSend(enriched, type);
@@ -2353,16 +2475,12 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       const accounts = await db.getAllAccountsWithFeature(`${type}_report`);
       let sent = 0;
       for (const account of accounts) {
-        // SMTP 자동 연동: 사용자 로그인 정보 사용
+        // SMTP 자동 연동: 다우오피스 정보 사용
         const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-        if (!account.email_user && smtp) {
-          account.email_user = smtp.username;
-          account.email_pass = smtp.smtp_pass;
-        }
-        if (!account.email_host || account.email_host === 'smtp.gmail.com') {
-          account.email_host = 'smtp.daouoffice.com';
-          account.email_port = 587;
-        }
+        account.email_host = 'smtp.daouoffice.com';
+        account.email_port = 587;
+        account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+        account.email_pass = smtp?.smtp_pass || account.email_pass || '';
         const ok = await generateAndSend(account, type).catch(() => false);
         if (ok) {
           await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
