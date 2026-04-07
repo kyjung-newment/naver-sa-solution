@@ -202,6 +202,17 @@ async function initDb() {
     await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS bid_interval INTEGER NOT NULL DEFAULT 10`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // ad_accounts에 site_url 추가 (비즈채널 URL - 실시간 순위 매칭용)
+  try {
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS site_url TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
+  // auto_bid_keywords에 adgroup_id, last_real_rank 추가
+  try {
+    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS adgroup_id TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS last_real_rank INTEGER DEFAULT 0`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   // users에 다우오피스 연동 컬럼 추가
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
@@ -357,7 +368,8 @@ async function updateAccount(id, userId, data) {
       feat_daily_report = $7, feat_weekly_report = $8, feat_monthly_report = $9,
       feat_keyword_monitor = $10, feat_auto_bidding = $11,
       auto_bid_target_rank = $12, auto_bid_max_bid = $13,
-      auto_bid_min_bid = $14, auto_bid_interval = $15
+      auto_bid_min_bid = $14, auto_bid_interval = $15,
+      site_url = $18
     WHERE id = $16 AND user_id = $17
   `, [
     data.name,
@@ -376,6 +388,7 @@ async function updateAccount(id, userId, data) {
     parseInt(data.auto_bid_min_bid) || 100,
     parseInt(data.auto_bid_interval) || 5,
     id, userId,
+    data.site_url || '',
   ]);
 }
 
@@ -494,21 +507,27 @@ async function getAutoBidKeywords(accountId) {
 
 async function upsertAutoBidKeyword(accountId, data) {
   return pool.query(`
-    INSERT INTO auto_bid_keywords (account_id, keyword_id, keyword, campaign_name, adgroup_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    INSERT INTO auto_bid_keywords (account_id, keyword_id, keyword, campaign_name, adgroup_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled, adgroup_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT (account_id, keyword_id, device)
     DO UPDATE SET keyword = $3, campaign_name = $4, adgroup_name = $5,
-      target_rank = $7, max_bid = $8, adjust_amt = $9, schedule = $10, bid_interval = $11, enabled = $12
+      target_rank = $7, max_bid = $8, adjust_amt = $9, schedule = $10, bid_interval = $11, enabled = $12, adgroup_id = $13
   `, [accountId, data.keyword_id, data.keyword, data.campaign_name, data.adgroup_name,
       data.device, data.target_rank, data.max_bid, data.adjust_amt, data.schedule,
-      parseInt(data.bid_interval) || 10, data.enabled ? 1 : 0]);
+      parseInt(data.bid_interval) || 10, data.enabled ? 1 : 0, data.adgroup_id || '']);
 }
 
 async function deleteAutoBidKeyword(id, accountId) {
   return pool.query('DELETE FROM auto_bid_keywords WHERE id = $1 AND account_id = $2', [id, accountId]);
 }
 
-async function updateAutoBidKeywordStatus(keywordId, device, rank, bid) {
+async function updateAutoBidKeywordStatus(keywordId, device, rank, bid, realRank = null) {
+  if (realRank !== null) {
+    return pool.query(
+      'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_real_rank = $5, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
+      [rank, bid, keywordId, device, realRank]
+    );
+  }
   return pool.query(
     'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
     [rank, bid, keywordId, device]

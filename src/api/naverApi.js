@@ -323,6 +323,16 @@ function createApiClient(creds) {
         bids,
       }),
 
+    // ─── 광고 소재 / 비즈채널 조회 ─────────────────────────────────────
+    getAds: (adGroupId) =>
+      apiCall('GET', '/ncc/ads', { nccAdgroupId: adGroupId }),
+
+    getAdGroupDetail: (adGroupId) =>
+      apiCall('GET', `/ncc/adgroups/${adGroupId}`),
+
+    getChannels: () =>
+      apiCall('GET', '/ncc/channels'),
+
     // ─── 광고 노출 진단 (실시간 순위) ──────────────────────────────────
     getImpressionPreviewPowerLink: (keyword, device, regionalCode = '09140103') => {
       const channelAlias = device === 'MO'

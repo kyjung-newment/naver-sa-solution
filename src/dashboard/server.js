@@ -1141,6 +1141,11 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             </div>
           </div>
           <div class="form-group">
+            <label>비즈채널 URL (자동입찰 순위 매칭용, 쉼표로 구분)</label>
+            <input name="site_url" value="${v('site_url')}" placeholder="예: wedrawing.co.kr, smartstore.naver.com/siseongot">
+            <p style="font-size:11px;color:#94a3b8;margin-top:4px">네이버 광고주센터 > 구성요소 관리 > 비즈채널에서 웹사이트로 등록된 URL을 입력하세요</p>
+          </div>
+          <div class="form-group">
             <label>리포트 수신 이메일 (쉼표로 구분)</label>
             <input name="report_emails" value="${v('report_emails')}" placeholder="a@a.com,b@b.com">
           </div>
@@ -2447,7 +2452,14 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           return '<span class="badge badge-red">미달</span>';
         };
 
-        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:right">최대입찰가</th><th style="text-align:right">조정금액</th><th style="text-align:center">간격</th><th style="text-align:right">목표입찰가</th><th style="text-align:right">현재입찰가</th><th style="text-align:center">상태</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+        const realRankBadge=(r)=>{
+          if(!r||r<=0) return '<span style="color:#cbd5e1">-</span>';
+          if(r<=3) return '<span class="badge badge-green">'+r+'위</span>';
+          if(r<=7) return '<span class="badge badge-blue">'+r+'위</span>';
+          return '<span class="badge badge-gray">'+r+'위</span>';
+        };
+
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right">목표입찰가</th><th style="text-align:center">입찰상태</th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
           +kws.map(k=>{
             const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
             return '<tr>'
@@ -2455,12 +2467,12 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="font-size:12px;color:#64748b">'+k.campaign_name+'<br>'+k.adgroup_name+'</td>'
             +'<td style="text-align:center"><span class="badge '+(k.device==='PC'?'badge-blue':'badge-green')+'">'+k.device+'</span></td>'
             +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
-            +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
-            +'<td style="text-align:right">₩'+Number(k.adjust_amt).toLocaleString()+'</td>'
-            +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
-            +'<td style="text-align:right">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:center">'+realRankBadge(k.last_real_rank)+'</td>'
             +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:right">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="text-align:center">'+rankBadge(k.last_rank,k.last_bid)+'</td>'
+            +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
+            +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
             +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
             +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
@@ -2750,13 +2762,19 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
 
     const client = makeClient(creds, account.customer_id);
     const abKeywords = await db.getAutoBidKeywords(account.id);
-    console.log(`🔍 check-ranks: accountId=${req.body.accountId}, account.id=${account.id}, customer_id=${account.customer_id}, keywords=${abKeywords.length}`);
+    const siteUrls = (account.site_url || '').split(',').map(u => u.trim()).filter(Boolean);
+    console.log(`🔍 check-ranks: accountId=${req.body.accountId}, keywords=${abKeywords.length}, siteUrls=${siteUrls.join(',')}`);
+
+    const { findAdRank } = require('../api/naverRankScraper');
 
     let checked = 0;
     const details = [];
+    // 키워드별 실시간 순위 캐시 (같은 키워드+디바이스 중복 조회 방지)
+    const rankCache = {};
+
     for (const abKw of abKeywords) {
       try {
-        // 1. 현재 입찰가 조회 (항상 성공)
+        // 1. 현재 입찰가 조회
         let currentBid = abKw.last_bid || 0;
         try {
           const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
@@ -2770,14 +2788,38 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
         try {
           const est = await client.getEstimatedBidForPosition(abKw.keyword_id, abKw.device, abKw.target_rank);
           targetBid = est?.estimate?.[0]?.bid || 0;
-          console.log(`  📊 [${abKw.keyword}] ${abKw.device} ${abKw.target_rank}위 필요입찰가: ₩${targetBid}, 현재: ₩${currentBid} → ${currentBid >= targetBid ? '달성' : '미달'}`);
         } catch (estErr) {
           console.log(`  입찰가 추정 실패 [${abKw.keyword}]:`, estErr.message);
         }
 
-        // last_rank 필드에 목표입찰가 저장 (의미 변경: rank → targetBid)
-        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, targetBid, currentBid);
-        details.push({ keyword: abKw.keyword, device: abKw.device, targetBid, currentBid, status: currentBid >= targetBid ? '달성' : '미달' });
+        // 3. 실시간 순위 조회 (검색결과 파싱)
+        let realRank = 0;
+        if (siteUrls.length > 0) {
+          const cacheKey = `${abKw.keyword}_${abKw.device}`;
+          if (rankCache[cacheKey] !== undefined) {
+            realRank = rankCache[cacheKey];
+          } else {
+            try {
+              for (const siteUrl of siteUrls) {
+                const result = await findAdRank(abKw.keyword, abKw.device, siteUrl);
+                if (result.rank > 0) {
+                  realRank = result.rank;
+                  break;
+                }
+              }
+              rankCache[cacheKey] = realRank;
+              console.log(`  📡 [${abKw.keyword}] ${abKw.device} 실시간순위: ${realRank > 0 ? realRank + '위' : '순위밖'}`);
+            } catch (e) {
+              console.log(`  실시간순위 조회 실패 [${abKw.keyword}]:`, e.message);
+            }
+            await new Promise(r => setTimeout(r, 500)); // rate limit 방지
+          }
+        }
+
+        console.log(`  📊 [${abKw.keyword}] ${abKw.device} 목표:${abKw.target_rank}위, 실시간:${realRank||'-'}, 필요:₩${targetBid}, 현재:₩${currentBid}`);
+
+        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, targetBid, currentBid, realRank);
+        details.push({ keyword: abKw.keyword, device: abKw.device, targetBid, currentBid, realRank, status: currentBid >= targetBid ? '달성' : '미달' });
         checked++;
         await new Promise(r => setTimeout(r, 200));
       } catch (e) {

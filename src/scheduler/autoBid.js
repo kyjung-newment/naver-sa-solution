@@ -1,4 +1,5 @@
 const { createApiClient } = require('../api/naverApi');
+const { findAdRank } = require('../api/naverRankScraper');
 const db = require('../db/database');
 
 const runningAccounts = new Set();
@@ -21,6 +22,9 @@ async function runAutoBiddingForAccount(account) {
     customerId: account.customer_id,
   });
 
+  // 비즈채널 URL (실시간 순위 매칭용)
+  const siteUrls = (account.site_url || '').split(',').map(u => u.trim()).filter(Boolean);
+
   try {
     const abKeywords = await db.getEnabledAutoBidKeywords(account.id);
     if (!abKeywords.length) return;
@@ -32,11 +36,8 @@ async function runAutoBiddingForAccount(account) {
 
     // 실행 대상 키워드 필터링
     const targets = abKeywords.filter(kw => {
-      // 시간대 체크
       const schedule = kw.schedule || '111111111111111111111111';
       if (schedule[currentHour] !== '1') return false;
-
-      // 간격 체크: last_run 이후 bid_interval(분) 경과했는지
       const interval = (kw.bid_interval || 10) * 60 * 1000;
       const lastRun = kw.last_run ? new Date(kw.last_run).getTime() : 0;
       return (now - lastRun) >= interval;
@@ -46,13 +47,16 @@ async function runAutoBiddingForAccount(account) {
 
     console.log(`\n🤖 [${account.name}] 자동입찰: ${targets.length}/${abKeywords.length}개 (${currentHour}시)`);
 
+    // 실시간 순위 캐시 (같은 키워드+디바이스 중복 조회 방지)
+    const rankCache = {};
+
     // 병렬 10개씩 배치 처리
     const BATCH = 10;
     let adjusted = 0;
     for (let i = 0; i < targets.length; i += BATCH) {
       const batch = targets.slice(i, i + BATCH);
       const results = await Promise.allSettled(
-        batch.map(kw => adjustBidForKeyword(client, kw))
+        batch.map(kw => adjustBidForKeyword(client, kw, siteUrls, rankCache))
       );
       for (const r of results) {
         if (r.status === 'fulfilled' && r.value) adjusted++;
@@ -71,57 +75,79 @@ async function runAutoBiddingForAccount(account) {
  * 개별 키워드 입찰가 조정
  * @returns {boolean} 입찰가 변경 여부
  */
-async function adjustBidForKeyword(client, abKw) {
+async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
   const { keyword_id, keyword, target_rank, max_bid, adjust_amt, device } = abKw;
 
   try {
-    // 현재 입찰가 조회
+    // 1. 현재 입찰가 조회
     let currentBid = abKw.last_bid || 0;
     try {
       const kwInfo = await client.getKeywordInfo(keyword_id);
       currentBid = kwInfo?.bidAmt || currentBid;
     } catch (e) { /* fallback */ }
 
-    // 목표 순위에 필요한 입찰가 조회 (estimate API)
-    let currentRank = 0; // 0 = 순위 밖
+    // 2. 목표 순위에 필요한 입찰가 조회 (estimate API)
     let targetBid = 0;
     try {
       const est = await client.getEstimatedBidForPosition(keyword_id, device, target_rank);
       targetBid = est?.estimate?.[0]?.bid || 0;
-      if (targetBid > 0) {
-        currentRank = currentBid >= targetBid ? target_rank : 0; // 달성 or 순위 밖
-      }
     } catch (e) {
       console.log(`  순위 추정 실패 [${keyword}]:`, e.message);
     }
 
+    // 3. 실시간 순위 조회 (검색결과 파싱)
+    let realRank = 0;
+    if (siteUrls && siteUrls.length > 0) {
+      const cacheKey = `${keyword}_${device}`;
+      if (rankCache[cacheKey] !== undefined) {
+        realRank = rankCache[cacheKey];
+      } else {
+        try {
+          for (const siteUrl of siteUrls) {
+            const result = await findAdRank(keyword, device, siteUrl);
+            if (result.rank > 0) {
+              realRank = result.rank;
+              break;
+            }
+          }
+          rankCache[cacheKey] = realRank;
+        } catch (e) { /* 실시간 순위 조회 실패 시 무시 */ }
+      }
+    }
+
+    // 4. 입찰가 조정 로직
     let newBid = currentBid;
 
-    if (targetBid > 0 && currentBid < targetBid) {
-      // 목표 순위 미달 → adjust_amt만큼 점진 상향 (한번에 점프 X)
+    if (realRank > 0 && realRank <= target_rank) {
+      // 실시간 순위 달성 → 입찰가 과다 시 점진 하향
+      if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
+        newBid = Math.max(currentBid - adjust_amt, 70);
+      }
+      // 순위 달성 중이면 유지
+    } else if (targetBid > 0 && currentBid < targetBid) {
+      // 목표 순위 미달 → adjust_amt만큼 점진 상향
       newBid = Math.min(currentBid + adjust_amt, max_bid);
     } else if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
       // 입찰가 과다 → adjust_amt만큼 점진 하향
       newBid = Math.max(currentBid - adjust_amt, 70);
-    } else if (currentRank === 0 && targetBid === 0) {
-      // estimate 조회 실패 but 순위 밖 → 상향 시도
+    } else if (targetBid === 0 && realRank === 0) {
+      // estimate 조회 실패 + 순위 밖 → 상향 시도
       newBid = Math.min(currentBid + adjust_amt, max_bid);
     }
 
     const changed = newBid !== currentBid && newBid > 0;
     if (changed) {
       await client.updateKeywordBid(keyword_id, newBid);
-      const rankStr = currentRank > 0 ? currentRank + '위' : '순위밖';
+      const rankStr = realRank > 0 ? realRank + '위' : '순위밖';
       console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${rankStr} → 목표:${target_rank}위, 필요:${targetBid}원)`);
     }
 
-    // DB 상태 + last_run 갱신 (last_rank에 targetBid 저장)
-    await db.updateAutoBidKeywordStatus(keyword_id, device, targetBid, newBid || currentBid).catch(() => {});
+    // DB 상태 + last_run 갱신
+    await db.updateAutoBidKeywordStatus(keyword_id, device, targetBid, newBid || currentBid, realRank).catch(() => {});
 
     return changed;
   } catch (err) {
     console.error(`  ⚠️ [${keyword}] ${device} 실패:`, err.message);
-    // last_run은 갱신하여 다음 interval까지 재시도 방지
     await db.pool.query(
       'UPDATE auto_bid_keywords SET last_run = CURRENT_TIMESTAMP WHERE keyword_id = $1 AND device = $2',
       [keyword_id, device]
