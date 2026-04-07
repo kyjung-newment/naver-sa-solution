@@ -173,8 +173,8 @@ async function getMobileAds(keyword) {
  */
 function cleanUrl(rawText) {
   if (!rawText) return '';
-  // URL 패턴 매칭 (도메인.확장자 형태)
-  const urlMatch = rawText.match(/([a-zA-Z0-9가-힣\-]+\.(?:com|co\.kr|kr|net|org|io|shop|store|me|biz|info|cc|tv|xyz)[a-zA-Z0-9\-_.\/]*)/i);
+  // URL 패턴 매칭 (서브도메인 포함: smartstore.naver.com/path 등)
+  const urlMatch = rawText.match(/([a-zA-Z0-9가-힣\-]+(?:\.[a-zA-Z0-9가-힣\-]+)*\.(?:com|co\.kr|kr|net|org|io|shop|store|me|biz|info|cc|tv|xyz)(?:\/[a-zA-Z0-9가-힣\-_.\/]*)?)/i);
   if (urlMatch) {
     return urlMatch[1]
       .replace(/^www\./, '')
