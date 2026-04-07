@@ -2441,8 +2441,9 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         const scheduleHtml=(sch)=>Array.from({length:24},(_,h)=>'<span style="display:inline-block;width:14px;height:14px;border-radius:2px;font-size:8px;line-height:14px;text-align:center;margin:0 1px;background:'+(sch[h]==='1'?'#dcfce7':'#f1f5f9')+';color:'+(sch[h]==='1'?'#166534':'#cbd5e1')+'">'+h+'</span>').join('');
 
         const rankBadge=(rank,target)=>{
-          if(!rank||rank<=0) return '<span style="color:#cbd5e1">-</span>';
-          const v=Number(rank).toFixed(1)+'위';
+          if(!rank||rank<=0) return '<span style="color:#ef4444;font-size:11px;font-weight:600">순위 밖</span>';
+          if(rank>15) return '<span style="color:#ef4444;font-size:11px;font-weight:600">순위 밖</span>';
+          const v=Number(rank)+'위';
           if(rank<=target) return '<span style="color:#16a34a;font-weight:600">'+v+'</span>';
           return '<span style="color:#dc2626;font-weight:600">'+v+'</span>';
         };
@@ -2729,8 +2730,8 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
         let rank = 0;
         let positionBids = {};
         try {
-          // 1위~5위 각각 개별 요청 (한번에 보내면 400 에러)
-          for (let pos = 1; pos <= 5; pos++) {
+          // 1위~10위 각각 개별 요청 (한번에 보내면 400 에러)
+          for (let pos = 1; pos <= 10; pos++) {
             try {
               const est = await client.getEstimatedBidForPosition(abKw.keyword_id, abKw.device, pos);
               const item = est?.estimate?.[0];
@@ -2738,16 +2739,15 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
             } catch (e) { /* skip */ }
           }
           // 현재 입찰가로 달성 가능한 순위 계산
-          for (let pos = 1; pos <= 5; pos++) {
+          for (let pos = 1; pos <= 10; pos++) {
             if (positionBids[pos] && currentBid >= positionBids[pos]) {
               rank = pos;
               break;
             }
           }
-          if (rank === 0 && Object.keys(positionBids).length > 0) {
-            // 어떤 순위도 달성 못함 → 가장 낮은 순위+1
-            const maxPos = Math.max(...Object.keys(positionBids).map(Number));
-            rank = maxPos + 1;
+          if (rank === 0) {
+            // 어떤 순위도 달성 못함 → 순위 밖 (0으로 유지)
+            rank = 0;
           }
           console.log(`  📊 [${abKw.keyword}] ${abKw.device} 추정순위: ${rank > 0 ? rank + '위' : '-'}, 입찰가: ${currentBid}원, 순위별: ${JSON.stringify(positionBids)}`);
         } catch (estErr) {

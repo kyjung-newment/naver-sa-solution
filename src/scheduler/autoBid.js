@@ -83,13 +83,13 @@ async function adjustBidForKeyword(client, abKw) {
     } catch (e) { /* fallback */ }
 
     // 목표 순위에 필요한 입찰가 조회 (estimate API)
-    let currentRank = 999;
+    let currentRank = 0; // 0 = 순위 밖
     let targetBid = 0;
     try {
       const est = await client.getEstimatedBidForPosition(keyword_id, device, target_rank);
       targetBid = est?.estimate?.[0]?.bid || 0;
       if (targetBid > 0) {
-        currentRank = currentBid >= targetBid ? target_rank : (target_rank + 1);
+        currentRank = currentBid >= targetBid ? target_rank : 0; // 달성 or 순위 밖
       }
     } catch (e) {
       console.log(`  순위 추정 실패 [${keyword}]:`, e.message);
@@ -98,17 +98,21 @@ async function adjustBidForKeyword(client, abKw) {
     let newBid = currentBid;
 
     if (targetBid > 0 && currentBid < targetBid) {
-      // 목표 순위 미달 → 입찰가 상향
+      // 목표 순위 미달 → adjust_amt만큼 점진 상향 (한번에 점프 X)
       newBid = Math.min(currentBid + adjust_amt, max_bid);
     } else if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
-      // 입찰가 과다 → 하향
+      // 입찰가 과다 → adjust_amt만큼 점진 하향
       newBid = Math.max(currentBid - adjust_amt, 70);
+    } else if (currentRank === 0 && targetBid === 0) {
+      // estimate 조회 실패 but 순위 밖 → 상향 시도
+      newBid = Math.min(currentBid + adjust_amt, max_bid);
     }
 
     const changed = newBid !== currentBid && newBid > 0;
     if (changed) {
       await client.updateKeywordBid(keyword_id, newBid);
-      console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (현재:${currentRank.toFixed(1)}위 목표:${target_rank}위)`);
+      const rankStr = currentRank > 0 ? currentRank + '위' : '순위밖';
+      console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${rankStr} → 목표:${target_rank}위, 필요:${targetBid}원)`);
     }
 
     // DB 상태 + last_run 갱신
