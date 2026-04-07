@@ -227,11 +227,11 @@ router.get('/login', async (req, res) => {
                 <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
               </div>
               ${!isFirst ? `
-              <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;color:#64748b">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+              <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;color:#64748b;white-space:nowrap">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
                   <input type="checkbox" id="save-id" style="accent-color:#03c75a"> 아이디 저장
                 </label>
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
                   <input type="checkbox" name="remember" value="1" style="accent-color:#03c75a"> 로그인 유지
                 </label>
               </div>` : ''}
