@@ -82,30 +82,30 @@ async function adjustBidForKeyword(client, abKw) {
       currentBid = kwInfo?.bidAmt || currentBid;
     } catch (e) { /* fallback */ }
 
-    // 목표 순위에 필요한 입찰가 조회
-    const estResult = await client.getEstimatedBidForPosition(keyword_id, device, target_rank);
-    const estimates = estResult?.estimate || [];
-    const targetEst = estimates.find(e => e.position === target_rank);
-    const targetBid = targetEst?.bid || 0;
-
-    // 현재 순위 추정 (입찰가 기반)
+    // 실제 평균 노출 순위 조회 (Stats API)
     let currentRank = 999;
-    if (targetBid > 0) {
-      if (currentBid >= targetBid) {
-        currentRank = target_rank; // 목표 달성
-      } else {
-        // 목표 미달 - 대략적 순위 추정
-        currentRank = target_rank + Math.ceil((targetBid - currentBid) / (adjust_amt || 100));
+    try {
+      const today = new Date(Date.now() + 9*60*60*1000).toISOString().slice(0,10);
+      const yesterday = new Date(Date.now() + 9*60*60*1000 - 24*60*60*1000).toISOString().slice(0,10);
+      let statResult = await client.getStatById(keyword_id, { startDate: today, endDate: today });
+      if (!statResult?.data?.length) {
+        statResult = await client.getStatById(keyword_id, { startDate: yesterday, endDate: yesterday });
       }
+      if (statResult?.data?.length) {
+        const avgRnk = statResult.data[0]?.avgRnk || 0;
+        if (avgRnk > 0) currentRank = avgRnk;
+      }
+    } catch (e) {
+      console.log(`  순위 조회 실패 [${keyword}]:`, e.message);
     }
 
     let newBid = currentBid;
 
-    if (targetBid > 0 && currentBid < targetBid) {
-      // 입찰가 부족 → 상향 (adjust_amt 단위)
+    if (currentRank > target_rank) {
+      // 순위 낮음 → 입찰가 상향
       newBid = Math.min(currentBid + adjust_amt, max_bid);
-    } else if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
-      // 입찰가 과다 → 하향 (adjust_amt 단위)
+    } else if (currentRank < target_rank - 1) {
+      // 순위 높음 → 입찰가 하향
       newBid = Math.max(currentBid - adjust_amt, 70);
     }
 

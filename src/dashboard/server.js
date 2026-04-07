@@ -136,7 +136,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const menuItems = [
     { id: 'dashboard', icon: '📊', label: '성과 대시보드', href: '/smart-sa' },
     { id: 'autobid',   icon: '🎯', label: '자동입찰',      href: '/smart-sa/autobid' },
-    { id: 'reports',   icon: '📧', label: '리포트',        href: '/smart-sa/reports' },
+    { id: 'reports',   icon: '📧', label: '자동리포트',     href: '/smart-sa/reports' },
     { id: 'accounts',  icon: '🏢', label: '광고주 관리',   href: '/smart-sa/accounts' },
     { id: 'api',       icon: '🔑', label: 'API 설정',      href: '/smart-sa/api-settings' },
   ];
@@ -2553,18 +2553,21 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
           currentBid = kwInfo?.bidAmt || 0;
         } catch (e) { /* fallback */ }
 
-        // 순위별 필요 입찰가 조회 → 현재 순위 추정
-        const positions = [1,2,3,4,5,6,7,8,9,10];
-        const estResult = await client.getEstimatedBidsForPositions(kwId, device, positions);
-
+        // 실제 평균 노출 순위 조회 (Stats API)
         let rank = 0;
-        const estimates = estResult?.estimate || [];
-        if (estimates.length > 0) {
-          const sorted = [...estimates].sort((a, b) => a.position - b.position);
-          for (const est of sorted) {
-            if (currentBid >= est.bid) { rank = est.position; break; }
+        try {
+          const today = new Date(Date.now() + 9*60*60*1000).toISOString().slice(0,10);
+          const yesterday = new Date(Date.now() + 9*60*60*1000 - 24*60*60*1000).toISOString().slice(0,10);
+          let statResult = await client.getStatById(kwId, { startDate: today, endDate: today });
+          if (!statResult?.data?.length) {
+            statResult = await client.getStatById(kwId, { startDate: yesterday, endDate: yesterday });
           }
-          if (rank === 0 && sorted.length > 0) rank = sorted[sorted.length - 1].position + 1;
+          if (statResult?.data?.length) {
+            const avgRnk = statResult.data[0]?.avgRnk || 0;
+            if (avgRnk > 0) rank = avgRnk;
+          }
+        } catch (statErr) {
+          console.log(`  순위 조회 실패 [${req.body.keyword}]:`, statErr.message);
         }
 
         await db.updateAutoBidKeywordStatus(kwId, device, rank, currentBid);
@@ -2619,7 +2622,7 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
     const details = [];
     for (const abKw of abKeywords) {
       try {
-        // 현재 입찰가 조회
+        // 1. 현재 입찰가 조회 (항상 성공)
         let currentBid = abKw.last_bid || 0;
         try {
           const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
@@ -2628,33 +2631,32 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
           console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
         }
 
-        // 순위별 필요 입찰가 조회 → 현재 순위 추정
-        const positions = [1,2,3,4,5,6,7,8,9,10];
-        const estResult = await client.getEstimatedBidsForPositions(abKw.keyword_id, abKw.device, positions);
-        console.log(`  📊 [${abKw.keyword}] estimate 응답:`, JSON.stringify(estResult).slice(0, 500));
-
+        // 2. 실제 평균 노출 순위 조회 (Stats API - 오늘 기준)
         let rank = 0;
-        const estimates = estResult?.estimate || [];
-        if (estimates.length > 0) {
-          // 현재 입찰가로 달성 가능한 최상위 순위 계산
-          const sorted = [...estimates].sort((a, b) => a.position - b.position);
-          for (const est of sorted) {
-            if (currentBid >= est.bid) {
-              rank = est.position;
-              break;
-            }
+        try {
+          const today = new Date(Date.now() + 9*60*60*1000).toISOString().slice(0,10);
+          const yesterday = new Date(Date.now() + 9*60*60*1000 - 24*60*60*1000).toISOString().slice(0,10);
+          // 오늘 데이터 먼저, 없으면 어제
+          let statResult = await client.getStatById(abKw.keyword_id, { startDate: today, endDate: today });
+          if (!statResult?.data?.length) {
+            statResult = await client.getStatById(abKw.keyword_id, { startDate: yesterday, endDate: yesterday });
           }
-          if (rank === 0 && sorted.length > 0) {
-            rank = sorted[sorted.length - 1].position + 1; // 최하위보다 낮음
+          if (statResult?.data?.length) {
+            const avgRnk = statResult.data[0]?.avgRnk || 0;
+            if (avgRnk > 0) rank = avgRnk;
           }
+          console.log(`  📊 [${abKw.keyword}] ${abKw.device} 순위: ${rank > 0 ? rank.toFixed(1) + '위' : '-'}, 입찰가: ${currentBid}원`);
+        } catch (statErr) {
+          console.log(`  순위 조회 실패 [${abKw.keyword}]:`, statErr.message);
         }
 
+        // 입찰가는 항상 업데이트 (순위 조회 실패해도)
         await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, rank, currentBid);
-        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid, estimates: estimates.map(e => `${e.position}위=${e.bid}원`).join(', ') });
+        details.push({ keyword: abKw.keyword, device: abKw.device, rank, bid: currentBid });
         checked++;
         await new Promise(r => setTimeout(r, 200));
       } catch (e) {
-        console.log(`순위 조회 실패 [${abKw.keyword}]:`, e.message);
+        console.log(`키워드 조회 실패 [${abKw.keyword}]:`, e.message);
         details.push({ keyword: abKw.keyword, device: abKw.device, error: e.message });
       }
     }
