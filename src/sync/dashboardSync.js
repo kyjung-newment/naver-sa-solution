@@ -206,7 +206,6 @@ async function runDashboardSync(timeoutMs = 50000) {
 
   const now = new Date();
   const yesterday = fmtKST(new Date(now.getTime() - 24 * 60 * 60 * 1000));
-  const today = fmtKST(now);
 
   let totalSynced = 0;
 
@@ -224,12 +223,6 @@ async function runDashboardSync(timeoutMs = 50000) {
       );
       if (!yesterdayLog || yesterdayLog.status !== 'done') {
         await syncAccountDate(account, yesterday);
-        totalSynced++;
-      }
-
-      // 오늘 데이터: 항상 갱신 (부분 데이터)
-      if (Date.now() - startTime < timeoutMs) {
-        await syncAccountDate(account, today);
         totalSynced++;
       }
 
