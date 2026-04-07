@@ -91,7 +91,7 @@ function createApiClient(creds) {
     let downloadUrl = report.downloadUrl;
     for (let i = 0; i < 15; i++) {
       if (status === 'BUILT' && downloadUrl) break;
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 1000));
       const check = await apiCall('GET', `/stat-reports/${reportId}`);
       status = check.status;
       downloadUrl = check.downloadUrl;
@@ -229,41 +229,52 @@ function createApiClient(creds) {
       const dateRange = resolveDateRange(timeRange, startDate, endDate);
       const results = [];
 
-      for (const camp of (campaigns || [])) {
-        try {
-          const adGroups = await apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId });
-          for (const ag of (adGroups || [])) {
-            try {
-              const stat = await apiCall('GET', '/stats', {
-                id: ag.nccAdgroupId,
-                fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc']),
-                timeRange: JSON.stringify(dateRange),
-              });
-              // 다일 조회 시 data 배열 전체 합산
-              const d = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0 };
-              let rkCnt = 0;
-              for (const row of (stat?.data || [])) {
-                d.impCnt += row.impCnt || 0;
-                d.clkCnt += row.clkCnt || 0;
-                d.salesAmt += row.salesAmt || 0;
-                d.convAmt += row.convAmt || 0;
-                d.ccnt += row.ccnt || 0;
-                if (row.avgRnk > 0) { d.avgRnk += row.avgRnk; rkCnt++; }
-              }
-              if (rkCnt > 0) d.avgRnk = d.avgRnk / rkCnt;
-              d.ctr = d.impCnt > 0 ? (d.clkCnt / d.impCnt * 100) : 0;
-              d.cpc = d.clkCnt > 0 ? Math.round(d.salesAmt / d.clkCnt) : 0;
-              if (d.impCnt > 0 || d.clkCnt > 0) {
-                results.push({
-                  keyword: ag.name,
-                  campaignName: camp.name,
-                  adgroupId: ag.nccAdgroupId,
-                  ...d,
-                });
-              }
-            } catch (e) { /* 개별 광고그룹 오류 무시 */ }
-          }
-        } catch (e) { /* 개별 캠페인 오류 무시 */ }
+      // 모든 캠페인의 광고그룹을 병렬 조회
+      const agResults = await Promise.allSettled(
+        (campaigns || []).map(camp =>
+          apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId })
+            .then(ags => ({ camp, ags }))
+        )
+      );
+
+      const allAgs = [];
+      for (const r of agResults) {
+        if (r.status !== 'fulfilled') continue;
+        for (const ag of (r.value.ags || [])) {
+          allAgs.push({ ag, camp: r.value.camp });
+        }
+      }
+
+      // 모든 광고그룹 Stats를 병렬 조회
+      const statResults = await Promise.allSettled(
+        allAgs.map(({ ag, camp }) =>
+          apiCall('GET', '/stats', {
+            id: ag.nccAdgroupId,
+            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc']),
+            timeRange: JSON.stringify(dateRange),
+          }).then(stat => ({ ag, camp, stat }))
+        )
+      );
+
+      for (const r of statResults) {
+        if (r.status !== 'fulfilled') continue;
+        const { ag, camp, stat } = r.value;
+        const d = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0 };
+        let rkCnt = 0;
+        for (const row of (stat?.data || [])) {
+          d.impCnt += row.impCnt || 0;
+          d.clkCnt += row.clkCnt || 0;
+          d.salesAmt += row.salesAmt || 0;
+          d.convAmt += row.convAmt || 0;
+          d.ccnt += row.ccnt || 0;
+          if (row.avgRnk > 0) { d.avgRnk += row.avgRnk; rkCnt++; }
+        }
+        if (rkCnt > 0) d.avgRnk = d.avgRnk / rkCnt;
+        d.ctr = d.impCnt > 0 ? (d.clkCnt / d.impCnt * 100) : 0;
+        d.cpc = d.clkCnt > 0 ? Math.round(d.salesAmt / d.clkCnt) : 0;
+        if (d.impCnt > 0 || d.clkCnt > 0) {
+          results.push({ keyword: ag.name, campaignName: camp.name, adgroupId: ag.nccAdgroupId, ...d });
+        }
       }
 
       return results;

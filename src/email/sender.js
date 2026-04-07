@@ -195,6 +195,8 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
     );
 
     const rows = campEntries.map(([, d]) => [{ v: d.name, bold: true }, ...metricRow(d)]);
+    // 합계 행 추가
+    rows.push([{ v: '합계', bold: true, color: '#111827', bg: '#f1f5f9' }, ...metricRow(data.total).map(c => ({ ...c, bg: '#f1f5f9', bold: true }))]);
     const tableHtml = makeTable([{ label: '캠페인', align: 'left' }, ...metricHeaders], rows);
 
     html += section('캠페인별 성과', '📋', `
@@ -274,9 +276,8 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
     hourChart += '<div style="text-align:center;font-size:10px;color:#9ca3af;margin-top:4px">시간대별 클릭수 분포 (0~23시)</div>';
     hourChart += '</div>';
 
-    // 주요 시간대 Top 5
-    const topHours = [...hourEntries].sort((a, b) => b[1].clk - a[1].clk).slice(0, 8);
-    const rows = topHours.map(([h, d]) => [{ v: `${h}시`, bold: true }, ...metricRow(d)]);
+    // 00시~23시 순서대로 전체 표시
+    const rows = hourEntries.map(([h, d]) => [{ v: `${parseInt(h)}시`, bold: true }, ...metricRow(d)]);
     const tableHtml = makeTable([{ label: '시간', align: 'left' }, ...metricHeaders], rows);
 
     html += section('시간대별 성과', '🕐', hourChart + `<div style="overflow-x:auto">${tableHtml}</div>`);
@@ -370,7 +371,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
   // ══════════════════════════════════════════════════════════════
   html += `
 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:0 0 14px 14px;padding:14px 20px;text-align:center">
-  <p style="margin:0;font-size:11px;color:#9ca3af">이 리포트는 네이버 SA 솔루션에서 자동 발송되었습니다 · ${accountName}</p>
+  <p style="margin:0;font-size:11px;color:#9ca3af">이 리포트는 뉴먼트 솔루션에서 자동 발송되었습니다 · ${accountName}</p>
   <p style="margin:4px 0 0;font-size:10px;color:#d1d5db">데이터 출처: 네이버 검색광고 API (AD_DETAIL + AD_CONVERSION_DETAIL)</p>
 </div>
 </div></body></html>`;

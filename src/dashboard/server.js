@@ -84,8 +84,8 @@ const css = `
   .alert-info{background:#dbeafe;color:#2563eb;border:1px solid #93c5fd}
   .sidebar{width:240px;min-height:100vh;background:#1e293b;color:#fff;position:fixed;top:0;left:0;display:flex;flex-direction:column}
   .sidebar-header{padding:20px 20px 16px;border-bottom:1px solid rgba(255,255,255,.1)}
-  .sidebar-logo{font-size:16px;font-weight:700;color:#03c75a}
-  .sidebar-sub{font-size:11px;color:rgba(255,255,255,.4);margin-top:3px}
+  .sidebar-logo{font-size:16px;font-weight:700;color:#ffffff}
+  .sidebar-sub{font-size:11px;color:#9ca3af;margin-top:3px}
   .sidebar-section{padding:12px 12px 4px;font-size:10px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.08em}
   .sidebar-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;font-size:13px;color:rgba(255,255,255,.7);cursor:pointer;transition:all .15s;margin:1px 8px;border:none;background:transparent;width:calc(100%-16px)}
   .sidebar-link:hover,.sidebar-link.active{background:rgba(255,255,255,.1);color:#fff}
@@ -115,7 +115,7 @@ const css = `
 function layout(title, body, user = null) {
   return `<!DOCTYPE html><html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} - 네이버 SA 솔루션</title>
+<title>${title} - 뉴먼트 솔루션</title>
 <style>${css}</style></head><body>${body}
 <div class="toast-wrap" id="toast-wrap"></div>
 <script>
@@ -167,8 +167,8 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const sidebar = `
   <div class="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-logo">네이버 SA 솔루션</div>
-      <div class="sidebar-sub">광고대행사 관리 시스템</div>
+      <div class="sidebar-logo">뉴먼트 솔루션</div>
+      <div class="sidebar-sub">Newment solution Naver SA</div>
     </div>
     ${accountSelector}
     <div style="padding:8px">
@@ -209,8 +209,8 @@ router.get('/login', async (req, res) => {
       <div style="width:100%;max-width:400px;padding:16px">
         <div style="text-align:center;margin-bottom:32px">
           <div style="font-size:40px;margin-bottom:8px">📊</div>
-          <h1 style="font-size:22px;font-weight:700;color:#111827">네이버 SA 솔루션</h1>
-          <p style="color:#64748b;margin-top:6px;font-size:13px">광고대행사 통합 관리 시스템</p>
+          <h1 style="font-size:22px;font-weight:700;color:#111827">뉴먼트 솔루션</h1>
+          <p style="color:#9ca3af;margin-top:6px;font-size:13px">Newment solution Naver SA</p>
         </div>
         <div class="card">
           <div class="card-body">
@@ -303,8 +303,8 @@ router.get('/signup', (req, res) => {
       <div style="width:100%;max-width:440px;padding:16px">
         <div style="text-align:center;margin-bottom:32px">
           <div style="font-size:40px;margin-bottom:8px">📊</div>
-          <h1 style="font-size:22px;font-weight:700;color:#111827">네이버 SA 솔루션</h1>
-          <p style="color:#64748b;margin-top:6px;font-size:13px">직원 계정 생성</p>
+          <h1 style="font-size:22px;font-weight:700;color:#111827">뉴먼트 솔루션</h1>
+          <p style="color:#9ca3af;margin-top:6px;font-size:13px">Newment solution Naver SA</p>
         </div>
         <div class="card">
           <div class="card-body">
@@ -746,8 +746,8 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
             <ol style="margin:6px 0 0 16px;line-height:1.8;color:#0c4a6e">
               <li>네이버 <a href="https://searchad.naver.com" target="_blank" style="color:#0284c7">검색광고 센터</a>에 로그인</li>
               <li>관리할 광고주 계정으로 <strong>전환</strong></li>
-              <li>상단 <strong>도구 → SA API 사용 관리</strong> 클릭</li>
-              <li>페이지 상단에 표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
+              <li>우측 상단의 <strong>검색광고 Key?</strong> 버튼 클릭</li>
+              <li>표시된 <strong>CUSTOMER_ID</strong> 값을 복사</li>
             </ol>
             <p style="margin-top:6px;color:#b45309;font-size:11px">⚠️ 광고계정 ID(예: 1737106)와 Customer ID(예: 1484655)는 서로 다른 값입니다.</p>
           </div>
@@ -1780,11 +1780,10 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const client = makeClient(creds, account.customer_id);
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
-    // Stats API + 전환 데이터 + AD_DETAIL 을 병렬로 fetch (속도 향상)
-    const [statsResult, convResult, adResult] = await Promise.allSettled([
+    // Stats API + 전환 데이터를 병렬로 fetch (AD_DETAIL은 탭에서만 로드)
+    const [statsResult, convResult] = await Promise.allSettled([
       client.getStats({ startDate: dateRange.since, endDate: dateRange.until }),
       fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
-      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange), // 탭 전환 시 캐시 활용
     ]);
 
     const stats = statsResult.status === 'fulfilled' ? statsResult.value
@@ -1905,9 +1904,9 @@ function resolvePeriodDates(period, startDate, endDate) {
 async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const allRows = [];
-  // 동시 5개씩 병렬 다운로드
-  for (let i = 0; i < dates.length; i += 5) {
-    const batch = dates.slice(i, i + 5);
+  // 동시 10개씩 병렬 다운로드
+  for (let i = 0; i < dates.length; i += 10) {
+    const batch = dates.slice(i, i + 10);
     const results = await Promise.allSettled(
       batch.map(dt => cachedStatReport(client, customerId, reportTp, dt).then(rows => rows.map(r => ({ date: dt, cols: r }))))
     );
@@ -1927,39 +1926,72 @@ function normalizeCampaignTp(tp) {
   return parseInt(tp) || 1;
 }
 
+// 이름 매핑 캐시 (5분 TTL)
+const nameMapCache = new Map();
+const NAME_MAP_TTL = 5 * 60 * 1000;
+
 async function buildNameMapsFromApi(client) {
   const campMap = {}, agMap = {}, kwMap = {};
   try {
     const campaigns = await client.getCampaigns();
     for (const c of (campaigns || [])) {
       campMap[c.nccCampaignId] = { name: c.name, tp: normalizeCampaignTp(c.campaignTp) };
-      try {
-        const adgroups = await client.getAdGroups(c.nccCampaignId);
-        for (const ag of (adgroups || [])) {
-          agMap[ag.nccAdgroupId] = { name: ag.name, campaignId: c.nccCampaignId };
-          try {
-            const keywords = await client.getKeywords(ag.nccAdgroupId);
-            for (const kw of (keywords || [])) {
-              kwMap[kw.nccKeywordId] = {
-                keyword: kw.keyword, adgroupId: ag.nccAdgroupId,
-                adgroupName: ag.name, campaignId: c.nccCampaignId,
-                campaignName: c.name, campaignTp: normalizeCampaignTp(c.campaignTp),
-              };
-            }
-          } catch (e) {}
+    }
+
+    // 모든 캠페인의 광고그룹을 병렬 조회
+    const agResults = await Promise.allSettled(
+      (campaigns || []).map(c => client.getAdGroups(c.nccCampaignId).then(ags => ({ campaignId: c.nccCampaignId, ags })))
+    );
+    const allAdgroups = [];
+    for (const r of agResults) {
+      if (r.status !== 'fulfilled') continue;
+      const { campaignId, ags } = r.value;
+      for (const ag of (ags || [])) {
+        agMap[ag.nccAdgroupId] = { name: ag.name, campaignId };
+        allAdgroups.push({ ag, campaignId });
+      }
+    }
+
+    // 모든 광고그룹의 키워드를 병렬 조회 (10개씩 배치)
+    for (let i = 0; i < allAdgroups.length; i += 10) {
+      const batch = allAdgroups.slice(i, i + 10);
+      const kwResults = await Promise.allSettled(
+        batch.map(({ ag, campaignId }) => client.getKeywords(ag.nccAdgroupId).then(kws => ({ ag, campaignId, kws })))
+      );
+      for (const r of kwResults) {
+        if (r.status !== 'fulfilled') continue;
+        const { ag, campaignId, kws } = r.value;
+        for (const kw of (kws || [])) {
+          kwMap[kw.nccKeywordId] = {
+            keyword: kw.keyword, adgroupId: ag.nccAdgroupId,
+            adgroupName: ag.name, campaignId,
+            campaignName: campMap[campaignId]?.name || '',
+            campaignTp: campMap[campaignId]?.tp || 1,
+          };
         }
-      } catch (e) {}
+      }
     }
   } catch (e) {}
   return { campMap, agMap, kwMap };
 }
 
 async function getNameMaps(client, accountId) {
+  // 캐시 확인
+  const cacheKey = `nm:${accountId}`;
+  const cached = nameMapCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < NAME_MAP_TTL) return cached.data;
+
   const master = await db.buildKeywordMaps(accountId);
   const hasMaster = Object.keys(master.kwMap).length > 0;
-  if (hasMaster) return { ...master, hasMaster: true };
+  if (hasMaster) {
+    const data = { ...master, hasMaster: true };
+    nameMapCache.set(cacheKey, { data, ts: Date.now() });
+    return data;
+  }
   const api = await buildNameMapsFromApi(client);
-  return { ...api, hasMaster: false };
+  const data = { ...api, hasMaster: false };
+  nameMapCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
 // ─── API: 탭 데이터 (키워드별) ──────────────────────────────────────

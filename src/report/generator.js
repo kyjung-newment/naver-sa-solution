@@ -4,23 +4,40 @@ const { sendReport } = require('../email/sender');
 const TIME_RANGE_MAP = { daily: 'yesterday', weekly: 'last7days', monthly: 'last30days' };
 
 function getDateRange(type) {
-  const today = new Date();
-  const fmt = d => d.toISOString().slice(0, 10);
+  // KST 기준 오늘 날짜
+  const now = new Date();
+  const kstNow = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const fmt = d => {
+    const k = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    return k.toISOString().slice(0, 10);
+  };
+  const fmtLocal = d => d.toISOString().slice(0, 10);
+
   if (type === 'daily') {
-    const d = new Date(today); d.setDate(d.getDate() - 1);
+    // 어제
+    const d = new Date(now); d.setDate(d.getDate() - 1);
     return { since: fmt(d), until: fmt(d) };
   }
   if (type === 'weekly') {
-    const end = new Date(today); end.setDate(end.getDate() - 1);
-    const start = new Date(today); start.setDate(start.getDate() - 7);
-    return { since: fmt(start), until: fmt(end) };
+    // 지난주 월요일~일요일 (KST 기준)
+    const todayKST = new Date(kstNow.toISOString().slice(0, 10));
+    const dayOfWeek = todayKST.getDay(); // 0=일, 1=월, ...
+    // 지난주 일요일 = 오늘 - dayOfWeek (이번주 일) - 7 + 7 = 오늘 기준 지난 일요일
+    const lastSunday = new Date(todayKST);
+    lastSunday.setDate(todayKST.getDate() - (dayOfWeek === 0 ? 7 : dayOfWeek));
+    const lastMonday = new Date(lastSunday);
+    lastMonday.setDate(lastSunday.getDate() - 6);
+    return { since: fmtLocal(lastMonday), until: fmtLocal(lastSunday) };
   }
   if (type === 'monthly') {
-    const end = new Date(today); end.setDate(end.getDate() - 1);
-    const start = new Date(today); start.setDate(start.getDate() - 30);
-    return { since: fmt(start), until: fmt(end) };
+    // 지난달 1일 ~ 말일
+    const kstYear = kstNow.getUTCFullYear();
+    const kstMonth = kstNow.getUTCMonth(); // 0-indexed, 현재 달
+    const lastMonthStart = new Date(Date.UTC(kstYear, kstMonth - 1, 1));
+    const lastMonthEnd = new Date(Date.UTC(kstYear, kstMonth, 0)); // 지난달 마지막일
+    return { since: fmtLocal(lastMonthStart), until: fmtLocal(lastMonthEnd) };
   }
-  const d = new Date(today); d.setDate(d.getDate() - 1);
+  const d = new Date(now); d.setDate(d.getDate() - 1);
   return { since: fmt(d), until: fmt(d) };
 }
 
