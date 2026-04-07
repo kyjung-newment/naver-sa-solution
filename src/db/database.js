@@ -114,6 +114,11 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // users에 SMTP 비밀번호 컬럼 추가 (다우오피스 연동용)
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   console.log('✅ DB 초기화 완료 (Supabase PostgreSQL)');
 }
 
@@ -147,8 +152,8 @@ const all = async (sql, params = []) => {
 async function createUser(username, password, name, { isAdmin = 0, approved = 0 } = {}) {
   const passwordHash = hashPassword(password);
   const result = await pool.query(
-    'INSERT INTO users (username, password_hash, name, is_admin, approved) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0]
+    'INSERT INTO users (username, password_hash, name, is_admin, approved, smtp_pass) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0, password]
   );
   return result.rows[0].id;
 }
@@ -168,6 +173,8 @@ async function authenticateUser(username, password) {
   const user = await getUserByUsername(username);
   if (!user) return null;
   if (!verifyPassword(password, user.password_hash)) return null;
+  // 로그인 시 SMTP 비밀번호 갱신 (비밀번호 변경 대비)
+  await pool.query('UPDATE users SET smtp_pass = $1 WHERE id = $2', [password, user.id]).catch(() => {});
   return { id: user.id, username: user.username, name: user.name, is_admin: user.is_admin, approved: user.approved };
 }
 
@@ -190,6 +197,11 @@ async function approveUser(userId) {
 
 async function rejectUser(userId) {
   return query('DELETE FROM users WHERE id = $1 AND is_admin = 0', [userId]);
+}
+
+// ─── SMTP 자격증명 (다우오피스 자동 연동) ──────────────────────────────
+async function getSmtpCredentials(userId) {
+  return get('SELECT username, smtp_pass FROM users WHERE id = $1', [userId]);
 }
 
 // ─── API 자격증명 ─────────────────────────────────────────────────────
@@ -390,7 +402,7 @@ module.exports = Object.assign(module.exports, {
   initDb,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
   getAllUsers, getPendingUsers, approveUser, rejectUser,
-  updateApiCredentials, getApiCredentials,
+  updateApiCredentials, getApiCredentials, getSmtpCredentials,
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount,
   resetAdminPassword, deleteAllUsers,

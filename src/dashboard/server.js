@@ -1113,56 +1113,17 @@ function accountSettingsForm(account = {}) {
       </div>
 
       <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">이메일 발송 설정 (SMTP)</span></div>
+        <div class="card-header"><span class="card-title">이메일 발송 설정</span></div>
         <div class="card-body">
-          <div class="form-row">
-            <div class="form-group"><label>SMTP 서버</label><input name="email_host" value="${v('email_host','smtp.daouoffice.com')}" placeholder="smtp.daouoffice.com"></div>
-            <div class="form-group"><label>포트</label><input name="email_port" type="number" value="${v('email_port',587)}" placeholder="587"></div>
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 18px;margin-bottom:16px">
+            <div style="font-size:13px;font-weight:600;color:#16a34a">✅ SMTP 자동 연동</div>
+            <div style="font-size:12px;color:#14532d;margin-top:4px">로그인 계정(다우오피스)으로 자동 발송됩니다. 별도 설정 불필요.</div>
+            <div style="font-size:12px;color:#64748b;margin-top:4px">발신: <strong>${user.username}</strong> → 수신: 위 리포트 수신 이메일</div>
           </div>
-          <div class="form-row">
-            <div class="form-group"><label>발송 이메일</label><input name="email_user" value="${v('email_user')}" placeholder="user@newment.co.kr"></div>
-            <div class="form-group"><label>비밀번호</label><input type="password" name="email_pass" value="${v('email_pass')}" placeholder="다우오피스 로그인 비밀번호"></div>
-          </div>
-
-          <div style="margin-top:16px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:16px 18px">
-            <div style="font-size:13px;font-weight:700;color:#0369a1;margin-bottom:10px">📮 다우오피스 메일 SMTP 설정 가이드</div>
-            <div style="font-size:12px;color:#0c4a6e;line-height:2">
-              <strong>다우오피스 메일을 사용하는 경우 아래 정보를 입력하세요:</strong>
-              <table style="width:100%;margin:8px 0;border-collapse:collapse;font-size:12px">
-                <tr style="background:#e0f2fe">
-                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd;width:120px">SMTP 서버</td>
-                  <td style="padding:6px 10px;border:1px solid #bae6fd;font-family:monospace">smtp.daouoffice.com</td>
-                </tr>
-                <tr>
-                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">포트</td>
-                  <td style="padding:6px 10px;border:1px solid #bae6fd;font-family:monospace">587</td>
-                </tr>
-                <tr style="background:#e0f2fe">
-                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">발송 이메일</td>
-                  <td style="padding:6px 10px;border:1px solid #bae6fd">다우오피스 메일 주소 (예: <code>user@newment.co.kr</code>)</td>
-                </tr>
-                <tr>
-                  <td style="padding:6px 10px;font-weight:600;border:1px solid #bae6fd">비밀번호</td>
-                  <td style="padding:6px 10px;border:1px solid #bae6fd">다우오피스 로그인 비밀번호</td>
-                </tr>
-              </table>
-              <div style="margin-top:8px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e">
-                <strong>⚠️ 다우오피스 외부메일(SMTP) 활성화 방법:</strong>
-                <ol style="margin:6px 0 0 16px;padding:0;line-height:2.2">
-                  <li>다우오피스에 로그인 후 <strong>메일</strong> 클릭</li>
-                  <li>좌측 하단 <strong>메일환경설정</strong> 클릭</li>
-                  <li>상단 탭에서 <strong>외부메일</strong> 클릭</li>
-                  <li><strong>+ 추가</strong> 버튼 클릭</li>
-                  <li>POP3 서버: <code>pop.daouoffice.com</code> / 포트: <code>995</code> / 보안연결(SSL) 체크</li>
-                  <li>아이디: 메일 주소 전체 입력 (예: <code>user@newment.co.kr</code>)</li>
-                  <li>비밀번호: 로그인 비밀번호 입력 후 <strong>확인</strong></li>
-                </ol>
-              </div>
-              <div style="margin-top:8px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;color:#14532d">
-                <strong>💡 Gmail 사용 시:</strong> SMTP 서버 <code>smtp.gmail.com</code> / 포트 <code>587</code> / <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#16a34a">앱 비밀번호</a> 발급 필요
-              </div>
-            </div>
-          </div>
+          <input type="hidden" name="email_host" value="${v('email_host','smtp.daouoffice.com')}">
+          <input type="hidden" name="email_port" value="${v('email_port',587)}">
+          <input type="hidden" name="email_user" value="${v('email_user','')}">
+          <input type="hidden" name="email_pass" value="${v('email_pass','')}">
         </div>
       </div>
 
@@ -2350,8 +2311,17 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   const creds = await db.getApiCredentials(req.session.userId);
   if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
-  // account에 API 자격증명 병합
-  const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+  // account에 API 자격증명 + SMTP 자격증명 병합
+  const smtp = await db.getSmtpCredentials(req.session.userId);
+  const enriched = {
+    ...account,
+    api_key: creds.api_key, secret_key: creds.secret_key,
+    // SMTP: 사용자 로그인 정보로 자동 연동 (다우오피스)
+    email_host: account.email_host && account.email_host !== 'smtp.gmail.com' ? account.email_host : 'smtp.daouoffice.com',
+    email_port: account.email_port || 587,
+    email_user: account.email_user || smtp?.username || '',
+    email_pass: account.email_pass || smtp?.smtp_pass || '',
+  };
   try {
     const ok = await generateAndSend(enriched, type);
     if (ok) {
@@ -2383,6 +2353,16 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       const accounts = await db.getAllAccountsWithFeature(`${type}_report`);
       let sent = 0;
       for (const account of accounts) {
+        // SMTP 자동 연동: 사용자 로그인 정보 사용
+        const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+        if (!account.email_user && smtp) {
+          account.email_user = smtp.username;
+          account.email_pass = smtp.smtp_pass;
+        }
+        if (!account.email_host || account.email_host === 'smtp.gmail.com') {
+          account.email_host = 'smtp.daouoffice.com';
+          account.email_port = 587;
+        }
         const ok = await generateAndSend(account, type).catch(() => false);
         if (ok) {
           await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
