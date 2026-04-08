@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const ExcelJS = require('exceljs');
 
 const transporterCache = new Map();
 
@@ -379,6 +380,230 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
   return html;
 }
 
+// ─── 엑셀 리포트 빌더 ────────────────────────────────────────────────
+async function buildExcelReport({ type, period, accountName, data, prevData }) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = '뉴먼트 솔루션';
+  workbook.created = new Date();
+
+  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+
+  // 공통 스타일 헬퍼
+  const headerStyle = { font: { bold: true, size: 11, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF03C75A' } }, alignment: { horizontal: 'center', vertical: 'middle' }, border: { bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } } } };
+  const numFmt = '#,##0';
+  const wonFmt = '₩#,##0';
+  const pctFmt = '0.00"%"';
+  const rankFmt = '0.0';
+
+  function addMetricColumns(sheet, startCol) {
+    const cols = ['총비용', '노출수', '평균순위', '클릭수', 'CPC', 'CTR', '구매완료', '구매매출', 'ROAS', '장바구니', '장바구니매출'];
+    return cols;
+  }
+
+  function addMetricRow(row, d, startIdx) {
+    row.getCell(startIdx).value = d.cost || 0; row.getCell(startIdx).numFmt = wonFmt;
+    row.getCell(startIdx + 1).value = d.imp || 0; row.getCell(startIdx + 1).numFmt = numFmt;
+    row.getCell(startIdx + 2).value = d.avgRank || 0; row.getCell(startIdx + 2).numFmt = rankFmt;
+    row.getCell(startIdx + 3).value = d.clk || 0; row.getCell(startIdx + 3).numFmt = numFmt;
+    row.getCell(startIdx + 4).value = d.cpc || 0; row.getCell(startIdx + 4).numFmt = wonFmt;
+    row.getCell(startIdx + 5).value = d.ctr || 0; row.getCell(startIdx + 5).numFmt = pctFmt;
+    row.getCell(startIdx + 6).value = d.purchaseCnt || 0; row.getCell(startIdx + 6).numFmt = numFmt;
+    row.getCell(startIdx + 7).value = d.purchaseAmt || 0; row.getCell(startIdx + 7).numFmt = wonFmt;
+    row.getCell(startIdx + 8).value = d.roas || 0; row.getCell(startIdx + 8).numFmt = '0"%"';
+    row.getCell(startIdx + 9).value = d.cartCnt || 0; row.getCell(startIdx + 9).numFmt = numFmt;
+    row.getCell(startIdx + 10).value = d.cartAmt || 0; row.getCell(startIdx + 10).numFmt = wonFmt;
+  }
+
+  function styleHeaderRow(sheet) {
+    const row = sheet.getRow(1);
+    row.eachCell(cell => {
+      cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF03C75A' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } } };
+    });
+    row.height = 28;
+  }
+
+  function autoWidth(sheet) {
+    sheet.columns.forEach(col => {
+      let maxLen = 10;
+      col.eachCell({ includeEmpty: false }, cell => {
+        const len = String(cell.value || '').length;
+        if (len > maxLen) maxLen = Math.min(len, 40);
+      });
+      col.width = maxLen + 4;
+    });
+  }
+
+  // ══ 1. 요약 시트 ══
+  const summarySheet = workbook.addWorksheet('요약');
+  summarySheet.columns = [
+    { header: '항목', key: 'label', width: 20 },
+    { header: '값', key: 'value', width: 25 },
+    { header: '전기비교', key: 'prev', width: 25 },
+  ];
+  styleHeaderRow(summarySheet);
+
+  const t = data.total;
+  const pt = prevData?.total || null;
+  const summaryItems = [
+    { label: '리포트 유형', value: typeLabel, prev: '' },
+    { label: '기간', value: period, prev: '' },
+    { label: '광고주', value: accountName, prev: '' },
+    { label: '총비용', value: t.cost || 0, prev: pt ? pt.cost || 0 : '' },
+    { label: '노출수', value: t.imp || 0, prev: pt ? pt.imp || 0 : '' },
+    { label: '클릭수', value: t.clk || 0, prev: pt ? pt.clk || 0 : '' },
+    { label: 'CTR', value: t.ctr || 0, prev: pt ? pt.ctr || 0 : '' },
+    { label: '평균순위', value: t.avgRank || 0, prev: pt ? pt.avgRank || 0 : '' },
+    { label: 'CPC', value: t.cpc || 0, prev: pt ? pt.cpc || 0 : '' },
+    { label: '구매완료매출', value: t.purchaseAmt || 0, prev: pt ? pt.purchaseAmt || 0 : '' },
+    { label: 'ROAS', value: t.roas || 0, prev: pt ? pt.roas || 0 : '' },
+    { label: '구매완료전환수', value: t.purchaseCnt || 0, prev: pt ? pt.purchaseCnt || 0 : '' },
+    { label: '장바구니수', value: t.cartCnt || 0, prev: pt ? pt.cartCnt || 0 : '' },
+  ];
+  summaryItems.forEach(item => {
+    const row = summarySheet.addRow(item);
+    if (typeof item.value === 'number') {
+      if (item.label.includes('비용') || item.label.includes('매출') || item.label === 'CPC') {
+        row.getCell(2).numFmt = wonFmt;
+        if (typeof item.prev === 'number') row.getCell(3).numFmt = wonFmt;
+      } else if (item.label === 'CTR') {
+        row.getCell(2).numFmt = pctFmt;
+        if (typeof item.prev === 'number') row.getCell(3).numFmt = pctFmt;
+      } else if (item.label === 'ROAS') {
+        row.getCell(2).numFmt = '0"%"';
+        if (typeof item.prev === 'number') row.getCell(3).numFmt = '0"%"';
+      } else if (item.label === '평균순위') {
+        row.getCell(2).numFmt = rankFmt;
+        if (typeof item.prev === 'number') row.getCell(3).numFmt = rankFmt;
+      } else {
+        row.getCell(2).numFmt = numFmt;
+        if (typeof item.prev === 'number') row.getCell(3).numFmt = numFmt;
+      }
+    }
+  });
+
+  // ══ 2. 캠페인별 시트 ══
+  const campEntries = Object.entries(data.byCampaign).sort((a, b) => b[1].cost - a[1].cost);
+  if (campEntries.length > 0) {
+    const campSheet = workbook.addWorksheet('캠페인별');
+    campSheet.columns = [
+      { header: '캠페인', key: 'name', width: 25 },
+      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
+      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
+      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
+      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
+      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
+      { header: '장바구니매출', key: 'cartAmt' },
+    ];
+    styleHeaderRow(campSheet);
+
+    campEntries.forEach(([, d]) => {
+      const row = campSheet.addRow({ name: d.name });
+      addMetricRow(row, d, 2);
+    });
+    // 합계
+    const totalRow = campSheet.addRow({ name: '합계' });
+    addMetricRow(totalRow, data.total, 2);
+    totalRow.eachCell(cell => { cell.font = { bold: true }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; });
+    autoWidth(campSheet);
+  }
+
+  // ══ 3. 광고그룹별 시트 ══
+  const agEntries = Object.entries(data.byAdgroup).sort((a, b) => b[1].cost - a[1].cost);
+  if (agEntries.length > 0) {
+    const agSheet = workbook.addWorksheet('광고그룹별');
+    agSheet.columns = [
+      { header: '캠페인', key: 'campaignName', width: 20 },
+      { header: '광고그룹', key: 'name', width: 25 },
+      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
+      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
+      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
+      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
+      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
+      { header: '장바구니매출', key: 'cartAmt' },
+    ];
+    styleHeaderRow(agSheet);
+
+    agEntries.forEach(([, d]) => {
+      const row = agSheet.addRow({ campaignName: d.campaignName, name: d.name });
+      addMetricRow(row, d, 3);
+    });
+    autoWidth(agSheet);
+  }
+
+  // ══ 4. PC/모바일 시트 ══
+  const deviceEntries = Object.entries(data.byDevice).sort((a, b) => b[1].cost - a[1].cost);
+  if (deviceEntries.length > 0) {
+    const deviceSheet = workbook.addWorksheet('PC_모바일');
+    deviceSheet.columns = [
+      { header: '매체', key: 'device', width: 12 },
+      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
+      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
+      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
+      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
+      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
+      { header: '장바구니매출', key: 'cartAmt' },
+    ];
+    styleHeaderRow(deviceSheet);
+
+    deviceEntries.forEach(([device, d]) => {
+      const row = deviceSheet.addRow({ device });
+      addMetricRow(row, d, 2);
+    });
+    autoWidth(deviceSheet);
+  }
+
+  // ══ 5. 시간대별 시트 ══
+  const hourEntries = Object.entries(data.byHour).sort((a, b) => a[0].localeCompare(b[0]));
+  if (hourEntries.length > 0) {
+    const hourSheet = workbook.addWorksheet('시간대별');
+    hourSheet.columns = [
+      { header: '시간', key: 'hour', width: 10 },
+      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
+      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
+      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
+      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
+      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
+      { header: '장바구니매출', key: 'cartAmt' },
+    ];
+    styleHeaderRow(hourSheet);
+
+    hourEntries.forEach(([h, d]) => {
+      const row = hourSheet.addRow({ hour: `${parseInt(h)}시` });
+      addMetricRow(row, d, 2);
+    });
+    autoWidth(hourSheet);
+  }
+
+  // ══ 6. 일자별 시트 (주간/월간) ══
+  const dateEntries = Object.entries(data.byDate).sort((a, b) => a[0].localeCompare(b[0]));
+  if (dateEntries.length > 1) {
+    const dateSheet = workbook.addWorksheet('일자별');
+    dateSheet.columns = [
+      { header: '일자', key: 'date', width: 16 },
+      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
+      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
+      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
+      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
+      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
+      { header: '장바구니매출', key: 'cartAmt' },
+    ];
+    styleHeaderRow(dateSheet);
+
+    dateEntries.forEach(([dt, d]) => {
+      const dayOfWeek = ['일', '월', '화', '수', '목', '금', '토'][new Date(dt).getDay()];
+      const row = dateSheet.addRow({ date: `${dt} (${dayOfWeek})` });
+      addMetricRow(row, d, 2);
+    });
+    autoWidth(dateSheet);
+  }
+
+  // Buffer로 반환
+  return await workbook.xlsx.writeBuffer();
+}
+
 // ─── 이메일 발송 ────────────────────────────────────────────────────
 async function sendReport({ account, type, period, data, prevData }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
@@ -396,15 +621,36 @@ async function sendReport({ account, type, period, data, prevData }) {
 
   const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData });
 
-  await getTransporter(account).sendMail({
+  // 엑셀 리포트 생성
+  let excelBuffer = null;
+  try {
+    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData });
+    console.log(`📊 [${account.name}] 엑셀 리포트 생성 완료 (${Math.round(excelBuffer.length / 1024)}KB)`);
+  } catch (e) {
+    console.warn(`⚠️ [${account.name}] 엑셀 리포트 생성 실패:`, e.message);
+  }
+
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const mailOptions = {
     from: account.email_user,
     to: recipients.join(', '),
     subject: `📊 [${account.name}] ${typeLabel} 성과 리포트 - ${today}`,
     html,
     text: `네이버 SA ${typeLabel} 리포트\n광고주: ${account.name}\n기간: ${period}\n총비용: ${f.won(data.total.cost)}\n클릭: ${f.num(data.total.clk)}`,
-  });
+  };
 
-  console.log(`✅ [${account.name}] ${typeLabel} 리포트 → ${recipients.join(', ')}`);
+  // 엑셀 첨부파일 추가
+  if (excelBuffer) {
+    mailOptions.attachments = [{
+      filename: `${account.name}_${typeLabel}_리포트_${dateStr}.xlsx`,
+      content: Buffer.from(excelBuffer),
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }];
+  }
+
+  await getTransporter(account).sendMail(mailOptions);
+
+  console.log(`✅ [${account.name}] ${typeLabel} 리포트 → ${recipients.join(', ')}${excelBuffer ? ' (엑셀 첨부)' : ''}`);
 }
 
-module.exports = { sendReport, buildHtmlReport };
+module.exports = { sendReport, buildHtmlReport, buildExcelReport };

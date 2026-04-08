@@ -135,7 +135,8 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
 
   const menuItems = [
     { id: 'dashboard', icon: '📊', label: '성과 대시보드', href: '/smart-sa' },
-    { id: 'autobid',   icon: '🎯', label: '자동입찰',      href: '/smart-sa/autobid' },
+    { id: 'autobid',   icon: '🎯', label: '파워링크 자동입찰', href: '/smart-sa/autobid' },
+    { id: 'shopping-bid', icon: '🛒', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' },
     { id: 'reports',   icon: '📧', label: '자동리포트',     href: '/smart-sa/reports' },
     { id: 'accounts',  icon: '🏢', label: '광고주 관리',   href: '/smart-sa/accounts' },
     { id: 'api',       icon: '🔑', label: 'API 설정',      href: '/smart-sa/api-settings' },
@@ -3256,6 +3257,315 @@ router.get('/api/cron/sync-backfill', async (req, res) => {
   } catch (err) {
     console.error('❌ Cron [sync-backfill]:', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── 쇼핑검색 자동입찰 페이지 ──────────────────────────────────────
+router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
+  const user = await getUser(req);
+  const accounts = await db.getAccountsByUser(user.id);
+  const selectedId = req.session.selectedAccountId || req.query.accountId || accounts[0]?.id || '';
+
+  const content = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div>
+        <p style="color:#64748b;font-size:13px;margin:0">네이버 쇼핑검색 광고의 노출순위를 실시간으로 모니터링하고 입찰가를 자동 조정합니다.</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="btn" onclick="checkShoppingRanks()" id="rank-btn">📊 순위 조회</button>
+        <button class="btn btn-primary" onclick="openShoppingModal()">+ 키워드 추가</button>
+      </div>
+    </div>
+
+    <!-- 등록된 키워드 목록 -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🛒 쇼핑검색 자동입찰 키워드 관리</span>
+        <span id="sb-count" style="font-size:12px;color:#94a3b8"></span>
+      </div>
+      <div id="sb-list"><div class="empty"><span class="spinner"></span> 로딩 중...</div></div>
+    </div>
+
+    <!-- 키워드 추가/수정 모달 -->
+    <div id="sb-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center">
+      <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;padding:24px;margin:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 id="sb-modal-title" style="margin:0;font-size:16px">쇼핑검색 키워드 추가</h3>
+          <button onclick="closeShoppingModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
+        </div>
+
+        <div class="form-group"><label>검색 키워드</label><input id="sf-keyword" placeholder="예: 남성 운동화"></div>
+        <div class="form-group"><label>상품 URL (순위 매칭용)</label><input id="sf-product-url" placeholder="https://smartstore.naver.com/..."></div>
+        <div class="form-group"><label>상품명 (메모용)</label><input id="sf-product-name" placeholder="상품명 입력"></div>
+        <input type="hidden" id="sf-edit-id">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="form-group"><label>지면</label>
+            <select id="sf-device"><option value="MO" selected>MOBILE</option><option value="PC">PC</option></select>
+          </div>
+          <div class="form-group"><label>희망순위</label><input id="sf-rank" type="number" value="1" min="1" max="40"></div>
+          <div class="form-group"><label>최대입찰가 (원)</label><input id="sf-maxbid" type="number" value="5000" step="100"></div>
+          <div class="form-group"><label>조정입찰가 (원)</label><input id="sf-adjust" type="number" value="100" step="10"></div>
+          <div class="form-group"><label>실행 간격</label>
+            <select id="sf-interval"><option value="5">5분</option><option value="10" selected>10분</option><option value="20">20분</option><option value="30">30분</option><option value="60">60분</option></select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>실행 시간대 <span style="font-size:11px;color:#94a3b8">(클릭하여 ON/OFF)</span></label>
+          <div id="sf-schedule" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:4px">
+            ${Array.from({length:24},(_,h)=>`<div class="hour-btn on" data-h="${h}" onclick="toggleShoppingHour(this)" style="text-align:center;padding:6px 0;font-size:11px;border-radius:4px;cursor:pointer;user-select:none">${h}시</div>`).join('')}
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn btn-primary" onclick="saveShoppingKeyword()" style="flex:1" id="sb-modal-save-btn">저장</button>
+          <button class="btn" onclick="closeShoppingModal()" style="flex:1">취소</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="alert alert-info" style="margin-top:16px">
+      <strong>쇼핑검색 자동입찰 안내</strong><br>
+      <span style="font-size:12px">
+        • 네이버 쇼핑탭에서 검색 키워드를 입력하면, 등록된 상품 URL이 몇 번째에 노출되는지 자동으로 확인합니다.<br>
+        • 목표순위보다 낮으면 조정입찰가만큼 올리고, 높으면 낮춥니다.<br>
+        • 쇼핑검색 광고 입찰가 API 연동 후 완전한 자동입찰이 가능합니다. (현재: 순위 모니터링)
+      </span>
+    </div>
+
+    <style>
+      .hour-btn.on{background:#dcfce7;color:#166534;border:1px solid #bbf7d0}
+      .hour-btn.off{background:#f1f5f9;color:#94a3b8;border:1px solid #e2e8f0}
+      #sb-modal[style*="flex"]{display:flex!important}
+    </style>
+
+    <script>
+    const accountId = '${selectedId}';
+    let sbEditMode = false;
+
+    // ─── 모달 ───────────────────────────────────────────────
+    function openShoppingModal(editData){
+      sbEditMode = !!editData;
+      document.getElementById('sb-modal-title').textContent = sbEditMode ? '키워드 설정 수정' : '쇼핑검색 키워드 추가';
+      document.getElementById('sb-modal-save-btn').textContent = sbEditMode ? '수정' : '저장';
+
+      if (editData) {
+        document.getElementById('sf-keyword').value = editData.keyword;
+        document.getElementById('sf-keyword').readOnly = true;
+        document.getElementById('sf-product-url').value = editData.product_url || '';
+        document.getElementById('sf-product-name').value = editData.product_name || '';
+        document.getElementById('sf-device').value = editData.device;
+        document.getElementById('sf-device').disabled = true;
+        document.getElementById('sf-rank').value = editData.target_rank;
+        document.getElementById('sf-maxbid').value = editData.max_bid;
+        document.getElementById('sf-adjust').value = editData.adjust_amt;
+        document.getElementById('sf-edit-id').value = editData.id;
+        document.getElementById('sf-interval').value = editData.bid_interval || 10;
+        const sch = editData.schedule || '111111111111111111111111';
+        document.querySelectorAll('#sf-schedule .hour-btn').forEach((b,i) => {
+          b.classList.toggle('on', sch[i]==='1');
+          b.classList.toggle('off', sch[i]!=='1');
+        });
+      } else {
+        resetShoppingForm();
+      }
+      document.getElementById('sb-modal').style.display = 'flex';
+    }
+
+    function closeShoppingModal(){ document.getElementById('sb-modal').style.display='none'; resetShoppingForm(); }
+
+    function resetShoppingForm(){
+      document.getElementById('sf-keyword').value=''; document.getElementById('sf-keyword').readOnly=false;
+      document.getElementById('sf-product-url').value='';
+      document.getElementById('sf-product-name').value='';
+      document.getElementById('sf-edit-id').value='';
+      document.getElementById('sf-rank').value='1';
+      document.getElementById('sf-maxbid').value='5000';
+      document.getElementById('sf-adjust').value='100';
+      document.getElementById('sf-device').value='MO'; document.getElementById('sf-device').disabled=false;
+      document.getElementById('sf-interval').value='10';
+      document.querySelectorAll('#sf-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
+    }
+
+    function toggleShoppingHour(el){ el.classList.toggle('on'); el.classList.toggle('off'); }
+
+    // ─── 저장 ───────────────────────────────────────────────
+    async function saveShoppingKeyword(){
+      const kw = document.getElementById('sf-keyword').value.trim();
+      if(!kw) return toast('검색 키워드를 입력해주세요.',true);
+      const hours=Array.from(document.querySelectorAll('#sf-schedule .hour-btn')).map(b=>b.classList.contains('on')?'1':'0').join('');
+      const body={
+        accountId, keyword:kw,
+        product_url:document.getElementById('sf-product-url').value.trim(),
+        product_name:document.getElementById('sf-product-name').value.trim(),
+        device:document.getElementById('sf-device').value,
+        target_rank:parseInt(document.getElementById('sf-rank').value)||1,
+        max_bid:parseInt(document.getElementById('sf-maxbid').value)||5000,
+        adjust_amt:parseInt(document.getElementById('sf-adjust').value)||100,
+        schedule:hours, bid_interval:parseInt(document.getElementById('sf-interval').value)||10, enabled:true,
+      };
+      if(sbEditMode) body.id = document.getElementById('sf-edit-id').value;
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        toast(sbEditMode?'설정 수정 완료':'키워드 저장 완료');
+        closeShoppingModal(); loadShoppingList();
+      }catch(e){toast('오류: '+e.message,true);}
+    }
+
+    // ─── 순위 조회 ──────────────────────────────────────────
+    async function checkShoppingRanks(){
+      const btn=document.getElementById('rank-btn');
+      btn.disabled=true; btn.textContent='조회 중...';
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/check-ranks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId})});
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        toast(j.checked+'개 키워드 순위 조회 완료');
+        loadShoppingList();
+      }catch(e){toast('오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='📊 순위 조회';}
+    }
+
+    // ─── 목록 로드 ──────────────────────────────────────────
+    async function loadShoppingList(){
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/list?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        const kws=j.keywords;
+        document.getElementById('sb-count').textContent=kws.length+'개 키워드';
+        if(!kws.length){document.getElementById('sb-list').innerHTML='<div class="empty">등록된 쇼핑검색 자동입찰 키워드가 없습니다.<br><span style="font-size:12px;color:#cbd5e1">+ 키워드 추가 버튼으로 키워드를 등록해주세요.</span></div>';return;}
+
+        const scheduleHtml=(sch)=>{
+          if(!sch||sch==='111111111111111111111111') return '<span style="color:#166534;font-size:11px">24시간</span>';
+          if(sch==='000000000000000000000000') return '<span style="color:#dc2626;font-size:11px">OFF</span>';
+          const ranges=[];let start=null;
+          for(let h=0;h<=24;h++){
+            if(h<24&&sch[h]==='1'){if(start===null)start=h;}
+            else{if(start!==null){ranges.push(start===h-1?start+'시':start+'-'+(h-1)+'시');start=null;}}
+          }
+          return '<span style="font-size:11px;color:#334155">'+ranges.join(', ')+'</span>';
+        };
+
+        const rankBadge=(r, lastRun)=>{
+          if(!lastRun) return '<span style="color:#cbd5e1">-</span>';
+          if(!r||r<=0) return '<span class="badge badge-red">순위밖</span>';
+          if(r<=3) return '<span class="badge badge-green">'+r+'위</span>';
+          if(r<=10) return '<span class="badge badge-blue">'+r+'위</span>';
+          return '<span class="badge badge-gray">'+r+'위</span>';
+        };
+
+        document.getElementById('sb-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>검색 키워드</th><th>상품명</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+          +kws.map(k=>{
+            const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
+            return '<tr>'
+            +'<td><strong>'+k.keyword+'</strong></td>'
+            +'<td style="font-size:12px;color:#64748b;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(k.product_url||'')+'">'+(k.product_name||k.product_url||'-')+'</td>'
+            +'<td style="text-align:center"><span class="badge '+(k.device==='PC'?'badge-blue':'badge-green')+'">'+k.device+'</span></td>'
+            +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
+            +'<td style="text-align:center">'+rankBadge(k.last_rank, k.last_run)+'</td>'
+            +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
+            +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
+            +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
+            +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
+            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleShoppingEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
+            +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openShoppingModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteShoppingKw('+k.id+')">삭제</button></td>'
+            +'</tr>';
+          }).join('')
+          +'</tbody></table></div>';
+      }catch(e){document.getElementById('sb-list').innerHTML='<div class="empty">'+e.message+'</div>';}
+    }
+
+    async function toggleShoppingEnable(id,enabled){
+      await fetch('/smart-sa/api/shopping-bid/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId,enabled})});
+    }
+
+    async function deleteShoppingKw(id){
+      if(!confirm('이 키워드를 삭제하시겠습니까?')) return;
+      const r=await fetch('/smart-sa/api/shopping-bid/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,accountId})});
+      const j=await r.json();
+      if(j.ok) loadShoppingList(); else toast('삭제 실패',true);
+    }
+
+    loadShoppingList();
+    </script>
+  `;
+  res.send(appLayout('쇼핑검색 자동입찰', content, user, 'shopping-bid', await getLayoutOpts(req)));
+});
+
+// ─── 쇼핑검색 자동입찰 API ─────────────────────────────────────────
+router.get('/api/shopping-bid/list', requireLogin, async (req, res) => {
+  try {
+    const accountId = req.query.accountId || req.session.selectedAccountId;
+    if (!accountId) return res.json({ ok: false, error: '광고주를 선택해주세요.' });
+    const keywords = await db.getShoppingBidKeywords(accountId);
+    res.json({ ok: true, keywords });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/api/shopping-bid/save', requireLogin, async (req, res) => {
+  try {
+    const { accountId, keyword, product_url, product_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled } = req.body;
+    if (!accountId || !keyword) return res.json({ ok: false, error: '필수 항목이 누락되었습니다.' });
+    await db.upsertShoppingBidKeyword(accountId, { keyword, product_url, product_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled });
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/api/shopping-bid/toggle', requireLogin, async (req, res) => {
+  try {
+    const { id, accountId, enabled } = req.body;
+    await db.pool.query('UPDATE shopping_bid_keywords SET enabled = $1 WHERE id = $2 AND account_id = $3', [enabled ? 1 : 0, id, accountId]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/api/shopping-bid/delete', requireLogin, async (req, res) => {
+  try {
+    const { id, accountId } = req.body;
+    await db.deleteShoppingBidKeyword(id, accountId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.body;
+    if (!accountId) return res.json({ ok: false, error: '광고주를 선택해주세요.' });
+
+    const keywords = await db.getShoppingBidKeywords(accountId);
+    if (!keywords.length) return res.json({ ok: true, checked: 0 });
+
+    const { findShoppingRank } = require('../api/shoppingRankScraper');
+    let checked = 0;
+    const details = [];
+
+    for (const kw of keywords) {
+      try {
+        const result = await findShoppingRank(kw.keyword, kw.device, kw.product_url);
+        await db.updateShoppingBidKeywordStatus(kw.id, result.rank || 0, kw.last_bid || 0);
+        details.push({ keyword: kw.keyword, device: kw.device, rank: result.rank || 0 });
+        checked++;
+      } catch (e) {
+        details.push({ keyword: kw.keyword, device: kw.device, error: e.message });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    res.json({ ok: true, checked, details });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
   }
 });
 

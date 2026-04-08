@@ -219,6 +219,29 @@ async function initDb() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS daou_email TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopping_bid_keywords (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      keyword TEXT NOT NULL DEFAULT '',
+      product_url TEXT NOT NULL DEFAULT '',
+      product_name TEXT NOT NULL DEFAULT '',
+      device TEXT NOT NULL DEFAULT 'MO',
+      target_rank INTEGER NOT NULL DEFAULT 1,
+      max_bid INTEGER NOT NULL DEFAULT 5000,
+      adjust_amt INTEGER NOT NULL DEFAULT 100,
+      schedule TEXT NOT NULL DEFAULT '111111111111111111111111',
+      bid_interval INTEGER NOT NULL DEFAULT 10,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_rank INTEGER DEFAULT 0,
+      last_bid INTEGER DEFAULT 0,
+      last_run TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(account_id, keyword, device)
+    )
+  `);
+
   console.log('✅ DB 초기화 완료 (Supabase PostgreSQL)');
 }
 
@@ -699,6 +722,44 @@ async function queryStatsAdgroups(accountId, since, until) {
   `, [accountId, since, until]);
 }
 
+// ─── 쇼핑검색 자동입찰 키워드 관리 ──────────────────────────────────
+async function getShoppingBidKeywords(accountId) {
+  return all('SELECT * FROM shopping_bid_keywords WHERE account_id = $1 ORDER BY keyword', [accountId]);
+}
+
+async function upsertShoppingBidKeyword(accountId, data) {
+  return pool.query(`
+    INSERT INTO shopping_bid_keywords (account_id, keyword, product_url, product_name, device, target_rank, max_bid, adjust_amt, schedule, bid_interval, enabled)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    ON CONFLICT (account_id, keyword, device)
+    DO UPDATE SET product_url = $3, product_name = $4,
+      target_rank = $6, max_bid = $7, adjust_amt = $8, schedule = $9, bid_interval = $10, enabled = $11
+  `, [accountId, data.keyword, data.product_url || '', data.product_name || '',
+      data.device, data.target_rank, data.max_bid, data.adjust_amt, data.schedule,
+      parseInt(data.bid_interval) || 10, data.enabled ? 1 : 0]);
+}
+
+async function deleteShoppingBidKeyword(id, accountId) {
+  return pool.query('DELETE FROM shopping_bid_keywords WHERE id = $1 AND account_id = $2', [id, accountId]);
+}
+
+async function updateShoppingBidKeywordStatus(id, rank, bid) {
+  if (rank > 0) {
+    return pool.query(
+      'UPDATE shopping_bid_keywords SET last_rank = $1, last_bid = $2, last_run = CURRENT_TIMESTAMP WHERE id = $3',
+      [rank, bid, id]
+    );
+  }
+  return pool.query(
+    'UPDATE shopping_bid_keywords SET last_bid = $1, last_run = CURRENT_TIMESTAMP WHERE id = $2',
+    [bid, id]
+  );
+}
+
+async function getEnabledShoppingBidKeywords(accountId) {
+  return all('SELECT * FROM shopping_bid_keywords WHERE account_id = $1 AND enabled = 1', [accountId]);
+}
+
 module.exports = Object.assign(module.exports, {
   initDb, query, get, all,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
@@ -710,5 +771,6 @@ module.exports = Object.assign(module.exports, {
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
+  getShoppingBidKeywords, upsertShoppingBidKeyword, deleteShoppingBidKeyword, updateShoppingBidKeywordStatus, getEnabledShoppingBidKeywords,
   isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups,
 });
