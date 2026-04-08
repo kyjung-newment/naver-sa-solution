@@ -3272,6 +3272,7 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         <p style="color:#64748b;font-size:13px;margin:0">네이버 쇼핑검색 광고의 노출순위를 실시간으로 모니터링하고 입찰가를 자동 조정합니다.</p>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
+        <button class="btn" onclick="debugShoppingRank()" id="debug-btn">🔧 스크래핑 테스트</button>
         <button class="btn" onclick="checkShoppingRanks()" id="rank-btn">📊 순위 조회</button>
         <button class="btn btn-primary" onclick="openShoppingModal()">+ 키워드 추가</button>
       </div>
@@ -3490,6 +3491,28 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
       if(j.ok) loadShoppingList(); else toast('삭제 실패',true);
     }
 
+    // ─── 스크래핑 디버그 ──────────────────────────────────────
+    async function debugShoppingRank(){
+      const btn=document.getElementById('debug-btn');
+      btn.disabled=true; btn.textContent='테스트 중...';
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/list?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok||!j.keywords.length){toast('키워드를 먼저 등록해주세요.',true);return;}
+        const kw=j.keywords[0];
+        const r2=await fetch('/smart-sa/api/shopping-bid/debug',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw.keyword,device:kw.device})});
+        const j2=await r2.json();
+        let modal=document.getElementById('debug-modal');
+        if(modal) modal.remove();
+        modal=document.createElement('div');modal.id='debug-modal';
+        modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+        modal.innerHTML='<div style="background:#fff;border-radius:12px;width:90%;max-width:800px;max-height:80vh;overflow:auto;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">쇼핑검색 스크래핑 결과 ('+kw.keyword+' / '+kw.device+')</h3><button onclick="this.closest(\\'#debug-modal\\').remove()" style="background:none;border:none;font-size:20px;cursor:pointer">&times;</button></div><pre id="debug-content" style="font-size:11px;white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:8px;max-height:60vh;overflow:auto"></pre></div>';
+        document.body.appendChild(modal);
+        document.getElementById('debug-content').textContent=JSON.stringify(j2,null,2);
+      }catch(e){toast('디버그 오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='🔧 스크래핑 테스트';}
+    }
+
     loadShoppingList();
     </script>
   `;
@@ -3555,7 +3578,7 @@ router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
       try {
         const result = await findShoppingRank(kw.keyword, kw.device, kw.product_url);
         await db.updateShoppingBidKeywordStatus(kw.id, result.rank || 0, kw.last_bid || 0);
-        details.push({ keyword: kw.keyword, device: kw.device, rank: result.rank || 0 });
+        details.push({ keyword: kw.keyword, device: kw.device, rank: result.rank || 0, totalAds: result.totalAds, matched: result.matched });
         checked++;
       } catch (e) {
         details.push({ keyword: kw.keyword, device: kw.device, error: e.message });
@@ -3564,6 +3587,18 @@ router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
     }
 
     res.json({ ok: true, checked, details });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 쇼핑검색 디버그 (HTML 분석)
+router.post('/api/shopping-bid/debug', requireLogin, async (req, res) => {
+  try {
+    const { keyword, device } = req.body;
+    const { getShoppingAds } = require('../api/shoppingRankScraper');
+    const ads = await getShoppingAds(keyword, device || 'PC');
+    res.json({ ok: true, keyword, device, totalAds: ads.length, ads });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }

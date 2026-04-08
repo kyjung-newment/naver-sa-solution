@@ -1,8 +1,12 @@
 /**
- * 네이버 통합검색 "네이버 가격비교" 섹션에서 쇼핑 광고 순위 조회
- * - PC: search.naver.com 통합검색 → "네이버 가격비교" 영역 파싱
- * - MO: m.search.naver.com 통합검색 → 쇼핑 영역 파싱
- * - 광고 표시(광고①) 있는 상품과 일반 상품 구분
+ * 네이버 쇼핑검색 광고 순위 조회
+ *
+ * 접근 전략:
+ * 1차: search.shopping.naver.com API (JSON) — 쇼핑 전용 검색
+ * 2차: search.naver.com 통합검색 HTML — 가격비교 섹션
+ * 3차: __NEXT_DATA__ script 태그 파싱 — SSR 데이터
+ *
+ * 매칭: 상점명(mallName) 기반 (광고 클릭 URL이 달라서 URL 매칭 불가)
  */
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -11,278 +15,304 @@ const PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 const MO_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
 /**
- * 네이버 통합검색에서 쇼핑(가격비교) 상품 목록 조회
+ * 쇼핑 상품 목록 조회 (다중 소스 시도)
  */
-async function getShoppingAds(keyword, device = 'MO') {
+async function getShoppingAds(keyword, device = 'PC') {
   const isPC = device !== 'MO';
+  const userAgent = isPC ? PC_USER_AGENT : MO_USER_AGENT;
 
+  // 1차: 네이버 쇼핑 검색 API (JSON 응답)
   try {
-    if (isPC) {
-      return await getPcShoppingAds(keyword);
-    } else {
-      return await getMobileShoppingAds(keyword);
+    const ads = await fetchShoppingApi(keyword, userAgent);
+    if (ads.length > 0) {
+      console.log(`  🛒 [${device}] 쇼핑 API: ${ads.length}개 발견`);
+      return ads;
     }
-  } catch (err) {
-    console.error(`쇼핑검색 파싱 오류 [${keyword}/${device}]:`, err.message);
-    return [];
+  } catch (e) {
+    console.log(`  🛒 쇼핑 API 실패: ${e.message}`);
   }
+
+  // 2차: 네이버 쇼핑 검색페이지 HTML (__NEXT_DATA__ 파싱)
+  try {
+    const ads = await fetchShoppingPage(keyword, isPC, userAgent);
+    if (ads.length > 0) {
+      console.log(`  🛒 [${device}] 쇼핑 페이지: ${ads.length}개 발견`);
+      return ads;
+    }
+  } catch (e) {
+    console.log(`  🛒 쇼핑 페이지 실패: ${e.message}`);
+  }
+
+  // 3차: 통합검색 페이지에서 쇼핑 섹션 추출
+  try {
+    const ads = await fetchIntegratedSearch(keyword, isPC, userAgent);
+    if (ads.length > 0) {
+      console.log(`  🛒 [${device}] 통합검색: ${ads.length}개 발견`);
+      return ads;
+    }
+  } catch (e) {
+    console.log(`  🛒 통합검색 실패: ${e.message}`);
+  }
+
+  console.log(`  🛒 [${device}] 쇼핑검색 파싱 실패 (모든 소스)`);
+  return [];
 }
 
 /**
- * PC 통합검색에서 "네이버 가격비교" 섹션 파싱
+ * 1차: 네이버 쇼핑 검색 API
+ * search.shopping.naver.com 에서 JSON 데이터 가져오기
  */
-async function getPcShoppingAds(keyword) {
-  const response = await axios.get('https://search.naver.com/search.naver', {
-    params: { where: 'nexearch', query: keyword },
-    headers: {
-      'User-Agent': PC_USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'ko-KR,ko;q=0.9',
+async function fetchShoppingApi(keyword, userAgent) {
+  // 쇼핑 검색 API 엔드포인트들 시도
+  const endpoints = [
+    {
+      url: 'https://search.shopping.naver.com/api/search/all',
+      params: { query: keyword, sort: 'rel', pagingIndex: 1, pagingSize: 40, viewType: 'list' },
     },
-    timeout: 10000,
-  });
+    {
+      url: 'https://search.shopping.naver.com/search/all',
+      params: { query: keyword, sort: 'rel' },
+      isHtml: true,
+    },
+  ];
 
-  const $ = cheerio.load(response.data);
+  for (const ep of endpoints) {
+    try {
+      const response = await axios.get(ep.url, {
+        params: ep.params,
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': ep.isHtml ? 'text/html,application/xhtml+xml' : 'application/json,text/plain',
+          'Accept-Language': 'ko-KR,ko;q=0.9',
+          'Referer': 'https://search.shopping.naver.com/',
+        },
+        timeout: 10000,
+      });
+
+      if (ep.isHtml) {
+        // HTML에서 __NEXT_DATA__ 파싱
+        return parseNextData(response.data);
+      } else {
+        // JSON 응답 파싱
+        return parseShoppingApiJson(response.data);
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return [];
+}
+
+/**
+ * JSON API 응답 파싱
+ */
+function parseShoppingApiJson(data) {
   const ads = [];
   let rank = 0;
 
-  // 네이버 가격비교 / 쇼핑 영역 셀렉터들
-  const shoppingSelectors = [
-    // 가격비교 영역 내 상품 아이템
-    '[class*="shop_list"] [class*="product"]',
-    '[class*="price_compare"] [class*="product"]',
-    '[class*="shopping"] [class*="item"]',
-    '[class*="mall_product"]',
-    // SSR 영역
-    '[data-cr-area*="nshp"] li',
-    '[data-cr-area*="shop"] li',
-    '[class*="sp_list"] li',
-    // 일반 상품 카드
-    '[class*="ad_shopping"] li',
-  ];
+  // shoppingResult.products 배열에서 추출
+  const products = data?.shoppingResult?.products
+    || data?.products
+    || data?.items
+    || [];
 
-  let items = $([]);
-  for (const sel of shoppingSelectors) {
-    const found = $(sel);
-    if (found.length > 0) {
-      items = found;
-      console.log(`  🛒 PC 쇼핑 셀렉터 매칭: "${sel}" → ${found.length}개`);
-      break;
-    }
-  }
-
-  items.each((idx, el) => {
-    const $el = $(el);
-    const title = $el.find('[class*="tit"], [class*="name"], a[title]').first().text().trim()
-      || $el.find('a[title]').first().attr('title') || '';
-    const price = $el.find('[class*="price"], [class*="num"]').first().text().trim();
-    const mallName = extractMallName($el, $);
-    const isAd = checkIsAd($el, $);
-    const linkEl = $el.find('a[href]').first();
-    const url = linkEl.attr('href') || '';
-
-    if (title && title.length > 1) {
-      rank++;
-      ads.push({ rank, title, price, mallName, url, isAd });
-    }
-  });
-
-  // fallback: 전체 HTML에서 쇼핑 광고 데이터 추출 (JSON-LD / script 태그)
-  if (ads.length === 0) {
-    const scriptAds = extractFromScripts($, response.data);
-    if (scriptAds.length > 0) {
-      console.log(`  🛒 PC script 태그에서 ${scriptAds.length}개 발견`);
-      return scriptAds;
-    }
-  }
-
-  if (ads.length === 0) {
-    console.log(`  🛒 PC 쇼핑 파싱 실패, HTML 길이: ${response.data.length}`);
+  for (const p of products) {
+    rank++;
+    ads.push({
+      rank,
+      title: p.productTitle || p.title || p.name || '',
+      price: String(p.price || p.lowPrice || ''),
+      mallName: p.mallName || p.shopName || p.mallProductVendorName || '',
+      url: p.mallProductUrl || p.productUrl || p.crUrl || '',
+      isAd: !!(p.adId || p.isAd || p.adcrUrl || p.type === 'ad'),
+    });
   }
 
   return ads;
 }
 
 /**
- * 모바일 통합검색에서 쇼핑/가격비교 섹션 파싱
+ * 2차: 쇼핑 검색 페이지 HTML에서 __NEXT_DATA__ 파싱
  */
-async function getMobileShoppingAds(keyword) {
-  const response = await axios.get('https://m.search.naver.com/search.naver', {
-    params: { where: 'm', query: keyword },
+async function fetchShoppingPage(keyword, isPC, userAgent) {
+  const url = isPC
+    ? 'https://search.shopping.naver.com/search/all'
+    : 'https://msearch.shopping.naver.com/search/all';
+
+  const response = await axios.get(url, {
+    params: { query: keyword, sort: 'rel' },
     headers: {
-      'User-Agent': MO_USER_AGENT,
+      'User-Agent': userAgent,
       'Accept': 'text/html,application/xhtml+xml',
       'Accept-Language': 'ko-KR,ko;q=0.9',
     },
     timeout: 10000,
   });
 
-  const $ = cheerio.load(response.data);
+  return parseNextData(response.data);
+}
+
+/**
+ * __NEXT_DATA__ 스크립트 태그에서 상품 데이터 추출
+ */
+function parseNextData(html) {
   const ads = [];
   let rank = 0;
 
-  // 모바일 통합검색 쇼핑 영역
-  const mobileSelectors = [
-    '[data-cr-area*="nshp"] li',
-    '[data-cr-area*="shop"] li',
-    '[class*="flick_bx"] [class*="item"]',
-    '[class*="shopping"] [class*="item"]',
-    '[class*="price_compare"] li',
-    '[class*="sp_"] li[class*="item"]',
-    '[class*="shop_"] li',
-    '[class*="mall_product"]',
-  ];
-
-  let items = $([]);
-  for (const sel of mobileSelectors) {
-    const found = $(sel);
-    if (found.length > 0) {
-      items = found;
-      console.log(`  🛒 MO 쇼핑 셀렉터 매칭: "${sel}" → ${found.length}개`);
-      break;
-    }
-  }
-
-  items.each((idx, el) => {
-    const $el = $(el);
-    const title = $el.find('[class*="tit"], [class*="name"], a[title]').first().text().trim()
-      || $el.find('a[title]').first().attr('title') || '';
-    const price = $el.find('[class*="price"], [class*="num"]').first().text().trim();
-    const mallName = extractMallName($el, $);
-    const isAd = checkIsAd($el, $);
-    const linkEl = $el.find('a[href]').first();
-    const url = linkEl.attr('href') || '';
-
-    if (title && title.length > 1) {
-      rank++;
-      ads.push({ rank, title, price, mallName, url, isAd });
-    }
-  });
-
-  // fallback: script 태그에서 데이터 추출
-  if (ads.length === 0) {
-    const scriptAds = extractFromScripts($, response.data);
-    if (scriptAds.length > 0) {
-      console.log(`  🛒 MO script 태그에서 ${scriptAds.length}개 발견`);
-      return scriptAds;
-    }
-  }
-
-  if (ads.length === 0) {
-    console.log(`  🛒 MO 쇼핑 파싱 실패, HTML 길이: ${response.data.length}`);
-  }
-
-  return ads;
-}
-
-/**
- * 상점명 추출 헬퍼
- */
-function extractMallName($el, $) {
-  // 다양한 셀렉터로 상점명 추출
-  const selectors = [
-    '[class*="mall"]',
-    '[class*="seller"]',
-    '[class*="store"]',
-    '[class*="shop_name"]',
-    '[class*="src_area"] a',
-    '[class*="info"] [class*="name"]',
-  ];
-  for (const sel of selectors) {
-    const text = $el.find(sel).first().text().trim();
-    if (text && text.length > 0 && text.length < 50) {
-      // "광고" 텍스트 제거
-      return text.replace(/광고[①②③④⑤⑥⑦⑧⑨⑩]?/g, '').trim();
-    }
-  }
-  return '';
-}
-
-/**
- * 광고 여부 체크
- */
-function checkIsAd($el, $) {
-  const fullText = $el.text();
-  if (/광고[①②③④⑤⑥⑦⑧⑨⑩]/.test(fullText)) return true;
-  if ($el.find('[class*="ad"]').length > 0) return true;
-  if ($el.attr('class')?.includes('ad')) return true;
-  if ($el.find('[class*="badge_ad"], [class*="label_ad"], [class*="ico_ad"]').length > 0) return true;
-  return false;
-}
-
-/**
- * script 태그에서 쇼핑 데이터 추출 (SSR 이후 hydration 데이터)
- */
-function extractFromScripts($, html) {
-  const ads = [];
-  let rank = 0;
-
-  // __NEXT_DATA__ 또는 쇼핑 관련 JSON 데이터 찾기
-  $('script').each((idx, el) => {
-    const text = $(el).html() || '';
-
-    // 쇼핑 상품 데이터가 포함된 JSON 패턴 찾기
-    const patterns = [
-      /"mallName"\s*:\s*"([^"]+)".*?"productTitle"\s*:\s*"([^"]+)".*?"price"\s*:\s*"?(\d+)"?/g,
-      /"shopName"\s*:\s*"([^"]+)".*?"title"\s*:\s*"([^"]+)".*?"price"\s*:\s*"?(\d+)"?/g,
-    ];
-
-    for (const pattern of patterns) {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
+  // __NEXT_DATA__ JSON 추출
+  const nextDataMatch = html.match(/<script\s+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (nextDataMatch) {
+    try {
+      const nextData = JSON.parse(nextDataMatch[1]);
+      const products = findProducts(nextData);
+      for (const p of products) {
         rank++;
         ads.push({
           rank,
-          title: match[2],
-          price: match[3],
-          mallName: match[1],
-          url: '',
-          isAd: text.includes('"adId"') || text.includes('"ad"'),
+          title: p.productTitle || p.title || p.name || '',
+          price: String(p.price || p.lowPrice || p.pcPrice || ''),
+          mallName: p.mallName || p.shopName || p.mallProductVendorName || '',
+          url: p.mallProductUrl || p.productUrl || p.crUrl || '',
+          isAd: !!(p.adId || p.isAd || p.adcrUrl || p.type === 'ad' || p.advertBidType),
         });
       }
+      if (ads.length > 0) return ads;
+    } catch (e) {
+      console.log('  __NEXT_DATA__ 파싱 오류:', e.message);
     }
-  });
+  }
 
-  // 더 간단한 패턴: mallName과 productTitle 쌍 찾기
-  if (ads.length === 0) {
-    const mallMatches = html.match(/"mallName"\s*:\s*"[^"]+"/g) || [];
-    const titleMatches = html.match(/"(?:productTitle|title)"\s*:\s*"[^"]+"/g) || [];
+  // fallback: JSON 패턴 매칭 (mallName + productTitle)
+  const jsonChunks = html.match(/\{[^{}]*"mallName"\s*:\s*"[^"]*"[^{}]*"productTitle"\s*:\s*"[^"]*"[^{}]*\}/g)
+    || html.match(/\{[^{}]*"productTitle"\s*:\s*"[^"]*"[^{}]*"mallName"\s*:\s*"[^"]*"[^{}]*\}/g)
+    || [];
 
-    if (mallMatches.length > 0 && titleMatches.length > 0) {
-      const count = Math.min(mallMatches.length, titleMatches.length);
-      for (let i = 0; i < count; i++) {
-        const mall = mallMatches[i].match(/"mallName"\s*:\s*"([^"]+)"/)?.[1] || '';
-        const title = titleMatches[i].match(/"(?:productTitle|title)"\s*:\s*"([^"]+)"/)?.[1] || '';
-        if (mall && title) {
-          rank++;
-          ads.push({ rank, title, price: '', mallName: mall, url: '', isAd: false });
-        }
+  for (const chunk of jsonChunks) {
+    try {
+      // 불완전한 JSON이므로 필드만 추출
+      const mallName = chunk.match(/"mallName"\s*:\s*"([^"]*)"/)?.[1] || '';
+      const title = chunk.match(/"productTitle"\s*:\s*"([^"]*)"/)?.[1] || '';
+      const price = chunk.match(/"price"\s*:\s*"?(\d+)"?/)?.[1] || '';
+      const isAd = chunk.includes('"adId"') || chunk.includes('"adcrUrl"') || chunk.includes('"advertBidType"');
+
+      if (mallName && title) {
+        rank++;
+        ads.push({ rank, title, price, mallName, url: '', isAd });
       }
-    }
+    } catch (e) { continue; }
   }
 
   return ads;
 }
 
 /**
- * URL에서 도메인/경로 추출 (매칭용)
+ * 중첩 JSON에서 products 배열 찾기
  */
-function extractDomain(rawUrl) {
-  if (!rawUrl) return '';
-  try {
-    if (rawUrl.startsWith('http')) {
-      const u = new URL(rawUrl);
-      return u.hostname.replace(/^www\./, '') + u.pathname.replace(/\/$/, '');
+function findProducts(obj, depth = 0) {
+  if (depth > 8 || !obj) return [];
+  if (Array.isArray(obj)) {
+    // 배열 중 productTitle이 있는 객체가 포함된 배열이면 반환
+    if (obj.length > 0 && obj[0] && (obj[0].productTitle || obj[0].mallName)) {
+      return obj;
     }
-    return rawUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '').trim();
-  } catch {
-    return rawUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '').trim();
+    for (const item of obj) {
+      const found = findProducts(item, depth + 1);
+      if (found.length > 0) return found;
+    }
+    return [];
   }
+  if (typeof obj === 'object') {
+    // products, items, list 등의 키 우선 검색
+    for (const key of ['products', 'items', 'list', 'shoppingResult', 'data', 'result']) {
+      if (obj[key]) {
+        const found = findProducts(obj[key], depth + 1);
+        if (found.length > 0) return found;
+      }
+    }
+    // 나머지 키 검색
+    for (const key of Object.keys(obj)) {
+      if (['products', 'items', 'list', 'shoppingResult', 'data', 'result'].includes(key)) continue;
+      const found = findProducts(obj[key], depth + 1);
+      if (found.length > 0) return found;
+    }
+  }
+  return [];
+}
+
+/**
+ * 3차: 네이버 통합검색에서 쇼핑 섹션 추출
+ */
+async function fetchIntegratedSearch(keyword, isPC, userAgent) {
+  const url = isPC ? 'https://search.naver.com/search.naver' : 'https://m.search.naver.com/search.naver';
+  const params = isPC
+    ? { where: 'nexearch', query: keyword }
+    : { where: 'm', query: keyword };
+
+  const response = await axios.get(url, {
+    params,
+    headers: {
+      'User-Agent': userAgent,
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+    },
+    timeout: 10000,
+  });
+
+  const $ = cheerio.load(response.data);
+  const ads = [];
+  let rank = 0;
+
+  // 쇼핑 영역 셀렉터들
+  const selectors = [
+    '[data-cr-area*="nshp"] li, [data-cr-area*="nshp"] [class*="item"]',
+    '[class*="shop_list"] li',
+    '[class*="price_compare"] li',
+    '[class*="mall_product"]',
+    '[class*="sp_"] li',
+  ];
+
+  let items = $([]);
+  for (const sel of selectors) {
+    const found = $(sel);
+    if (found.length > 0) { items = found; break; }
+  }
+
+  items.each((idx, el) => {
+    const $el = $(el);
+    const text = $el.text().trim();
+    const title = $el.find('[class*="tit"], [class*="name"], a[title]').first().text().trim()
+      || $el.find('a[title]').first().attr('title') || '';
+    const price = $el.find('[class*="price"]').first().text().trim();
+    const isAd = /광고[①②③④⑤⑥⑦⑧⑨⑩]/.test(text);
+    const linkEl = $el.find('a[href]').first();
+    const url = linkEl.attr('href') || '';
+
+    // 상점명 추출
+    let mallName = '';
+    $el.find('[class*="mall"], [class*="seller"], [class*="store"], [class*="name"]').each((i, nameEl) => {
+      const t = $(nameEl).text().replace(/광고[①②③④⑤⑥⑦⑧⑨⑩]?/g, '').trim();
+      if (t && t.length < 30 && t.length > 1 && !t.includes('원') && !t.includes('배송')) {
+        if (!mallName) mallName = t;
+      }
+    });
+
+    if (title && title.length > 1) {
+      rank++;
+      ads.push({ rank, title, price, mallName, url, isAd });
+    }
+  });
+
+  // fallback: script 데이터
+  if (ads.length === 0) {
+    return parseNextData(response.data);
+  }
+
+  return ads;
 }
 
 /**
  * smartstore URL에서 스토어ID 추출
- * 예: https://smartstore.naver.com/postermakers → postermakers
  */
 function extractStoreId(url) {
   if (!url) return '';
@@ -292,59 +322,55 @@ function extractStoreId(url) {
 
 /**
  * 특정 상품의 쇼핑검색 순위 찾기
- * 매칭 방법: 1) URL 도메인 매칭 2) 스토어ID 매칭 3) 상점명 매칭
- * @param {string} keyword - 검색 키워드
- * @param {'PC'|'MO'} device - 디바이스
- * @param {string} productUrl - 상품/스토어 URL (매칭용)
- * @returns {{rank: number, totalAds: number, ads: Array, matched: object|null}}
+ * 매칭 우선순위: 1) 상점명 매칭 2) smartstore ID 매칭 3) URL 포함 매칭
  */
 async function findShoppingRank(keyword, device, productUrl) {
   const ads = await getShoppingAds(keyword, device);
   if (!ads.length) return { rank: 0, totalAds: 0, ads: [], matched: null };
 
   let matched = null;
+  const targetStoreId = extractStoreId(productUrl);
 
-  // 1차: URL 도메인 매칭
-  const targetDomain = extractDomain(productUrl).toLowerCase();
-  if (targetDomain) {
+  // 1차: smartstore ID가 mallName에 포함된 경우 (예: siseongot → 시성갓)
+  // 또는 mallProductUrl에 같은 smartstore ID가 있는 경우
+  if (targetStoreId) {
     matched = ads.find(ad => {
-      const adDomain = extractDomain(ad.url).toLowerCase();
-      if (!adDomain) return false;
-      if (adDomain === targetDomain) return true;
-      if (adDomain.includes(targetDomain) || targetDomain.includes(adDomain)) return true;
-      return false;
+      const adStoreId = extractStoreId(ad.url);
+      return adStoreId && adStoreId === targetStoreId;
     });
   }
 
-  // 2차: smartstore 스토어ID 매칭 (URL과 mallName 비교)
-  if (!matched) {
-    const targetStoreId = extractStoreId(productUrl);
-    if (targetStoreId) {
-      matched = ads.find(ad => {
-        // 광고 링크 URL에서 스토어ID 추출
-        const adStoreId = extractStoreId(ad.url);
-        if (adStoreId && adStoreId === targetStoreId) return true;
-        // mallName에서 매칭 (예: "위드로잉 스토어" vs "postermakers")
-        // smartstore URL 경로와 상점명이 일치하는 경우
-        return false;
-      });
-    }
+  // 2차: productUrl 도메인 부분 매칭
+  if (!matched && productUrl) {
+    const cleanTarget = productUrl.toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\?.*$/, '')
+      .replace(/\/$/, '');
+
+    matched = ads.find(ad => {
+      if (!ad.url) return false;
+      const cleanAd = ad.url.toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .replace(/^www\./, '')
+        .replace(/\?.*$/, '')
+        .replace(/\/$/, '');
+      // smartstore 경로 매칭
+      if (cleanTarget.includes('smartstore.naver.com') && cleanAd.includes('smartstore.naver.com')) {
+        const targetPath = cleanTarget.split('smartstore.naver.com/')[1]?.split('/')[0];
+        const adPath = cleanAd.split('smartstore.naver.com/')[1]?.split('/')[0];
+        return targetPath && adPath && targetPath === adPath;
+      }
+      return cleanAd.includes(cleanTarget) || cleanTarget.includes(cleanAd);
+    });
   }
 
-  // 3차: 상점명(mallName) 직접 매칭
-  if (!matched && productUrl) {
-    // 스토어명이 URL에 포함된 경우
-    const urlParts = productUrl.toLowerCase().split('/').filter(Boolean);
+  // 3차: mallName에 URL의 일부가 포함된 경우
+  if (!matched && targetStoreId) {
     matched = ads.find(ad => {
       if (!ad.mallName) return false;
-      const mallLower = ad.mallName.toLowerCase().replace(/\s+/g, '');
-      // URL의 각 파트와 상점명 비교
-      for (const part of urlParts) {
-        const cleanPart = part.replace(/[^a-z0-9가-힣]/g, '');
-        if (cleanPart.length > 2 && mallLower.includes(cleanPart)) return true;
-        if (cleanPart.length > 2 && cleanPart.includes(mallLower)) return true;
-      }
-      return false;
+      const mall = ad.mallName.toLowerCase().replace(/\s+/g, '');
+      return mall.includes(targetStoreId) || targetStoreId.includes(mall);
     });
   }
 
