@@ -81,15 +81,16 @@ async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
   const { keyword_id, keyword, target_rank, max_bid, adjust_amt, device } = abKw;
 
   try {
-    // 1. 현재 입찰가 조회 (키워드 레벨 → 그룹 레벨 fallback)
+    // 1. 현재 입찰가 조회 (그룹 입찰가 우선 체크)
     let currentBid = abKw.last_bid || 0;
     try {
       const kwInfo = await client.getKeywordInfo(keyword_id);
-      if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
-        currentBid = kwInfo.bidAmt;
-      } else if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+      if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+        // [기본] 사용 → 그룹 입찰가 조회
         const grp = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
         currentBid = grp?.bidAmt || currentBid;
+      } else if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
+        currentBid = kwInfo.bidAmt;
       }
     } catch (e) { /* fallback to last_bid */ }
 

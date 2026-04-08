@@ -2847,11 +2847,11 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
         let currentBid = abKw.last_bid || 0;
         try {
           const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
-          if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
-            currentBid = kwInfo.bidAmt;
-          } else if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+          if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
             const grp = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
             currentBid = grp?.bidAmt || currentBid;
+          } else if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
+            currentBid = kwInfo.bidAmt;
           }
         } catch (e) {
           console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
