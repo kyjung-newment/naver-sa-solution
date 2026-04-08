@@ -2480,7 +2480,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           return '<span class="badge badge-gray">'+r+'위</span>';
         };
 
-        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right;font-size:11px">순위 평균<br>입찰가</th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right;font-size:11px">순위 평균<br>입찰가 <span onclick="alert(\\'지난 28일간 희망순위의 평균 입찰가입니다.\\n참고 지표이며, 실제 자동입찰은 실시간 순위 기반으로 작동합니다.\\')" style="cursor:pointer;color:#94a3b8" title="지난 28일간 희망순위의 평균 입찰가">(?)</span></th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
           +kws.map(k=>{
             const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
             return '<tr>'
@@ -2624,7 +2624,12 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
         let currentBid = 0;
         try {
           const kwInfo = await client.getKeywordInfo(kwId);
-          currentBid = kwInfo?.bidAmt || 0;
+          if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
+            currentBid = kwInfo.bidAmt;
+          } else if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+            const grp = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
+            currentBid = grp?.bidAmt || 0;
+          }
         } catch (e) { /* fallback */ }
 
         // 참고입찰가 (28일 평균) → last_rank 필드에 저장
@@ -2831,11 +2836,16 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
 
     for (const abKw of abKeywords) {
       try {
-        // 1. 현재 입찰가 조회
+        // 1. 현재 입찰가 조회 (키워드 레벨 → 그룹 레벨 fallback)
         let currentBid = abKw.last_bid || 0;
         try {
           const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
-          currentBid = kwInfo?.bidAmt || currentBid;
+          if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
+            currentBid = kwInfo.bidAmt;
+          } else if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+            const grp = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
+            currentBid = grp?.bidAmt || currentBid;
+          }
         } catch (e) {
           console.log(`  입찰가 조회 실패 [${abKw.keyword}]:`, e.message);
         }
