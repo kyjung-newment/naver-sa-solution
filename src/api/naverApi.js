@@ -37,7 +37,7 @@ function createApiClient(creds) {
         method,
         url,
         headers,
-        params: method === 'GET' ? params : undefined,
+        params: Object.keys(params).length > 0 ? params : undefined,
         data:   method !== 'GET' ? data : undefined,
         timeout: 15000,
       });
@@ -283,31 +283,12 @@ function createApiClient(creds) {
     getKeywordInfo: (keywordId) =>
       apiCall('GET', `/ncc/keywords/${keywordId}`),
 
-    updateKeywordBid: async (keywordId, bidAmt) => {
-      // fields 파라미터로 수정할 필드 지정
-      // useGroupBidAmt를 false로 변경하여 키워드 개별 입찰가 사용
-      try {
-        return await apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt,useGroupBidAmt' }, {
-          nccKeywordId: keywordId,
-          bidAmt,
-          useGroupBidAmt: false,
-        });
-      } catch (e1) {
-        // fallback: bidAmt만 변경
-        try {
-          return await apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt' }, {
-            nccKeywordId: keywordId,
-            bidAmt,
-          });
-        } catch (e2) {
-          // fallback2: fields 없이
-          return await apiCall('PUT', `/ncc/keywords/${keywordId}`, {}, {
-            nccKeywordId: keywordId,
-            bidAmt,
-          });
-        }
-      }
-    },
+    updateKeywordBid: (keywordId, bidAmt) =>
+      apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt,useGroupBidAmt' }, {
+        nccKeywordId: keywordId,
+        bidAmt,
+        useGroupBidAmt: false,
+      }),
 
     // 목표 순위에 필요한 입찰가 추정
     getEstimatedBidForPosition: (keywordId, device, position) =>
