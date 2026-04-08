@@ -49,9 +49,13 @@ function createApiClient(creds) {
         await new Promise(r => setTimeout(r, wait));
         return apiCall(method, path, params, data, retryCount + 1);
       }
-      const msg = err.response?.data?.message || err.message;
-      const error = new Error(`API 오류 [${err.response?.status}] ${path}: ${msg}`);
+      const respData = err.response?.data;
+      const msg = respData?.message || err.message;
+      const detail = typeof respData === 'object' ? JSON.stringify(respData) : String(respData || '');
+      console.error(`❌ API [${err.response?.status}] ${method} ${path}:`, detail);
+      const error = new Error(`API 오류 [${err.response?.status}] ${path}: ${msg} | ${detail}`);
       error.statusCode = err.response?.status;
+      error.responseData = respData;
       throw error;
     }
   }
