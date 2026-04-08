@@ -3296,8 +3296,8 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         </div>
 
         <div class="form-group"><label>검색 키워드</label><input id="sf-keyword" placeholder="예: 남성 운동화"></div>
-        <div class="form-group"><label>상품 URL (순위 매칭용)</label><input id="sf-product-url" placeholder="https://smartstore.naver.com/..."></div>
-        <div class="form-group"><label>상품명 (메모용)</label><input id="sf-product-name" placeholder="상품명 입력"></div>
+        <div class="form-group"><label>소재 ID 또는 매칭 정보 <span style="font-size:11px;color:#94a3b8">(nad-xxx 소재ID / 상점명 / smartstore URL)</span></label><input id="sf-product-url" placeholder="예: nad-a001-02-000000486459301 또는 위드로잉 스토어"></div>
+        <div class="form-group"><label>메모 (상품명 등)</label><input id="sf-product-name" placeholder="상품명 입력"></div>
         <input type="hidden" id="sf-edit-id">
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
