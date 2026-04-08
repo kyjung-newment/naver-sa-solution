@@ -618,8 +618,10 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
   cr++;
   const sheets = [
     ['요약', '전체 KPI 요약 및 전기 비교'],
+    ['캠페인유형별', '파워링크/쇼핑검색 등 캠페인 유형별 성과 비교'],
     ['캠페인별', '캠페인별 성과 현황 (TOP 5 표시)'],
     ['광고그룹별', '광고그룹별 성과 현황 (TOP 10 표시)'],
+    ['키워드별', '키워드별 성과 (비용/클릭/전환 TOP 순위)'],
     ['PC_모바일', 'PC/모바일 디바이스별 성과 비교'],
     ['시간대별', '시간대별(0~23시) 성과 분포'],
     ['일자별', '일자별 성과 추이'],
@@ -779,7 +781,60 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // 3. 캠페인별 시트
+  // 3. 캠페인 유형별 시트
+  // ══════════════════════════════════════════════════════════════════
+  const campTypeEntries = Object.entries(data.byCampaignType || {}).sort((a, b) => b[1].cost - a[1].cost);
+  if (campTypeEntries.length > 0) {
+    const cts = workbook.addWorksheet('캠페인유형별');
+    setupSheetDefaults(cts);
+    setMetricColumnWidths(cts, [18]);
+
+    let r = 3;
+    r = addSectionTitle(cts, r, `캠페인 유형별 성과 비교 (${period})`);
+    r++;
+
+    // 유형별 비용 비율 요약
+    const totalTypeCost = campTypeEntries.reduce((s, [, d]) => s + (d.cost||0), 0) || 1;
+    const summRow = cts.getRow(r);
+    summRow.height = 30;
+    campTypeEntries.forEach(([tp, d], i) => {
+      const pct = Math.round(d.cost / totalTypeCost * 100);
+      const c = summRow.getCell(2 + i * 3);
+      c.value = `${tp} — 비용 ${pct}% (${f.won(d.cost)})`;
+      c.font = { bold: true, size: 11, color: { argb: C.blue } };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      c.border = thinBorder();
+    });
+    r += 2;
+
+    // 유형별 테이블
+    r = addTableHeader(cts, r, ['캠페인 유형']);
+    campTypeEntries.forEach(([tp, d], idx) => {
+      r = addMetricRow(cts, r, tp, d, { stripe: idx % 2 === 1, bold: true });
+    });
+    r++;
+    r = addMetricRow(cts, r, '합계', data.total, { bold: true, bg: C.totalBg });
+    r += 2;
+
+    // 유형별 캠페인 상세 분류
+    for (const [tp] of campTypeEntries) {
+      const typeCamps = Object.entries(data.byCampaign)
+        .filter(([, d]) => d.campaignType === tp)
+        .sort((a, b) => b[1].cost - a[1].cost);
+      if (typeCamps.length === 0) continue;
+
+      r = addSubTitle(cts, r, `${tp} 캠페인 상세 (${typeCamps.length}개)`, 13);
+      r = addTableHeader(cts, r, ['캠페인']);
+      typeCamps.forEach(([, d], idx) => {
+        r = addMetricRow(cts, r, d.name, d, { stripe: idx % 2 === 1 });
+      });
+      r += 2;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // 4. 캠페인별 시트
   // ══════════════════════════════════════════════════════════════════
   const campEntries = Object.entries(data.byCampaign).sort((a, b) => b[1].cost - a[1].cost);
   if (campEntries.length > 0) {
@@ -852,7 +907,178 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // 5. PC/모바일 시트
+  // 5-1. 키워드별 시트
+  // ══════════════════════════════════════════════════════════════════
+  const kwEntries = Object.entries(data.byKeyword || {}).sort((a, b) => b[1].cost - a[1].cost);
+  if (kwEntries.length > 0) {
+    const kws = workbook.addWorksheet('키워드별');
+    setupSheetDefaults(kws);
+    setMetricColumnWidths(kws, [22, 18, 16]);
+
+    let r = 3;
+    r = addSectionTitle(kws, r, `키워드별 성과 현황 (${period})`, 15);
+    r++;
+
+    // 키워드 요약 통계
+    const kwCount = kwEntries.length;
+    const kwWithClk = kwEntries.filter(([, d]) => d.clk > 0).length;
+    const kwWithConv = kwEntries.filter(([, d]) => d.purchaseCnt > 0).length;
+    r = addSubTitle(kws, r, `전체 ${kwCount}개 키워드 · 클릭 발생 ${kwWithClk}개 · 전환 발생 ${kwWithConv}개`, 15);
+    r++;
+
+    // ── 비용 TOP 20 ──
+    r = addSubTitle(kws, r, '★ 비용 TOP 20 키워드', 15);
+    const hRow = kws.getRow(r);
+    hRow.height = 26;
+    ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+      const cell = hRow.getCell(i + 2);
+      cell.value = h;
+      cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+      cell.border = thinBorder();
+    });
+    r++;
+
+    const costTop = kwEntries.slice(0, 20);
+    costTop.forEach(([, d], idx) => {
+      r = addMetricRow(kws, r, '', d, {
+        labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+        stripe: idx % 2 === 1,
+        bold: idx < 5,
+        labelColor: idx < 5 ? C.blue : undefined,
+      });
+    });
+    r += 2;
+
+    // ── 클릭 TOP 10 ──
+    const clkTop = [...kwEntries].sort((a, b) => b[1].clk - a[1].clk).slice(0, 10);
+    if (clkTop.length > 0) {
+      r = addSubTitle(kws, r, '★ 클릭 TOP 10 키워드', 15);
+      const hRow2 = kws.getRow(r);
+      hRow2.height = 26;
+      ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+        const cell = hRow2.getCell(i + 2);
+        cell.value = h;
+        cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+        cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+        cell.border = thinBorder();
+      });
+      r++;
+      clkTop.forEach(([, d], idx) => {
+        r = addMetricRow(kws, r, '', d, {
+          labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+          stripe: idx % 2 === 1,
+          bold: idx < 3,
+          labelColor: idx < 3 ? C.green : undefined,
+        });
+      });
+      r += 2;
+    }
+
+    // ── 전환 TOP 10 ──
+    const convTop = [...kwEntries].filter(([, d]) => d.purchaseCnt > 0).sort((a, b) => b[1].purchaseAmt - a[1].purchaseAmt).slice(0, 10);
+    if (convTop.length > 0) {
+      r = addSubTitle(kws, r, '★ 구매전환 TOP 10 키워드', 15);
+      const hRow3 = kws.getRow(r);
+      hRow3.height = 26;
+      ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+        const cell = hRow3.getCell(i + 2);
+        cell.value = h;
+        cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+        cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+        cell.border = thinBorder();
+      });
+      r++;
+      convTop.forEach(([, d], idx) => {
+        r = addMetricRow(kws, r, '', d, {
+          labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+          stripe: idx % 2 === 1,
+          bold: idx < 3,
+          labelColor: idx < 3 ? 'FF7C3AED' : undefined,
+        });
+      });
+      r += 2;
+    }
+
+    // ── ROAS TOP 10 (최소 5클릭 이상) ──
+    const roasTop = [...kwEntries].filter(([, d]) => d.clk >= 5 && d.roas > 0).sort((a, b) => b[1].roas - a[1].roas).slice(0, 10);
+    if (roasTop.length > 0) {
+      r = addSubTitle(kws, r, '★ ROAS TOP 10 키워드 (5클릭 이상)', 15);
+      const hRow4 = kws.getRow(r);
+      hRow4.height = 26;
+      ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+        const cell = hRow4.getCell(i + 2);
+        cell.value = h;
+        cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+        cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+        cell.border = thinBorder();
+      });
+      r++;
+      roasTop.forEach(([, d], idx) => {
+        r = addMetricRow(kws, r, '', d, {
+          labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+          stripe: idx % 2 === 1,
+          bold: idx < 3,
+          labelColor: idx < 3 ? C.green : undefined,
+        });
+      });
+      r += 2;
+    }
+
+    // ── 비효율 키워드 (비용 발생 but 전환 0) ──
+    const wasteful = kwEntries.filter(([, d]) => d.cost > 0 && d.purchaseCnt === 0).sort((a, b) => b[1].cost - a[1].cost).slice(0, 10);
+    if (wasteful.length > 0) {
+      r = addSubTitle(kws, r, '⚠ 비효율 키워드 (비용 발생, 전환 없음) TOP 10', 15);
+      const hRow5 = kws.getRow(r);
+      hRow5.height = 26;
+      ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+        const cell = hRow5.getCell(i + 2);
+        cell.value = h;
+        cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+        cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+        cell.border = thinBorder();
+      });
+      r++;
+      wasteful.forEach(([, d], idx) => {
+        r = addMetricRow(kws, r, '', d, {
+          labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+          stripe: idx % 2 === 1,
+          labelColor: C.red,
+        });
+      });
+      r += 2;
+    }
+
+    // ── 전체 키워드 목록 ──
+    r = addSubTitle(kws, r, `전체 키워드 목록 (${kwCount}개, 비용순)`, 15);
+    const hRowAll = kws.getRow(r);
+    hRowAll.height = 26;
+    ['키워드', '광고그룹', '유형', ...metricHeaders].forEach((h, i) => {
+      const cell = hRowAll.getCell(i + 2);
+      cell.value = h;
+      cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      cell.alignment = { horizontal: i < 3 ? 'left' : 'center', vertical: 'middle' };
+      cell.border = thinBorder();
+    });
+    r++;
+    kwEntries.forEach(([, d], idx) => {
+      r = addMetricRow(kws, r, '', d, {
+        labels: [d.name || '(키워드ID)', d.adgroupName || '', d.campaignType || ''],
+        stripe: idx % 2 === 1,
+      });
+    });
+
+    kws.views = [{ state: 'frozen', xSplit: 4, ySplit: 0, showGridLines: false }];
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // 6. PC/모바일 시트
   // ══════════════════════════════════════════════════════════════════
   const deviceEntries = Object.entries(data.byDevice).sort((a, b) => b[1].cost - a[1].cost);
   if (deviceEntries.length > 0) {
