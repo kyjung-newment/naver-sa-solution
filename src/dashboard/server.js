@@ -3164,14 +3164,23 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 
   // account에 API 자격증명 + SMTP 자격증명 병합
   const smtp = await db.getSmtpCredentials(req.session.userId);
+  console.log(`📧 SMTP 조회: daou_email=${smtp?.daou_email || '없음'}, smtp_pass=${smtp?.smtp_pass ? '설정됨(' + smtp.smtp_pass.length + '자)' : '없음'}, username=${smtp?.username || '없음'}`);
+
+  const emailUser = smtp?.daou_email || smtp?.username || '';
+  const emailPass = smtp?.smtp_pass || '';
+
+  if (!emailUser || !emailPass) {
+    return res.json({ ok: false, error: `SMTP 미설정: 이메일=${emailUser || '없음'}, 비밀번호=${emailPass ? '설정됨' : '없음'}. 내 정보에서 다우오피스 계정을 설정해주세요.` });
+  }
+
   const enriched = {
     ...account,
     api_key: creds.api_key, secret_key: creds.secret_key,
     // SMTP: 다우오피스 자동 연동
     email_host: 'smtp.daouoffice.com',
     email_port: 587,
-    email_user: smtp?.daou_email || smtp?.username || '',
-    email_pass: smtp?.smtp_pass || '',
+    email_user: emailUser,
+    email_pass: emailPass,
   };
   try {
     const ok = await generateAndSend(enriched, type);
@@ -3179,7 +3188,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
     } else {
-      res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. SMTP 설정을 확인해주세요.' });
+      res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. Vercel 로그를 확인해주세요.' });
     }
   } catch (err) {
     console.error('리포트 발송 오류:', err);
@@ -3289,15 +3298,47 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
 
     <!-- 키워드 추가/수정 모달 -->
     <div id="sb-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center">
-      <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;padding:24px;margin:16px">
+      <div style="background:#fff;border-radius:12px;width:100%;max-width:700px;max-height:90vh;overflow-y:auto;padding:24px;margin:16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <h3 id="sb-modal-title" style="margin:0;font-size:16px">쇼핑검색 키워드 추가</h3>
           <button onclick="closeShoppingModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
         </div>
 
-        <div class="form-group"><label>검색 키워드</label><input id="sf-keyword" placeholder="예: 남성 운동화"></div>
-        <div class="form-group"><label>소재 ID 또는 매칭 정보 <span style="font-size:11px;color:#94a3b8">(nad-xxx 소재ID / 상점명 / smartstore URL)</span></label><input id="sf-product-url" placeholder="예: nad-a001-02-000000486459301 또는 위드로잉 스토어"></div>
-        <div class="form-group"><label>메모 (상품명 등)</label><input id="sf-product-name" placeholder="상품명 입력"></div>
+        <!-- 소재 선택: 캠페인 → 광고그룹 → 소재 -->
+        <div id="sf-picker" style="margin-bottom:16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+            <div class="form-group" style="margin:0">
+              <label>캠페인</label>
+              <select id="sf-campaign" onchange="loadShoppingAdgroups()" style="font-size:12px">
+                <option value="">캠페인 선택...</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label>광고그룹</label>
+              <select id="sf-adgroup" onchange="loadShoppingAds()" style="font-size:12px" disabled>
+                <option value="">광고그룹 선택...</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label>소재 <span style="font-size:10px;color:#94a3b8">(nad-ID)</span></label>
+              <select id="sf-ad" onchange="pickShoppingAd()" style="font-size:12px" disabled>
+                <option value="">소재 선택...</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-outline" onclick="loadShoppingCampaigns()" id="sf-load-btn" style="width:100%;font-size:12px">📋 캠페인 목록 불러오기</button>
+        </div>
+
+        <!-- 선택된 소재 정보 -->
+        <div id="sf-ad-info" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:16px">
+          <div style="font-size:11px;color:#16a34a;font-weight:600;margin-bottom:6px">✅ 선택된 소재</div>
+          <div style="font-size:13px;font-weight:600" id="sf-ad-title"></div>
+          <div style="font-size:11px;color:#64748b;margin-top:4px" id="sf-ad-detail"></div>
+        </div>
+
+        <div class="form-group"><label>검색 키워드</label><input id="sf-keyword" placeholder="예: 유럽포스터"></div>
+        <input type="hidden" id="sf-product-url">
+        <input type="hidden" id="sf-product-name">
         <input type="hidden" id="sf-edit-id">
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -3329,9 +3370,9 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
     <div class="alert alert-info" style="margin-top:16px">
       <strong>쇼핑검색 자동입찰 안내</strong><br>
       <span style="font-size:12px">
-        • 네이버 쇼핑탭에서 검색 키워드를 입력하면, 등록된 상품 URL이 몇 번째에 노출되는지 자동으로 확인합니다.<br>
-        • 목표순위보다 낮으면 조정입찰가만큼 올리고, 높으면 낮춥니다.<br>
-        • 쇼핑검색 광고 입찰가 API 연동 후 완전한 자동입찰이 가능합니다. (현재: 순위 모니터링)
+        • 캠페인 → 광고그룹 → 소재를 선택하면 소재 ID(nad-xxx)가 자동으로 등록됩니다.<br>
+        • 검색 키워드 입력 후 해당 소재가 검색결과에서 몇 번째 광고에 노출되는지 실시간으로 확인합니다.<br>
+        • 목표순위보다 낮으면 조정입찰가만큼 올리고, 높으면 낮춥니다.
       </span>
     </div>
 
@@ -3344,6 +3385,86 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
     <script>
     const accountId = '${selectedId}';
     let sbEditMode = false;
+    let campCache = [];
+    let agCache = {};
+    let adCache = {};
+
+    // ─── 캠페인 → 광고그룹 → 소재 로드 ─────────────────────
+    async function loadShoppingCampaigns(){
+      const btn=document.getElementById('sf-load-btn');
+      btn.disabled=true; btn.textContent='불러오는 중...';
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/campaigns?accountId='+accountId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        campCache=j.campaigns||[];
+        const sel=document.getElementById('sf-campaign');
+        sel.innerHTML='<option value="">캠페인 선택 ('+campCache.length+'개)</option>';
+        campCache.forEach(c=>{
+          sel.innerHTML+='<option value="'+c.nccCampaignId+'">'+c.name+'</option>';
+        });
+        sel.disabled=false;
+        toast(campCache.length+'개 캠페인 로드 완료');
+      }catch(e){toast('오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='📋 캠페인 목록 새로고침';}
+    }
+
+    async function loadShoppingAdgroups(){
+      const campId=document.getElementById('sf-campaign').value;
+      const agSel=document.getElementById('sf-adgroup');
+      const adSel=document.getElementById('sf-ad');
+      agSel.innerHTML='<option value="">로딩 중...</option>'; agSel.disabled=true;
+      adSel.innerHTML='<option value="">광고그룹 먼저 선택</option>'; adSel.disabled=true;
+      document.getElementById('sf-ad-info').style.display='none';
+      if(!campId) return;
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/adgroups?accountId='+accountId+'&campaignId='+campId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        agCache[campId]=j.adgroups||[];
+        agSel.innerHTML='<option value="">광고그룹 선택 ('+agCache[campId].length+'개)</option>';
+        agCache[campId].forEach(ag=>{
+          agSel.innerHTML+='<option value="'+ag.nccAdgroupId+'">'+ag.name+'</option>';
+        });
+        agSel.disabled=false;
+      }catch(e){toast('오류: '+e.message,true);agSel.innerHTML='<option value="">오류</option>';}
+    }
+
+    async function loadShoppingAds(){
+      const agId=document.getElementById('sf-adgroup').value;
+      const adSel=document.getElementById('sf-ad');
+      adSel.innerHTML='<option value="">로딩 중...</option>'; adSel.disabled=true;
+      document.getElementById('sf-ad-info').style.display='none';
+      if(!agId) return;
+      try{
+        const r=await fetch('/smart-sa/api/shopping-bid/ads?accountId='+accountId+'&adgroupId='+agId);
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        adCache[agId]=j.ads||[];
+        adSel.innerHTML='<option value="">소재 선택 ('+adCache[agId].length+'개)</option>';
+        adCache[agId].forEach(ad=>{
+          const label=(ad.adAttr?.subject||ad.headline||ad.nccAdId||'').slice(0,40);
+          adSel.innerHTML+='<option value="'+ad.nccAdId+'" data-name="'+encodeURIComponent(label)+'" data-nad="'+ad.nccAdId+'">'+label+'</option>';
+        });
+        adSel.disabled=false;
+      }catch(e){toast('오류: '+e.message,true);adSel.innerHTML='<option value="">오류</option>';}
+    }
+
+    function pickShoppingAd(){
+      const adSel=document.getElementById('sf-ad');
+      const opt=adSel.selectedOptions[0];
+      if(!opt||!opt.value){document.getElementById('sf-ad-info').style.display='none';return;}
+      const nadId=opt.value;
+      const name=decodeURIComponent(opt.dataset.name||'');
+      const campName=document.getElementById('sf-campaign').selectedOptions[0]?.text||'';
+      const agName=document.getElementById('sf-adgroup').selectedOptions[0]?.text||'';
+
+      document.getElementById('sf-product-url').value=nadId;
+      document.getElementById('sf-product-name').value=name;
+      document.getElementById('sf-ad-title').textContent=name||nadId;
+      document.getElementById('sf-ad-detail').textContent=campName+' / '+agName+' / '+nadId;
+      document.getElementById('sf-ad-info').style.display='block';
+    }
 
     // ─── 모달 ───────────────────────────────────────────────
     function openShoppingModal(editData){
@@ -3363,6 +3484,13 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         document.getElementById('sf-adjust').value = editData.adjust_amt;
         document.getElementById('sf-edit-id').value = editData.id;
         document.getElementById('sf-interval').value = editData.bid_interval || 10;
+        document.getElementById('sf-picker').style.display = 'none';
+        // 소재 정보 표시
+        if(editData.product_url){
+          document.getElementById('sf-ad-title').textContent=editData.product_name||editData.product_url;
+          document.getElementById('sf-ad-detail').textContent='소재 ID: '+editData.product_url;
+          document.getElementById('sf-ad-info').style.display='block';
+        }
         const sch = editData.schedule || '111111111111111111111111';
         document.querySelectorAll('#sf-schedule .hour-btn').forEach((b,i) => {
           b.classList.toggle('on', sch[i]==='1');
@@ -3370,6 +3498,7 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         });
       } else {
         resetShoppingForm();
+        document.getElementById('sf-picker').style.display = 'block';
       }
       document.getElementById('sb-modal').style.display = 'flex';
     }
@@ -3386,6 +3515,12 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
       document.getElementById('sf-adjust').value='100';
       document.getElementById('sf-device').value='MO'; document.getElementById('sf-device').disabled=false;
       document.getElementById('sf-interval').value='10';
+      document.getElementById('sf-ad-info').style.display='none';
+      document.getElementById('sf-campaign').value='';
+      document.getElementById('sf-adgroup').innerHTML='<option value="">광고그룹 선택...</option>';
+      document.getElementById('sf-adgroup').disabled=true;
+      document.getElementById('sf-ad').innerHTML='<option value="">소재 선택...</option>';
+      document.getElementById('sf-ad').disabled=true;
       document.querySelectorAll('#sf-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
     }
 
@@ -3395,10 +3530,12 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
     async function saveShoppingKeyword(){
       const kw = document.getElementById('sf-keyword').value.trim();
       if(!kw) return toast('검색 키워드를 입력해주세요.',true);
+      const nadId = document.getElementById('sf-product-url').value.trim();
+      if(!nadId && !sbEditMode) return toast('소재를 선택해주세요.',true);
       const hours=Array.from(document.querySelectorAll('#sf-schedule .hour-btn')).map(b=>b.classList.contains('on')?'1':'0').join('');
       const body={
         accountId, keyword:kw,
-        product_url:document.getElementById('sf-product-url').value.trim(),
+        product_url:nadId,
         product_name:document.getElementById('sf-product-name').value.trim(),
         device:document.getElementById('sf-device').value,
         target_rank:parseInt(document.getElementById('sf-rank').value)||1,
@@ -3547,6 +3684,64 @@ router.post('/api/shopping-bid/toggle', requireLogin, async (req, res) => {
     const { id, accountId, enabled } = req.body;
     await db.pool.query('UPDATE shopping_bid_keywords SET enabled = $1 WHERE id = $2 AND account_id = $3', [enabled ? 1 : 0, id, accountId]);
     res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ─── 쇼핑검색: 캠페인 → 광고그룹 → 소재 조회 API ──────────────────
+router.get('/api/shopping-bid/campaigns', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
+    const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+    const campaigns = await client.getCampaigns();
+    // 활성 캠페인만 필터 (ELIGIBLE)
+    const active = (campaigns || []).filter(c => c.status === 'ELIGIBLE' || !c.status);
+    res.json({ ok: true, campaigns: active.map(c => ({ id: c.nccCampaignId, name: c.name, type: c.campaignTp })) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/api/shopping-bid/adgroups', requireLogin, async (req, res) => {
+  try {
+    const { accountId, campaignId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
+    const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+    const adgroups = await client.getAdGroups(campaignId);
+    const active = (adgroups || []).filter(g => g.status === 'ELIGIBLE' || !g.status);
+    res.json({ ok: true, adgroups: active.map(g => ({ id: g.nccAdgroupId, name: g.name })) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/api/shopping-bid/ads', requireLogin, async (req, res) => {
+  try {
+    const { accountId, adgroupId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
+    const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+    const ads = await client.getAds(adgroupId);
+    // 소재 목록: nadId, 상품명, 상태
+    const items = (ads || []).map(ad => ({
+      id: ad.nccAdId,
+      name: ad.ad?.headline || ad.ad?.subject || ad.adAttr?.headline || ad.nccAdId,
+      nadId: ad.nccAdId,
+      pcLandingUrl: ad.ad?.pc?.final || ad.ad?.pcLandingUrl || '',
+      moLandingUrl: ad.ad?.mobile?.final || ad.ad?.mobileLandingUrl || '',
+      status: ad.status,
+    }));
+    res.json({ ok: true, ads: items.filter(a => a.status === 'ELIGIBLE' || !a.status) });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }

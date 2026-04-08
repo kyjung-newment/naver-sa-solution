@@ -4,7 +4,9 @@ const ExcelJS = require('exceljs');
 const transporterCache = new Map();
 
 function getTransporter(account) {
-  const key = `${account.email_host}:${account.email_user}`;
+  // 캐시 키에 비밀번호 해시 포함 → 비밀번호 변경 시 자동으로 새 transporter 생성
+  const passHash = (account.email_pass || '').slice(0, 4) + (account.email_pass || '').length;
+  const key = `${account.email_host}:${account.email_user}:${passHash}`;
   if (!transporterCache.has(key)) {
     const port = parseInt(account.email_port) || 587;
     transporterCache.set(key, nodemailer.createTransport({

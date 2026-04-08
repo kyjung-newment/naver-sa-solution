@@ -276,8 +276,9 @@ async function generateAndSend(account, type) {
     console.log(`✅ [${account.name}] ${type.toUpperCase()} 완료`);
     return true;
   } catch (err) {
-    console.error(`❌ [${account.name}] ${type.toUpperCase()} 오류:`, err.message);
-    return false;
+    console.error(`❌ [${account.name}] ${type.toUpperCase()} 오류:`, err.message, err.stack);
+    // 에러를 throw하여 상위에서 상세 메시지 전달
+    throw err;
   }
 }
 
