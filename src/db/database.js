@@ -217,6 +217,7 @@ async function initDb() {
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS daou_email TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_host TEXT DEFAULT 'outbound.daouoffice.com'`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
@@ -324,7 +325,7 @@ async function rejectUser(userId) {
 
 // ─── SMTP 자격증명 (다우오피스 자동 연동) ──────────────────────────────
 async function getSmtpCredentials(userId) {
-  return get('SELECT username, smtp_pass, daou_email FROM users WHERE id = $1', [userId]);
+  return get('SELECT username, smtp_pass, daou_email, smtp_host FROM users WHERE id = $1', [userId]);
 }
 
 // ─── API 자격증명 ─────────────────────────────────────────────────────

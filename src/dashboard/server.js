@@ -400,11 +400,37 @@ router.get('/profile', requireLogin, async (req, res) => {
         </div>
         <form method="POST" action="/smart-sa/profile/smtp">
           <div class="form-row">
+            <div class="form-group"><label>SMTP 서버</label>
+              <select name="smtp_host" style="font-size:13px">
+                <option value="outbound.daouoffice.com" ${(smtp?.smtp_host||'outbound.daouoffice.com')==='outbound.daouoffice.com'?'selected':''}>outbound.daouoffice.com (포트 465)</option>
+                <option value="send.daouoffice.com" ${smtp?.smtp_host==='send.daouoffice.com'?'selected':''}>send.daouoffice.com (포트 465)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
             <div class="form-group"><label>다우오피스 이메일</label><input name="daou_email" value="${smtp?.daou_email || ''}" required placeholder="user@newment.co.kr" type="email"></div>
             <div class="form-group"><label>다우오피스 비밀번호</label><input type="password" name="daou_pass" value="${smtp?.smtp_pass || ''}" required placeholder="다우오피스 로그인 비밀번호"></div>
           </div>
-          <button class="btn btn-primary" style="margin-top:8px">저장</button>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn-primary">저장</button>
+            <button type="button" class="btn btn-outline" onclick="testSmtp()">📧 SMTP 연결 테스트</button>
+          </div>
         </form>
+        <div id="smtp-test-result" style="margin-top:10px;display:none;padding:10px;border-radius:8px;font-size:12px"></div>
+        <script>
+        async function testSmtp(){
+          const btn=event.target; btn.disabled=true; btn.textContent='테스트 중...';
+          const res=document.getElementById('smtp-test-result');
+          try{
+            const r=await fetch('/smart-sa/profile/smtp-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+            const j=await r.json();
+            res.style.display='block';
+            if(j.ok){res.style.background='#f0fdf4';res.style.border='1px solid #bbf7d0';res.style.color='#166534';res.textContent='✅ '+j.message;}
+            else{res.style.background='#fef2f2';res.style.border='1px solid #fecaca';res.style.color='#991b1b';res.textContent='❌ '+j.error;}
+          }catch(e){res.style.display='block';res.style.background='#fef2f2';res.style.border='1px solid #fecaca';res.style.color='#991b1b';res.textContent='❌ '+e.message;}
+          finally{btn.disabled=false;btn.textContent='📧 SMTP 연결 테스트';}
+        }
+        </script>
       </div>
     </div>
 
@@ -426,9 +452,29 @@ router.get('/profile', requireLogin, async (req, res) => {
 });
 
 router.post('/profile/smtp', requireLogin, async (req, res) => {
-  const { daou_email, daou_pass } = req.body;
-  await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2 WHERE id = $3', [daou_email, daou_pass, req.session.userId]);
+  const { daou_email, daou_pass, smtp_host } = req.body;
+  await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2, smtp_host = $3 WHERE id = $4', [daou_email, daou_pass, smtp_host || 'outbound.daouoffice.com', req.session.userId]);
   res.redirect(303, '/smart-sa/profile?msg=smtp_ok');
+});
+
+router.post('/profile/smtp-test', requireLogin, async (req, res) => {
+  try {
+    const smtp = await db.getSmtpCredentials(req.session.userId);
+    if (!smtp?.daou_email || !smtp?.smtp_pass) {
+      return res.json({ ok: false, error: 'SMTP 설정이 없습니다. 먼저 저장해주세요.' });
+    }
+    const host = smtp.smtp_host || 'outbound.daouoffice.com';
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host, port: 465, secure: true,
+      auth: { user: smtp.daou_email, pass: smtp.smtp_pass },
+      connectionTimeout: 10000,
+    });
+    await transporter.verify();
+    res.json({ ok: true, message: `SMTP 연결 성공! (${host}:465, ${smtp.daou_email})` });
+  } catch (e) {
+    res.json({ ok: false, error: `SMTP 연결 실패: ${e.message}` });
+  }
 });
 
 router.post('/profile/password', requireLogin, async (req, res) => {
@@ -3177,7 +3223,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     ...account,
     api_key: creds.api_key, secret_key: creds.secret_key,
     // SMTP: 다우오피스 자동 연동
-    email_host: 'outbound.daouoffice.com',
+    email_host: smtp?.smtp_host || 'outbound.daouoffice.com',
     email_port: 465,
     email_user: emailUser,
     email_pass: emailPass,
@@ -3215,7 +3261,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       for (const account of accounts) {
         // SMTP 자동 연동: 다우오피스 정보 사용
         const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-        account.email_host = 'outbound.daouoffice.com';
+        account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
         account.email_port = 465;
         account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
         account.email_pass = smtp?.smtp_pass || account.email_pass || '';
@@ -3304,29 +3350,29 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
           <button onclick="closeShoppingModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8">&times;</button>
         </div>
 
-        <!-- 소재 선택: 캠페인 → 광고그룹 → 소재 -->
+        <!-- 소재 선택: 조회 → 캠페인 → 광고그룹 → 소재 -->
         <div id="sf-picker" style="margin-bottom:16px">
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+          <button class="btn btn-outline" onclick="loadShoppingCampaigns()" id="sf-load-btn" style="width:100%;font-size:12px;margin-bottom:12px">📋 쇼핑검색 캠페인 불러오기</button>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
             <div class="form-group" style="margin:0">
-              <label>캠페인</label>
-              <select id="sf-campaign" onchange="loadShoppingAdgroups()" style="font-size:12px">
-                <option value="">캠페인 선택...</option>
+              <label>① 캠페인</label>
+              <select id="sf-campaign" onchange="loadShoppingAdgroups()" style="font-size:12px" disabled>
+                <option value="">캠페인 조회 필요</option>
               </select>
             </div>
             <div class="form-group" style="margin:0">
-              <label>광고그룹</label>
+              <label>② 광고그룹</label>
               <select id="sf-adgroup" onchange="loadShoppingAds()" style="font-size:12px" disabled>
-                <option value="">광고그룹 선택...</option>
+                <option value="">캠페인 먼저 선택</option>
               </select>
             </div>
             <div class="form-group" style="margin:0">
-              <label>소재 <span style="font-size:10px;color:#94a3b8">(nad-ID)</span></label>
+              <label>③ 소재 <span style="font-size:10px;color:#94a3b8">(nad-ID)</span></label>
               <select id="sf-ad" onchange="pickShoppingAd()" style="font-size:12px" disabled>
-                <option value="">소재 선택...</option>
+                <option value="">광고그룹 먼저 선택</option>
               </select>
             </div>
           </div>
-          <button class="btn btn-outline" onclick="loadShoppingCampaigns()" id="sf-load-btn" style="width:100%;font-size:12px">📋 캠페인 목록 불러오기</button>
         </div>
 
         <!-- 선택된 소재 정보 -->
@@ -3401,7 +3447,7 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         const sel=document.getElementById('sf-campaign');
         sel.innerHTML='<option value="">캠페인 선택 ('+campCache.length+'개)</option>';
         campCache.forEach(c=>{
-          sel.innerHTML+='<option value="'+c.nccCampaignId+'">'+c.name+'</option>';
+          sel.innerHTML+='<option value="'+c.id+'">'+c.name+'</option>';
         });
         sel.disabled=false;
         toast(campCache.length+'개 캠페인 로드 완료');
@@ -3424,7 +3470,7 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         agCache[campId]=j.adgroups||[];
         agSel.innerHTML='<option value="">광고그룹 선택 ('+agCache[campId].length+'개)</option>';
         agCache[campId].forEach(ag=>{
-          agSel.innerHTML+='<option value="'+ag.nccAdgroupId+'">'+ag.name+'</option>';
+          agSel.innerHTML+='<option value="'+ag.id+'">'+ag.name+'</option>';
         });
         agSel.disabled=false;
       }catch(e){toast('오류: '+e.message,true);agSel.innerHTML='<option value="">오류</option>';}
@@ -3443,8 +3489,8 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
         adCache[agId]=j.ads||[];
         adSel.innerHTML='<option value="">소재 선택 ('+adCache[agId].length+'개)</option>';
         adCache[agId].forEach(ad=>{
-          const label=(ad.adAttr?.subject||ad.headline||ad.nccAdId||'').slice(0,40);
-          adSel.innerHTML+='<option value="'+ad.nccAdId+'" data-name="'+encodeURIComponent(label)+'" data-nad="'+ad.nccAdId+'">'+label+'</option>';
+          const label=(ad.name||ad.id||'').slice(0,40);
+          adSel.innerHTML+='<option value="'+ad.nadId+'" data-name="'+encodeURIComponent(label)+'" data-nad="'+ad.nadId+'">'+label+'</option>';
         });
         adSel.disabled=false;
       }catch(e){toast('오류: '+e.message,true);adSel.innerHTML='<option value="">오류</option>';}
@@ -3699,9 +3745,16 @@ router.get('/api/shopping-bid/campaigns', requireLogin, async (req, res) => {
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     const campaigns = await client.getCampaigns();
-    // 활성 캠페인만 필터 (ELIGIBLE)
-    const active = (campaigns || []).filter(c => c.status === 'ELIGIBLE' || !c.status);
-    res.json({ ok: true, campaigns: active.map(c => ({ id: c.nccCampaignId, name: c.name, type: c.campaignTp })) });
+    // 쇼핑검색 캠페인만 필터 (campaignTp: 4 = 쇼핑검색)
+    const active = (campaigns || []).filter(c => {
+      const isActive = c.status === 'ELIGIBLE' || !c.status;
+      // 쇼핑검색 캠페인 타입: 4 또는 이름에 '쇼핑' 포함
+      const isShopping = c.campaignTp === 4 || c.campaignTp === '4' || (c.name && c.name.includes('쇼핑'));
+      return isActive && isShopping;
+    });
+    // 쇼핑검색 캠페인이 없으면 전체 활성 캠페인 반환 (fallback)
+    const result = active.length > 0 ? active : (campaigns || []).filter(c => c.status === 'ELIGIBLE' || !c.status);
+    res.json({ ok: true, campaigns: result.map(c => ({ id: c.nccCampaignId, name: c.name, type: c.campaignTp })), shoppingOnly: active.length > 0 });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
