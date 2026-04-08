@@ -2221,7 +2221,7 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
 router.get('/autobid', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
-  const selectedId = req.query.accountId || accounts[0]?.id || '';
+  const selectedId = req.session.selectedAccountId || req.query.accountId || accounts[0]?.id || '';
 
   const content = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
@@ -2229,14 +2229,8 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         <p style="color:#64748b;font-size:13px;margin:0">키워드별 희망순위에 맞춰 입찰가를 자동으로 조정합니다.</p>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
-        <select id="ab-account" style="width:200px" onchange="location.href='/smart-sa/autobid?accountId='+this.value">
-          ${accounts.map(a => `<option value="${a.id}" ${a.id==selectedId?'selected':''}>${a.name}</option>`).join('')}
-        </select>
         <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
         <button class="btn" onclick="runAutoBid()" id="autobid-btn" style="background:#f59e0b;color:#fff">🚀 수동 입찰</button>
-        <button class="btn btn-outline btn-sm" onclick="debugRank()" id="debug-btn" style="font-size:11px">🔧 API 테스트</button>
-        <button class="btn btn-outline btn-sm" onclick="testRealRank()" id="realrank-btn" style="font-size:11px">📡 메인순위</button>
-        <button class="btn btn-outline btn-sm" onclick="testRealRank('more')" style="font-size:11px">📡 더보기순위</button>
         <button class="btn btn-primary" onclick="openModal()">+ 키워드 추가</button>
       </div>
     </div>
