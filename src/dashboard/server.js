@@ -2702,10 +2702,17 @@ router.post('/api/autobid/debug-rank', requireLogin, async (req, res) => {
     const device = req.body.device || 'MO';
     const results = {};
 
-    // 1. getKeywordInfo
+    // 1. getKeywordInfo (전체 raw 응답)
     try {
       const kwInfo = await client.getKeywordInfo(kwId);
-      results.keywordInfo = { bidAmt: kwInfo?.bidAmt, status: kwInfo?.status, inspectStatus: kwInfo?.inspectStatus, bidStrategy: kwInfo?.bidStrategy, allFields: Object.keys(kwInfo || {}) };
+      results.keywordInfo = kwInfo; // raw 전체 응답
+      // adgroup bid도 조회
+      if (kwInfo?.nccAdgroupId) {
+        try {
+          const grpInfo = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
+          results.adGroupInfo = { bidAmt: grpInfo?.bidAmt, name: grpInfo?.name, useGroupBidAmt: kwInfo?.useGroupBidAmt, allFields: Object.keys(grpInfo || {}) };
+        } catch (e2) { results.adGroupInfo = { error: e2.message }; }
+      }
     } catch (e) { results.keywordInfo = { error: e.message }; }
 
     // 2. Stats API - 오늘
