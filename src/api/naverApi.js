@@ -284,10 +284,10 @@ function createApiClient(creds) {
       apiCall('GET', `/ncc/keywords/${keywordId}`),
 
     updateKeywordBid: (keywordId, bidAmt) =>
-      apiCall('PUT', '/ncc/keywords', { fields: 'bidAmt' }, [{
+      apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt' }, {
         nccKeywordId: keywordId,
         bidAmt,
-      }]),
+      }),
 
     // 목표 순위에 필요한 입찰가 추정
     getEstimatedBidForPosition: (keywordId, device, position) =>
