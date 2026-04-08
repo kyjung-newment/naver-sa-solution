@@ -139,11 +139,19 @@ async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
     if (changed) {
       await client.updateKeywordBid(keyword_id, newBid);
       console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${action}, 목표:${target_rank}위)`);
+      // 변경 후 실제 반영된 입찰가 재조회
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const updatedKw = await client.getKeywordInfo(keyword_id);
+        if (updatedKw?.bidAmt && updatedKw.bidAmt > 0) {
+          newBid = updatedKw.bidAmt;
+        }
+      } catch (e) {}
     } else {
       console.log(`  ✓ [${keyword}] ${device} ${currentBid}원 ${action}`);
     }
 
-    // DB 상태 + last_run 갱신
+    // DB 상태 + last_run 갱신 (확인된 입찰가로 저장)
     await db.updateAutoBidKeywordStatus(keyword_id, device, 0, newBid || currentBid, realRank).catch(() => {});
 
     return changed;

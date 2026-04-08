@@ -2906,8 +2906,21 @@ router.post('/api/autobid/run', requireLogin, async (req, res) => {
 
         const changed = newBid !== currentBid && newBid > 0;
         if (changed) {
-          await client.updateKeywordBid(abKw.keyword_id, newBid);
-          console.log(`  🎯 [${abKw.keyword}] ${abKw.device} ${currentBid}→${newBid}원 (${action})`);
+          try {
+            await client.updateKeywordBid(abKw.keyword_id, newBid);
+            console.log(`  🎯 [${abKw.keyword}] ${abKw.device} ${currentBid}→${newBid}원 (${action})`);
+          } catch (bidErr) {
+            console.error(`  ❌ 입찰가 변경 실패 [${abKw.keyword}]:`, bidErr.message);
+            results.push({ keyword: abKw.keyword, device: abKw.device, oldBid: currentBid, newBid, error: '입찰가 변경 실패: ' + bidErr.message });
+            continue;
+          }
+          // 변경 후 실제 반영된 입찰가 재조회
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const updatedKw = await client.getKeywordInfo(abKw.keyword_id);
+            const confirmedBid = updatedKw?.bidAmt || newBid;
+            newBid = confirmedBid;
+          } catch (e) {}
         }
 
         await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, 0, newBid || currentBid, realRank).catch(() => {});
