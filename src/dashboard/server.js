@@ -2233,6 +2233,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           ${accounts.map(a => `<option value="${a.id}" ${a.id==selectedId?'selected':''}>${a.name}</option>`).join('')}
         </select>
         <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
+        <button class="btn" onclick="runAutoBid()" id="autobid-btn" style="background:#f59e0b;color:#fff">🚀 수동 입찰</button>
         <button class="btn btn-outline btn-sm" onclick="debugRank()" id="debug-btn" style="font-size:11px">🔧 API 테스트</button>
         <button class="btn btn-outline btn-sm" onclick="testRealRank()" id="realrank-btn" style="font-size:11px">📡 메인순위</button>
         <button class="btn btn-outline btn-sm" onclick="testRealRank('more')" style="font-size:11px">📡 더보기순위</button>
@@ -2423,6 +2424,25 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         setTimeout(()=>loadList(), 3000);
         setTimeout(()=>loadList(), 6000);
       }catch(e){toast('오류: '+e.message,true);}
+    }
+
+    // ─── 수동 자동입찰 실행 ───────────────────────────────────────
+    async function runAutoBid(){
+      const btn=document.getElementById('autobid-btn');
+      btn.disabled=true; btn.textContent='입찰 조정 중...';
+      try{
+        const r=await fetch('/smart-sa/api/autobid/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId})});
+        const j=await r.json();
+        if(!j.ok) throw new Error(j.error);
+        if(j.results&&j.results.length){
+          const info=j.results.map(d=>d.keyword+' '+d.device+': '+(d.error||(d.changed?d.oldBid+'→'+d.newBid+'원 ('+d.action+')':'변동없음 ('+d.action+')'))).join('\\n');
+          toast(j.results.length+'개 키워드 입찰 완료\\n'+info);
+        } else {
+          toast('실행 대상 키워드 없음');
+        }
+        loadList();
+      }catch(e){toast('오류: '+e.message,true);}
+      finally{btn.disabled=false;btn.textContent='🚀 수동 입찰';}
     }
 
     // ─── 순위 일괄 조회 ─────────────────────────────────────────
@@ -2816,6 +2836,88 @@ router.post('/api/autobid/test-realrank', requireLogin, async (req, res) => {
       totalAds: ads.length,
       ads,
     });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 수동 자동입찰 실행
+router.post('/api/autobid/run', requireLogin, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.body.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = makeClient(creds, account.customer_id);
+    const abKeywords = await db.getEnabledAutoBidKeywords(account.id);
+    const siteUrls = (account.site_url || '').split(',').map(u => u.trim()).filter(Boolean);
+    const { findAdRank } = require('../api/naverRankScraper');
+
+    const rankCache = {};
+    const results = [];
+
+    for (const abKw of abKeywords) {
+      try {
+        // 1. 현재 입찰가 조회
+        let currentBid = abKw.last_bid || 0;
+        try {
+          const kwInfo = await client.getKeywordInfo(abKw.keyword_id);
+          if (kwInfo?.useGroupBidAmt && kwInfo?.nccAdgroupId) {
+            const grp = await client.getAdGroupDetail(kwInfo.nccAdgroupId);
+            currentBid = grp?.bidAmt || currentBid;
+          } else if (kwInfo?.bidAmt && kwInfo.bidAmt > 0) {
+            currentBid = kwInfo.bidAmt;
+          }
+        } catch (e) {}
+
+        // 2. 실시간 순위 조회
+        let realRank = 0;
+        if (siteUrls.length > 0) {
+          const cacheKey = `${abKw.keyword}_${abKw.device}`;
+          if (rankCache[cacheKey] !== undefined) {
+            realRank = rankCache[cacheKey];
+          } else {
+            for (const siteUrl of siteUrls) {
+              const result = await findAdRank(abKw.keyword, abKw.device, siteUrl);
+              if (result.rank > 0) { realRank = result.rank; break; }
+            }
+            rankCache[cacheKey] = realRank;
+          }
+        }
+
+        // 3. 입찰가 조정
+        let newBid = currentBid;
+        let action = '유지';
+        const adjust = abKw.adjust_amt || 30;
+
+        if (realRank === 0) {
+          newBid = Math.min(currentBid + adjust, abKw.max_bid);
+          action = '순위밖→상향';
+        } else if (realRank > abKw.target_rank) {
+          newBid = Math.min(currentBid + adjust, abKw.max_bid);
+          action = realRank + '위→상향';
+        } else if (realRank < abKw.target_rank) {
+          newBid = Math.max(currentBid - adjust, 70);
+          action = realRank + '위→하향';
+        } else {
+          action = realRank + '위=목표달성';
+        }
+
+        const changed = newBid !== currentBid && newBid > 0;
+        if (changed) {
+          await client.updateKeywordBid(abKw.keyword_id, newBid);
+          console.log(`  🎯 [${abKw.keyword}] ${abKw.device} ${currentBid}→${newBid}원 (${action})`);
+        }
+
+        await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, 0, newBid || currentBid, realRank).catch(() => {});
+        results.push({ keyword: abKw.keyword, device: abKw.device, oldBid: currentBid, newBid, realRank, action, changed });
+        await new Promise(r => setTimeout(r, 300));
+      } catch (e) {
+        results.push({ keyword: abKw.keyword, device: abKw.device, error: e.message });
+      }
+    }
+    res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
