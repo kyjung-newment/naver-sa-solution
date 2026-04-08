@@ -1162,8 +1162,8 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             <div style="font-size:12px;color:#78350f;margin-top:2px">비밀번호 변경 후 <a href="/smart-sa/profile" style="color:#0284c7;font-weight:600">내 정보</a>에서 다우오피스 비밀번호를 업데이트해주세요.</div>
             <div style="font-size:12px;color:#64748b;margin-top:6px">발신: <strong>${smtpInfo?.daou_email || '미설정'}</strong> → 수신: 위 리포트 수신 이메일</div>
           </div>
-          <input type="hidden" name="email_host" value="${v('email_host','smtp.daouoffice.com')}">
-          <input type="hidden" name="email_port" value="${v('email_port',587)}">
+          <input type="hidden" name="email_host" value="${v('email_host','outbound.daouoffice.com')}">
+          <input type="hidden" name="email_port" value="${v('email_port',465)}">
           <input type="hidden" name="email_user" value="${v('email_user','')}">
           <input type="hidden" name="email_pass" value="${v('email_pass','')}">
         </div>
@@ -3177,8 +3177,8 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     ...account,
     api_key: creds.api_key, secret_key: creds.secret_key,
     // SMTP: 다우오피스 자동 연동
-    email_host: 'smtp.daouoffice.com',
-    email_port: 587,
+    email_host: 'outbound.daouoffice.com',
+    email_port: 465,
     email_user: emailUser,
     email_pass: emailPass,
   };
@@ -3215,8 +3215,8 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       for (const account of accounts) {
         // SMTP 자동 연동: 다우오피스 정보 사용
         const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-        account.email_host = 'smtp.daouoffice.com';
-        account.email_port = 587;
+        account.email_host = 'outbound.daouoffice.com';
+        account.email_port = 465;
         account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
         account.email_pass = smtp?.smtp_pass || account.email_pass || '';
         const ok = await generateAndSend(account, type).catch(() => false);
