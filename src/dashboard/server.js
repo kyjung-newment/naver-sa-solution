@@ -2234,7 +2234,8 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         </select>
         <button class="btn" onclick="checkRanks()" id="rank-btn">📊 순위 조회</button>
         <button class="btn btn-outline btn-sm" onclick="debugRank()" id="debug-btn" style="font-size:11px">🔧 API 테스트</button>
-        <button class="btn btn-outline btn-sm" onclick="testRealRank()" id="realrank-btn" style="font-size:11px">📡 실시간순위 테스트</button>
+        <button class="btn btn-outline btn-sm" onclick="testRealRank()" id="realrank-btn" style="font-size:11px">📡 메인순위</button>
+        <button class="btn btn-outline btn-sm" onclick="testRealRank('more')" style="font-size:11px">📡 더보기순위</button>
         <button class="btn btn-primary" onclick="openModal()">+ 키워드 추가</button>
       </div>
     </div>
@@ -2271,7 +2272,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           <div class="form-group"><label>지면</label>
             <select id="f-device"><option value="PC">PC</option><option value="MO" selected>MOBILE</option></select>
           </div>
-          <div class="form-group"><label>희망순위</label><input id="f-rank" type="number" value="3" min="1" max="15"></div>
+          <div class="form-group"><label>희망순위</label><input id="f-rank" type="number" value="3" min="1" max="5"></div>
           <div class="form-group"><label>최대입찰가 (원)</label><input id="f-maxbid" type="number" value="5000" step="100"></div>
           <div class="form-group"><label>조정입찰가 (원)</label><input id="f-adjust" type="number" value="100" step="10"></div>
           <div class="form-group"><label>실행 간격</label>
@@ -2339,6 +2340,14 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
 
     function closeModal(){ document.getElementById('kw-modal').style.display='none'; resetForm(); }
 
+    function updateRankMax(){
+      const d=document.getElementById('f-device').value;
+      const r=document.getElementById('f-rank');
+      r.max = d==='PC' ? 15 : 5;
+      if(parseInt(r.value) > parseInt(r.max)) r.value=r.max;
+    }
+    document.getElementById('f-device').addEventListener('change', updateRankMax);
+
     function resetForm(){
       document.getElementById('f-keyword').value='';
       document.getElementById('f-kwid').value='';
@@ -2350,6 +2359,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       document.getElementById('f-interval').value='10';
       document.getElementById('f-device').disabled=false;
       document.querySelectorAll('#f-schedule .hour-btn').forEach(b=>{b.classList.remove('off');b.classList.add('on');});
+      updateRankMax();
     }
 
     function toggleHour(el){ el.classList.toggle('on'); el.classList.toggle('off'); }
@@ -2501,7 +2511,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
       }catch(e){toast('디버그 오류: '+e.message,true);}
     }
 
-    async function testRealRank(){
+    async function testRealRank(source){
       try{
         const r=await fetch('/smart-sa/api/autobid/list?accountId='+accountId);
         const j=await r.json();
@@ -2509,13 +2519,15 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         const kw=j.keywords[0];
         const btn=document.getElementById('realrank-btn');
         btn.disabled=true;btn.textContent='조회 중...';
-        const r2=await fetch('/smart-sa/api/autobid/test-realrank',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId,keyword:kw.keyword,device:kw.device,nccKeywordId:kw.keyword_id})});
+        const body={accountId,keyword:kw.keyword,device:kw.device,nccKeywordId:kw.keyword_id};
+        if(source==='more') body.source='more';
+        const r2=await fetch('/smart-sa/api/autobid/test-realrank',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const j2=await r2.json();
         btn.disabled=false;btn.textContent='📡 실시간순위 테스트';
         let modal=document.getElementById('debug-modal');
         if(modal) modal.remove();
         modal=document.createElement('div');modal.id='debug-modal';modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
-        modal.innerHTML='<div style="background:#fff;border-radius:12px;width:90%;max-width:800px;max-height:80vh;overflow:auto;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">실시간 순위 테스트 ('+kw.keyword+' / '+kw.device+')</h3><button onclick="this.closest(\\'#debug-modal\\').remove()" style="background:none;border:none;font-size:20px;cursor:pointer">&times;</button></div><pre id="debug-content" style="font-size:11px;white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:8px;max-height:60vh;overflow:auto"></pre></div>';
+        modal.innerHTML='<div style="background:#fff;border-radius:12px;width:90%;max-width:800px;max-height:80vh;overflow:auto;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">실시간 순위 테스트 ('+kw.keyword+' / '+kw.device+(source==="more"?" / 더보기":"")+' )</h3><button onclick="this.closest(\\'#debug-modal\\').remove()" style="background:none;border:none;font-size:20px;cursor:pointer">&times;</button></div><pre id="debug-content" style="font-size:11px;white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:8px;max-height:60vh;overflow:auto"></pre></div>';
         document.body.appendChild(modal);
         document.getElementById('debug-content').textContent=JSON.stringify(j2,null,2);
       }catch(e){toast('실시간 순위 오류: '+e.message,true);}
@@ -2737,14 +2749,39 @@ router.post('/api/autobid/test-realrank', requireLogin, async (req, res) => {
   try {
     const keyword = req.body.keyword || '일본포스터';
     const device = req.body.device || 'PC';
+    const source = req.body.source || 'main'; // 'main' or 'more'
 
-    const { getPowerLinkAds } = require('../api/naverRankScraper');
+    const { getPowerLinkAds, getMobileAdsMore } = require('../api/naverRankScraper');
+
+    // 더보기 페이지 비교 테스트
+    if (source === 'more' && device === 'MO') {
+      const { ads, html } = await getMobileAdsMore(keyword);
+      // HTML에서 파워링크 관련 태그 추출 (디버깅용)
+      const cheerio = require('cheerio');
+      const $ = cheerio.load(html);
+      const htmlSnippets = [];
+      $('li').slice(0, 3).each((i, el) => {
+        htmlSnippets.push($(el).html()?.substring(0, 300) || '');
+      });
+      return res.json({
+        ok: true,
+        keyword,
+        device,
+        source: 'more (m.ad.search.naver.com)',
+        totalAds: ads.length,
+        ads,
+        htmlLength: html.length,
+        sampleHtml: htmlSnippets,
+      });
+    }
+
     const ads = await getPowerLinkAds(keyword, device);
 
     res.json({
       ok: true,
       keyword,
       device,
+      source: device === 'MO' ? 'main (m.search.naver.com)' : 'PC (search.naver.com)',
       totalAds: ads.length,
       ads,
     });

@@ -1,7 +1,7 @@
 /**
  * 네이버 검색결과에서 파워링크 광고 실시간 순위 조회
- * - PC: search.naver.com 에서 파워링크 섹션 파싱
- * - MO: m.ad.search.naver.com (더보기 페이지)에서 전체 광고 목록 파싱
+ * - PC: search.naver.com 에서 파워링크 섹션 파싱 (최대 15개)
+ * - MO: m.search.naver.com (메인) + m.ad.search.naver.com (더보기) 파싱
  */
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -88,8 +88,8 @@ async function getPcAds(keyword) {
 
 /**
  * 모바일 검색결과에서 파워링크 광고 파싱
- * m.search.naver.com (메인 통합검색)에서 실제 노출 순서대로 조회
- * 모바일은 상위 4개만 표시됨 (실제 순서 보장)
+ * m.search.naver.com (메인 통합검색) 기준 - 실제 사용자에게 보이는 순서
+ * 모바일은 상위 4개만 노출됨 → 5위 이상은 "순위밖"
  */
 async function getMobileAds(keyword) {
   const response = await axios.get('https://m.search.naver.com/search.naver', {
@@ -102,32 +102,67 @@ async function getMobileAds(keyword) {
     timeout: 10000,
   });
 
-  const $ = cheerio.load(response.data);
+  return parseMobileHtml(response.data);
+}
+
+/**
+ * 더보기 페이지 (m.ad.search.naver.com) - 전체 광고 목록 (테스트/비교용)
+ */
+async function getMobileAdsMore(keyword) {
+  const response = await axios.get('https://m.ad.search.naver.com/search.naver', {
+    params: { where: 'm', query: keyword },
+    headers: {
+      'User-Agent': MO_USER_AGENT,
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+      'Referer': 'https://m.search.naver.com/',
+    },
+    timeout: 10000,
+  });
+
+  return { ads: parseMobileHtml(response.data), html: response.data };
+}
+
+/**
+ * 모바일 HTML에서 파워링크 광고 파싱 (공통)
+ */
+function parseMobileHtml(html) {
+  const $ = cheerio.load(html);
   const ads = [];
   let rank = 0;
 
-  // 모바일 통합검색의 파워링크 광고
-  const selectors = [
+  const containerSelectors = [
     '[class*="powerlink"] li',
     '[id*="mobilePowerLink"] li',
     '.lst_total > li',
     '[class*="ad_area"] li',
     '[data-cr-area*="pwl"] li',
+    '.lst_ad > li',
+    '[class*="pow_link"] li',
+    'ul li[data-cr-rank]',
   ];
 
   let adItems = $([]);
-  for (const sel of selectors) {
+  for (const sel of containerSelectors) {
     const found = $(sel);
     if (found.length > 0) {
       adItems = found;
+      console.log(`  📡 모바일 셀렉터 매칭: "${sel}" → ${found.length}개`);
       break;
+    }
+  }
+
+  if (adItems.length === 0) {
+    adItems = $('[data-cr-rank]');
+    if (adItems.length > 0) {
+      console.log(`  📡 data-cr-rank로 ${adItems.length}개 발견`);
     }
   }
 
   adItems.each((idx, el) => {
     const $el = $(el);
-    const headline = $el.find('.tit, .tit_area a, a.tit, [class*="tit"] a, strong a').first().text().trim();
-    const description = $el.find('.dsc, .desc, .ad_dsc, [class*="desc"]').first().text().trim();
+    const headline = $el.find('.tit, .tit_area a, a.tit, [class*="tit"] a, strong a, a[class*="link"]').first().text().trim();
+    const description = $el.find('.dsc, .desc, .ad_dsc, [class*="desc"], [class*="dsc"]').first().text().trim();
     const displayUrl = $el.find('.url, .url_area .url, .lnk_url, [class*="url"]').first().text().trim();
 
     if (headline && headline.length > 1) {
@@ -136,7 +171,6 @@ async function getMobileAds(keyword) {
     }
   });
 
-  // fallback: onclick r= 파라미터
   if (ads.length === 0) {
     $('[onclick*="pwl"]').each((idx, el) => {
       const $li = $(el).closest('li');
@@ -150,7 +184,7 @@ async function getMobileAds(keyword) {
   }
 
   if (ads.length === 0) {
-    console.log(`  📡 모바일 파싱 실패, HTML 길이: ${response.data.length}`);
+    console.log(`  📡 모바일 파싱 실패, HTML 길이: ${html.length}`);
   }
 
   return ads;
@@ -221,4 +255,4 @@ async function findAdRank(keyword, device, siteUrl) {
   };
 }
 
-module.exports = { getPowerLinkAds, findAdRank };
+module.exports = { getPowerLinkAds, findAdRank, getMobileAdsMore };
