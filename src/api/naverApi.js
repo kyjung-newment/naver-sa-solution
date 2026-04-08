@@ -288,30 +288,17 @@ function createApiClient(creds) {
       apiCall('GET', `/ncc/keywords/${keywordId}`),
 
     updateKeywordBid: async (keywordId, bidAmt) => {
-      // 1차: bidAmt + useGroupBidAmt 동시 변경 (그룹입찰가 사용 키워드 대응)
-      try {
-        return await apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt,useGroupBidAmt' }, {
-          nccKeywordId: keywordId,
-          bidAmt,
-          useGroupBidAmt: false,
-        });
-      } catch (e1) {
-        console.log(`  입찰가 변경 1차 실패 (${e1.message}), 2차 시도...`);
-        // 2차: bidAmt만 변경
-        try {
-          return await apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt' }, {
-            nccKeywordId: keywordId,
-            bidAmt,
-          });
-        } catch (e2) {
-          console.log(`  입찰가 변경 2차 실패 (${e2.message}), 3차 시도...`);
-          // 3차: 배열 형식 (내부 API 호환)
-          return await apiCall('PUT', '/ncc/keywords', { fields: 'bidAmt' }, [{
-            nccKeywordId: keywordId,
-            bidAmt,
-          }]);
-        }
-      }
+      // 키워드 정보 조회 → nccAdgroupId 획득 (필수)
+      const kwInfo = await apiCall('GET', `/ncc/keywords/${keywordId}`);
+      const adgroupId = kwInfo?.nccAdgroupId;
+      if (!adgroupId) throw new Error('nccAdgroupId를 찾을 수 없습니다');
+
+      return await apiCall('PUT', `/ncc/keywords/${keywordId}`, { fields: 'bidAmt' }, {
+        nccKeywordId: keywordId,
+        nccAdgroupId: adgroupId,
+        bidAmt,
+        useGroupBidAmt: false,
+      });
     },
 
     // 목표 순위에 필요한 입찰가 추정
