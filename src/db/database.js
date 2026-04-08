@@ -522,15 +522,30 @@ async function deleteAutoBidKeyword(id, accountId) {
 }
 
 async function updateAutoBidKeywordStatus(keywordId, device, rank, bid, realRank = null) {
-  if (realRank !== null) {
+  if (realRank !== null && rank > 0) {
+    // 순위 평균 입찰가 + 현재입찰가 + 실시간순위 모두 갱신
     return pool.query(
       'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_real_rank = $5, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
       [rank, bid, keywordId, device, realRank]
     );
   }
+  if (realRank !== null) {
+    // 현재입찰가 + 실시간순위만 갱신 (순위 평균 입찰가 유지)
+    return pool.query(
+      'UPDATE auto_bid_keywords SET last_bid = $1, last_real_rank = $4, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $2 AND device = $3',
+      [bid, keywordId, device, realRank]
+    );
+  }
+  if (rank > 0) {
+    return pool.query(
+      'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
+      [rank, bid, keywordId, device]
+    );
+  }
+  // 현재입찰가만 갱신
   return pool.query(
-    'UPDATE auto_bid_keywords SET last_rank = $1, last_bid = $2, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $3 AND device = $4',
-    [rank, bid, keywordId, device]
+    'UPDATE auto_bid_keywords SET last_bid = $1, last_run = CURRENT_TIMESTAMP WHERE keyword_id = $2 AND device = $3',
+    [bid, keywordId, device]
   );
 }
 
