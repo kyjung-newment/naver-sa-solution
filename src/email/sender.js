@@ -382,224 +382,637 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
   return html;
 }
 
-// ─── 엑셀 리포트 빌더 ────────────────────────────────────────────────
+// ─── 엑셀 리포트 빌더 (프로페셔널 디자인) ─────────────────────────────────
 async function buildExcelReport({ type, period, accountName, data, prevData }) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = '뉴먼트 솔루션';
   workbook.created = new Date();
 
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
-
-  // 공통 스타일 헬퍼
-  const headerStyle = { font: { bold: true, size: 11, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF03C75A' } }, alignment: { horizontal: 'center', vertical: 'middle' }, border: { bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } } } };
-  const numFmt = '#,##0';
-  const wonFmt = '₩#,##0';
-  const pctFmt = '0.00"%"';
-  const rankFmt = '0.0';
-
-  function addMetricColumns(sheet, startCol) {
-    const cols = ['총비용', '노출수', '평균순위', '클릭수', 'CPC', 'CTR', '구매완료', '구매매출', 'ROAS', '장바구니', '장바구니매출'];
-    return cols;
-  }
-
-  function addMetricRow(row, d, startIdx) {
-    row.getCell(startIdx).value = d.cost || 0; row.getCell(startIdx).numFmt = wonFmt;
-    row.getCell(startIdx + 1).value = d.imp || 0; row.getCell(startIdx + 1).numFmt = numFmt;
-    row.getCell(startIdx + 2).value = d.avgRank || 0; row.getCell(startIdx + 2).numFmt = rankFmt;
-    row.getCell(startIdx + 3).value = d.clk || 0; row.getCell(startIdx + 3).numFmt = numFmt;
-    row.getCell(startIdx + 4).value = d.cpc || 0; row.getCell(startIdx + 4).numFmt = wonFmt;
-    row.getCell(startIdx + 5).value = d.ctr || 0; row.getCell(startIdx + 5).numFmt = pctFmt;
-    row.getCell(startIdx + 6).value = d.purchaseCnt || 0; row.getCell(startIdx + 6).numFmt = numFmt;
-    row.getCell(startIdx + 7).value = d.purchaseAmt || 0; row.getCell(startIdx + 7).numFmt = wonFmt;
-    row.getCell(startIdx + 8).value = d.roas || 0; row.getCell(startIdx + 8).numFmt = '0"%"';
-    row.getCell(startIdx + 9).value = d.cartCnt || 0; row.getCell(startIdx + 9).numFmt = numFmt;
-    row.getCell(startIdx + 10).value = d.cartAmt || 0; row.getCell(startIdx + 10).numFmt = wonFmt;
-  }
-
-  function styleHeaderRow(sheet) {
-    const row = sheet.getRow(1);
-    row.eachCell(cell => {
-      cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF03C75A' } };
-      cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.border = { bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } } };
-    });
-    row.height = 28;
-  }
-
-  function autoWidth(sheet) {
-    sheet.columns.forEach(col => {
-      let maxLen = 10;
-      col.eachCell({ includeEmpty: false }, cell => {
-        const len = String(cell.value || '').length;
-        if (len > maxLen) maxLen = Math.min(len, 40);
-      });
-      col.width = maxLen + 4;
-    });
-  }
-
-  // ══ 1. 요약 시트 ══
-  const summarySheet = workbook.addWorksheet('요약');
-  summarySheet.columns = [
-    { header: '항목', key: 'label', width: 20 },
-    { header: '값', key: 'value', width: 25 },
-    { header: '전기비교', key: 'prev', width: 25 },
-  ];
-  styleHeaderRow(summarySheet);
-
   const t = data.total;
   const pt = prevData?.total || null;
-  const summaryItems = [
-    { label: '리포트 유형', value: typeLabel, prev: '' },
-    { label: '기간', value: period, prev: '' },
-    { label: '광고주', value: accountName, prev: '' },
-    { label: '총비용', value: t.cost || 0, prev: pt ? pt.cost || 0 : '' },
-    { label: '노출수', value: t.imp || 0, prev: pt ? pt.imp || 0 : '' },
-    { label: '클릭수', value: t.clk || 0, prev: pt ? pt.clk || 0 : '' },
-    { label: 'CTR', value: t.ctr || 0, prev: pt ? pt.ctr || 0 : '' },
-    { label: '평균순위', value: t.avgRank || 0, prev: pt ? pt.avgRank || 0 : '' },
-    { label: 'CPC', value: t.cpc || 0, prev: pt ? pt.cpc || 0 : '' },
-    { label: '구매완료매출', value: t.purchaseAmt || 0, prev: pt ? pt.purchaseAmt || 0 : '' },
-    { label: 'ROAS', value: t.roas || 0, prev: pt ? pt.roas || 0 : '' },
-    { label: '구매완료전환수', value: t.purchaseCnt || 0, prev: pt ? pt.purchaseCnt || 0 : '' },
-    { label: '장바구니수', value: t.cartCnt || 0, prev: pt ? pt.cartCnt || 0 : '' },
-  ];
-  summaryItems.forEach(item => {
-    const row = summarySheet.addRow(item);
-    if (typeof item.value === 'number') {
-      if (item.label.includes('비용') || item.label.includes('매출') || item.label === 'CPC') {
-        row.getCell(2).numFmt = wonFmt;
-        if (typeof item.prev === 'number') row.getCell(3).numFmt = wonFmt;
-      } else if (item.label === 'CTR') {
-        row.getCell(2).numFmt = pctFmt;
-        if (typeof item.prev === 'number') row.getCell(3).numFmt = pctFmt;
-      } else if (item.label === 'ROAS') {
-        row.getCell(2).numFmt = '0"%"';
-        if (typeof item.prev === 'number') row.getCell(3).numFmt = '0"%"';
-      } else if (item.label === '평균순위') {
-        row.getCell(2).numFmt = rankFmt;
-        if (typeof item.prev === 'number') row.getCell(3).numFmt = rankFmt;
-      } else {
-        row.getCell(2).numFmt = numFmt;
-        if (typeof item.prev === 'number') row.getCell(3).numFmt = numFmt;
-      }
-    }
+  const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  // ─── 브랜드 컬러 ─────────────────────────────────────────────────
+  const C = {
+    primary: 'FF38AE49',      // 뉴먼트 그린
+    primaryDark: 'FF2D9440',
+    headerBg: 'FF212121',     // 다크 헤더
+    headerText: 'FFFFFFFF',
+    sectionBg: 'FF38AE49',    // 섹션 타이틀 (뉴먼트 그린)
+    sectionText: 'FFFFFFFF',
+    subHeaderBg: 'FFF7FAFC',  // 서브 헤더 (연회색)
+    subHeaderText: 'FF212121',
+    tableBorder: 'FFE2E8F0',
+    altRow: 'FFF8FAFC',       // 줄무늬
+    white: 'FFFFFFFF',
+    topRankBg: 'FFFFFBEB',    // TOP 순위 하이라이트
+    topRankBorder: 'FFFDE68A',
+    totalBg: 'FFEDF2F7',
+    red: 'FFDC2626',
+    green: 'FF38AE49',        // 뉴먼트 그린
+    blue: 'FF2563EB',
+    gray: 'FF718096',
+  };
+
+  // ─── 포맷 상수 ───────────────────────────────────────────────────
+  const FMT = {
+    num: '#,##0', won: '₩#,##0', pct: '0.00"%"', rank: '0.0', roas: '0"%"',
+  };
+
+  // ─── 공통 스타일 헬퍼 ──────────────────────────────────────────────
+  const thinBorder = (color = C.tableBorder) => ({
+    top: { style: 'thin', color: { argb: color } },
+    bottom: { style: 'thin', color: { argb: color } },
+    left: { style: 'thin', color: { argb: color } },
+    right: { style: 'thin', color: { argb: color } },
   });
 
-  // ══ 2. 캠페인별 시트 ══
+  function addSectionTitle(sheet, rowNum, text, colSpan = 13) {
+    const row = sheet.getRow(rowNum);
+    row.height = 42;
+    const cell = row.getCell(2);
+    cell.value = text;
+    cell.font = { bold: true, size: 14, color: { argb: C.sectionText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.sectionBg } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    if (colSpan > 1) {
+      sheet.mergeCells(rowNum, 2, rowNum, colSpan);
+      for (let c = 2; c <= colSpan; c++) {
+        row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.sectionBg } };
+      }
+    }
+    return rowNum + 1;
+  }
+
+  function addSubTitle(sheet, rowNum, text, colSpan = 13) {
+    const row = sheet.getRow(rowNum);
+    row.height = 28;
+    const cell = row.getCell(2);
+    cell.value = text;
+    cell.font = { bold: true, size: 11, color: { argb: C.subHeaderText } };
+    cell.alignment = { vertical: 'middle' };
+    if (colSpan > 1) sheet.mergeCells(rowNum, 2, rowNum, colSpan);
+    return rowNum + 1;
+  }
+
+  const metricHeaders = ['총비용', '노출수', '평균순위', '클릭수', 'CPC', 'CTR', '구매완료', '구매매출', 'ROAS', '장바구니', '장바구니매출'];
+  const metricFmts = [FMT.won, FMT.num, FMT.rank, FMT.num, FMT.won, FMT.pct, FMT.num, FMT.won, FMT.roas, FMT.num, FMT.won];
+
+  function addTableHeader(sheet, rowNum, firstHeaders = ['구분']) {
+    const row = sheet.getRow(rowNum);
+    row.height = 26;
+    const allHeaders = [...firstHeaders, ...metricHeaders];
+    allHeaders.forEach((h, i) => {
+      const cell = row.getCell(i + 2);
+      cell.value = h;
+      cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      cell.alignment = { horizontal: i === 0 ? 'left' : 'center', vertical: 'middle' };
+      cell.border = thinBorder();
+    });
+    return rowNum + 1;
+  }
+
+  function addMetricRow(sheet, rowNum, label, d, opts = {}) {
+    const row = sheet.getRow(rowNum);
+    row.height = 23;
+    const startCol = opts.startCol || 2;
+    const labelCols = opts.labels || [label];
+
+    // 라벨 셀
+    labelCols.forEach((lb, li) => {
+      const cell = row.getCell(startCol + li);
+      cell.value = lb;
+      cell.font = { size: 10, bold: !!opts.bold, color: { argb: opts.labelColor || C.subHeaderText } };
+      cell.alignment = { vertical: 'middle' };
+      cell.border = thinBorder();
+      if (opts.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
+    });
+
+    // 메트릭 셀
+    const mStart = startCol + labelCols.length;
+    const vals = [d.cost||0, d.imp||0, d.avgRank||0, d.clk||0, d.cpc||0, d.ctr||0, d.purchaseCnt||0, d.purchaseAmt||0, d.roas||0, d.cartCnt||0, d.cartAmt||0];
+    vals.forEach((v, i) => {
+      const cell = row.getCell(mStart + i);
+      cell.value = v;
+      cell.numFmt = metricFmts[i];
+      cell.font = { size: 10, bold: !!opts.bold, color: { argb: opts.bold ? C.subHeaderText : C.gray } };
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+      cell.border = thinBorder();
+      if (opts.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
+      else if (opts.stripe) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+    });
+
+    return rowNum + 1;
+  }
+
+  function addDiffRow(sheet, rowNum, label, curr, prev, opts = {}) {
+    const row = sheet.getRow(rowNum);
+    row.height = 23;
+    const startCol = opts.startCol || 2;
+    const cell = row.getCell(startCol);
+    cell.value = label;
+    cell.font = { size: 10, italic: true, color: { argb: C.gray } };
+    cell.alignment = { vertical: 'middle' };
+    cell.border = thinBorder();
+
+    const diffs = [
+      curr.cost - prev.cost, curr.imp - prev.imp, (curr.avgRank||0) - (prev.avgRank||0),
+      curr.clk - prev.clk, (curr.cpc||0) - (prev.cpc||0), (curr.ctr||0) - (prev.ctr||0),
+      (curr.purchaseCnt||0) - (prev.purchaseCnt||0), (curr.purchaseAmt||0) - (prev.purchaseAmt||0),
+      (curr.roas||0) - (prev.roas||0), (curr.cartCnt||0) - (prev.cartCnt||0), (curr.cartAmt||0) - (prev.cartAmt||0),
+    ];
+    const mStart = startCol + 1;
+    diffs.forEach((v, i) => {
+      const cell = row.getCell(mStart + i);
+      cell.value = v;
+      cell.numFmt = metricFmts[i];
+      const isPositive = v > 0;
+      // 비용/CPC: 증가=빨강, 감소=초록 / 나머지: 증가=초록, 감소=빨강
+      const isCostLike = [0, 4].includes(i);
+      cell.font = { size: 10, italic: true, color: { argb: v === 0 ? C.gray : ((isPositive === isCostLike) ? C.red : C.green) } };
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
+      cell.border = thinBorder();
+    });
+    return rowNum + 1;
+  }
+
+  function setupSheetDefaults(sheet) {
+    sheet.properties.defaultRowHeight = 20;
+    sheet.views = [{ showGridLines: false }];
+    // A열은 여백
+    sheet.getColumn(1).width = 2;
+  }
+
+  function setMetricColumnWidths(sheet, firstColWidths = [22]) {
+    firstColWidths.forEach((w, i) => { sheet.getColumn(i + 2).width = w; });
+    const mStart = firstColWidths.length + 2;
+    const mWidths = [14, 13, 10, 12, 12, 10, 10, 14, 10, 10, 14];
+    mWidths.forEach((w, i) => { sheet.getColumn(mStart + i).width = w; });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // 1. 표지 시트
+  // ══════════════════════════════════════════════════════════════════
+  const coverSheet = workbook.addWorksheet('표지');
+  setupSheetDefaults(coverSheet);
+  coverSheet.getColumn(2).width = 20;
+  coverSheet.getColumn(3).width = 45;
+  coverSheet.getColumn(4).width = 45;
+
+  // 타이틀 배너
+  let cr = 4;
+  coverSheet.getRow(cr).height = 55;
+  coverSheet.mergeCells(cr, 2, cr, 4);
+  const titleCell = coverSheet.getRow(cr).getCell(2);
+  titleCell.value = `${accountName} 네이버 검색광고 ${typeLabel} 보고서`;
+  titleCell.font = { bold: true, size: 17, color: { argb: C.headerText } };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.primary } };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  for (let c = 2; c <= 4; c++) {
+    coverSheet.getRow(cr).getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.primary } };
+  }
+  cr += 2;
+
+  // 광고주 정보
+  const coverInfo = [
+    ['광고주', accountName],
+    ['보고서 기간', period],
+    ['보고서 유형', typeLabel + ' 리포트'],
+    ['발행일', now],
+    ['제작', '뉴먼트 솔루션 자동 리포트'],
+  ];
+  coverInfo.forEach(([label, value]) => {
+    const row = coverSheet.getRow(cr);
+    row.height = 26;
+    const lc = row.getCell(2);
+    lc.value = label;
+    lc.font = { bold: true, size: 11, color: { argb: C.subHeaderText } };
+    lc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+    lc.border = thinBorder();
+    lc.alignment = { vertical: 'middle' };
+    const vc = row.getCell(3);
+    vc.value = value;
+    vc.font = { size: 11, color: { argb: C.subHeaderText } };
+    vc.border = thinBorder();
+    vc.alignment = { vertical: 'middle' };
+    cr++;
+  });
+  cr += 2;
+
+  // INDEX
+  const idxTitle = coverSheet.getRow(cr);
+  idxTitle.height = 30;
+  idxTitle.getCell(2).value = 'INDEX';
+  idxTitle.getCell(2).font = { bold: true, size: 13, color: { argb: C.subHeaderText } };
+  cr++;
+  const idxHeader = coverSheet.getRow(cr);
+  ['Sheet 순서', 'Sheet 명', '설명'].forEach((h, i) => {
+    const cell = idxHeader.getCell(i + 2);
+    cell.value = h;
+    cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+    cell.border = thinBorder();
+  });
+  cr++;
+  const sheets = [
+    ['요약', '전체 KPI 요약 및 전기 비교'],
+    ['캠페인별', '캠페인별 성과 현황 (TOP 5 표시)'],
+    ['광고그룹별', '광고그룹별 성과 현황 (TOP 10 표시)'],
+    ['PC_모바일', 'PC/모바일 디바이스별 성과 비교'],
+    ['시간대별', '시간대별(0~23시) 성과 분포'],
+    ['일자별', '일자별 성과 추이'],
+  ];
+  sheets.forEach(([name, desc], i) => {
+    const row = coverSheet.getRow(cr + i);
+    row.height = 22;
+    [{ v: `sheet${i + 1}`, bold: false }, { v: name, bold: true }, { v: desc, bold: false }].forEach((item, j) => {
+      const cell = row.getCell(j + 2);
+      cell.value = item.v;
+      cell.font = { size: 10, bold: item.bold, color: { argb: C.subHeaderText } };
+      cell.border = thinBorder();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // 2. 요약 시트
+  // ══════════════════════════════════════════════════════════════════
+  const sumSheet = workbook.addWorksheet('요약');
+  setupSheetDefaults(sumSheet);
+  sumSheet.getColumn(2).width = 18;
+  sumSheet.getColumn(3).width = 20;
+  sumSheet.getColumn(4).width = 20;
+  sumSheet.getColumn(5).width = 18;
+  sumSheet.getColumn(6).width = 3;
+  sumSheet.getColumn(7).width = 18;
+  sumSheet.getColumn(8).width = 20;
+  sumSheet.getColumn(9).width = 20;
+  sumSheet.getColumn(10).width = 18;
+
+  let sr = 3;
+  sr = addSectionTitle(sumSheet, sr, `${accountName} · ${typeLabel} 성과 요약`, 10);
+  sr++;
+
+  // KPI 카드 (2행 x 5열)
+  const kpis = [
+    { label: '총비용', value: t.cost||0, fmt: FMT.won, prev: pt?.cost, isCost: true },
+    { label: '노출수', value: t.imp||0, fmt: FMT.num, prev: pt?.imp },
+    { label: '클릭수', value: t.clk||0, fmt: FMT.num, prev: pt?.clk },
+    { label: 'CTR', value: t.ctr||0, fmt: FMT.pct, prev: pt?.ctr },
+    { label: '평균순위', value: t.avgRank||0, fmt: FMT.rank, prev: pt?.avgRank, isCost: true },
+    { label: 'CPC', value: t.cpc||0, fmt: FMT.won, prev: pt?.cpc, isCost: true },
+    { label: '구매매출', value: t.purchaseAmt||0, fmt: FMT.won, prev: pt?.purchaseAmt },
+    { label: 'ROAS', value: t.roas||0, fmt: FMT.roas, prev: pt?.roas },
+    { label: '구매전환수', value: t.purchaseCnt||0, fmt: FMT.num, prev: pt?.purchaseCnt },
+    { label: '장바구니수', value: t.cartCnt||0, fmt: FMT.num, prev: pt?.cartCnt },
+  ];
+
+  // KPI 라벨 행
+  const kpiLabelRow = sumSheet.getRow(sr);
+  kpiLabelRow.height = 20;
+  kpis.slice(0, 5).forEach((kpi, i) => {
+    const cell = kpiLabelRow.getCell(2 + i * 2 - (i > 0 ? i : 0));
+    // 2열 사용: 2,4,6,8,10
+    const col = 2 + i;
+    const c = kpiLabelRow.getCell(col);
+    c.value = kpi.label;
+    c.font = { size: 9, color: { argb: C.gray } };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  sr++;
+
+  // KPI 값 행
+  const kpiValRow = sumSheet.getRow(sr);
+  kpiValRow.height = 32;
+  kpis.slice(0, 5).forEach((kpi, i) => {
+    const col = 2 + i;
+    const c = kpiValRow.getCell(col);
+    c.value = kpi.value;
+    c.numFmt = kpi.fmt;
+    c.font = { bold: true, size: 16, color: { argb: kpi.isCost ? C.red : C.blue } };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+    c.border = thinBorder();
+  });
+  sr++;
+
+  // KPI 전기비교 행
+  if (pt) {
+    const kpiDiffRow = sumSheet.getRow(sr);
+    kpiDiffRow.height = 18;
+    kpis.slice(0, 5).forEach((kpi, i) => {
+      if (kpi.prev === undefined || kpi.prev === null) return;
+      const col = 2 + i;
+      const diff = kpi.value - kpi.prev;
+      const c = kpiDiffRow.getCell(col);
+      const arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '-';
+      c.value = diff;
+      c.numFmt = kpi.fmt;
+      const isPositive = diff > 0;
+      c.font = { size: 9, italic: true, color: { argb: diff === 0 ? C.gray : ((isPositive === !!kpi.isCost) ? C.red : C.green) } };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+  }
+  sr += 2;
+
+  // 두 번째 줄 KPI
+  const kpiLabelRow2 = sumSheet.getRow(sr);
+  kpiLabelRow2.height = 20;
+  kpis.slice(5).forEach((kpi, i) => {
+    const col = 2 + i;
+    const c = kpiLabelRow2.getCell(col);
+    c.value = kpi.label;
+    c.font = { size: 9, color: { argb: C.gray } };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  sr++;
+
+  const kpiValRow2 = sumSheet.getRow(sr);
+  kpiValRow2.height = 32;
+  kpis.slice(5).forEach((kpi, i) => {
+    const col = 2 + i;
+    const c = kpiValRow2.getCell(col);
+    c.value = kpi.value;
+    c.numFmt = kpi.fmt;
+    c.font = { bold: true, size: 16, color: { argb: kpi.isCost ? C.red : C.green } };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+    c.border = thinBorder();
+  });
+  sr += 3;
+
+  // 캠페인 TOP 5 요약 미니테이블
+  const campTop5 = Object.entries(data.byCampaign).sort((a, b) => b[1].cost - a[1].cost).slice(0, 5);
+  if (campTop5.length > 0) {
+    sr = addSubTitle(sumSheet, sr, '비용 TOP 5 캠페인', 6);
+    const hdrRow = sumSheet.getRow(sr);
+    hdrRow.height = 24;
+    ['캠페인', '비용', '클릭', 'CTR', 'ROAS'].forEach((h, i) => {
+      const c = hdrRow.getCell(2 + i);
+      c.value = h;
+      c.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      c.border = thinBorder();
+      c.alignment = { horizontal: i === 0 ? 'left' : 'right', vertical: 'middle' };
+    });
+    sr++;
+    campTop5.forEach(([, d], idx) => {
+      const row = sumSheet.getRow(sr);
+      row.height = 22;
+      const vals = [d.name, d.cost, d.clk, d.ctr, d.roas];
+      const fmts = [null, FMT.won, FMT.num, FMT.pct, FMT.roas];
+      vals.forEach((v, i) => {
+        const c = row.getCell(2 + i);
+        c.value = v;
+        if (fmts[i]) c.numFmt = fmts[i];
+        c.font = { size: 10, color: { argb: C.subHeaderText } };
+        c.alignment = { horizontal: i === 0 ? 'left' : 'right', vertical: 'middle' };
+        c.border = thinBorder();
+        if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+      });
+      // 순위 뱃지
+      const rankCell = row.getCell(2);
+      rankCell.value = `${idx + 1}. ${d.name}`;
+      sr++;
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // 3. 캠페인별 시트
+  // ══════════════════════════════════════════════════════════════════
   const campEntries = Object.entries(data.byCampaign).sort((a, b) => b[1].cost - a[1].cost);
   if (campEntries.length > 0) {
-    const campSheet = workbook.addWorksheet('캠페인별');
-    campSheet.columns = [
-      { header: '캠페인', key: 'name', width: 25 },
-      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
-      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
-      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
-      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
-      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
-      { header: '장바구니매출', key: 'cartAmt' },
-    ];
-    styleHeaderRow(campSheet);
+    const cs = workbook.addWorksheet('캠페인별');
+    setupSheetDefaults(cs);
+    setMetricColumnWidths(cs, [28]);
 
-    campEntries.forEach(([, d]) => {
-      const row = campSheet.addRow({ name: d.name });
-      addMetricRow(row, d, 2);
+    let r = 3;
+    r = addSectionTitle(cs, r, `캠페인별 성과 현황 (${period})`);
+    r++;
+    r = addTableHeader(cs, r);
+
+    campEntries.forEach(([, d], idx) => {
+      const isTop5 = idx < 5;
+      r = addMetricRow(cs, r, (isTop5 ? `★ ${idx+1}. ` : '') + d.name, d, {
+        stripe: idx % 2 === 1,
+        bold: isTop5,
+        labelColor: isTop5 ? C.blue : undefined,
+      });
     });
-    // 합계
-    const totalRow = campSheet.addRow({ name: '합계' });
-    addMetricRow(totalRow, data.total, 2);
-    totalRow.eachCell(cell => { cell.font = { bold: true }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; });
-    autoWidth(campSheet);
+
+    // 합계 행
+    r++;
+    r = addMetricRow(cs, r, '합계', data.total, { bold: true, bg: C.totalBg });
+
+    // 전기 비교
+    if (pt) r = addDiffRow(cs, r, '전기 대비', t, pt);
+
+    // 열 고정
+    cs.views = [{ state: 'frozen', xSplit: 2, ySplit: 7, showGridLines: false }];
   }
 
-  // ══ 3. 광고그룹별 시트 ══
+  // ══════════════════════════════════════════════════════════════════
+  // 4. 광고그룹별 시트
+  // ══════════════════════════════════════════════════════════════════
   const agEntries = Object.entries(data.byAdgroup).sort((a, b) => b[1].cost - a[1].cost);
   if (agEntries.length > 0) {
-    const agSheet = workbook.addWorksheet('광고그룹별');
-    agSheet.columns = [
-      { header: '캠페인', key: 'campaignName', width: 20 },
-      { header: '광고그룹', key: 'name', width: 25 },
-      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
-      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
-      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
-      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
-      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
-      { header: '장바구니매출', key: 'cartAmt' },
-    ];
-    styleHeaderRow(agSheet);
+    const gs = workbook.addWorksheet('광고그룹별');
+    setupSheetDefaults(gs);
+    setMetricColumnWidths(gs, [20, 25]);
 
-    agEntries.forEach(([, d]) => {
-      const row = agSheet.addRow({ campaignName: d.campaignName, name: d.name });
-      addMetricRow(row, d, 3);
+    let r = 3;
+    r = addSectionTitle(gs, r, `광고그룹별 성과 현황 (${period})`, 14);
+    r++;
+
+    // 헤더
+    const hRow = gs.getRow(r);
+    hRow.height = 26;
+    ['캠페인', '광고그룹', ...metricHeaders].forEach((h, i) => {
+      const cell = hRow.getCell(i + 2);
+      cell.value = h;
+      cell.font = { bold: true, size: 10, color: { argb: C.subHeaderText } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      cell.alignment = { horizontal: i < 2 ? 'left' : 'center', vertical: 'middle' };
+      cell.border = thinBorder();
     });
-    autoWidth(agSheet);
+    r++;
+
+    agEntries.forEach(([, d], idx) => {
+      const isTop10 = idx < 10;
+      r = addMetricRow(gs, r, '', d, {
+        labels: [d.campaignName || '', (isTop10 ? `★ ${idx+1}. ` : '') + d.name],
+        stripe: idx % 2 === 1,
+        bold: isTop10,
+        labelColor: isTop10 ? C.blue : undefined,
+      });
+    });
+
+    gs.views = [{ state: 'frozen', xSplit: 3, ySplit: 7, showGridLines: false }];
   }
 
-  // ══ 4. PC/모바일 시트 ══
+  // ══════════════════════════════════════════════════════════════════
+  // 5. PC/모바일 시트
+  // ══════════════════════════════════════════════════════════════════
   const deviceEntries = Object.entries(data.byDevice).sort((a, b) => b[1].cost - a[1].cost);
   if (deviceEntries.length > 0) {
-    const deviceSheet = workbook.addWorksheet('PC_모바일');
-    deviceSheet.columns = [
-      { header: '매체', key: 'device', width: 12 },
-      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
-      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
-      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
-      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
-      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
-      { header: '장바구니매출', key: 'cartAmt' },
-    ];
-    styleHeaderRow(deviceSheet);
+    const ds = workbook.addWorksheet('PC_모바일');
+    setupSheetDefaults(ds);
+    setMetricColumnWidths(ds, [14]);
 
+    let r = 3;
+    r = addSectionTitle(ds, r, `PC / 모바일 성과 비교 (${period})`);
+    r++;
+
+    // 비율 요약
+    const totalCost = deviceEntries.reduce((s, [, d]) => s + (d.cost||0), 0) || 1;
+    const totalClk = deviceEntries.reduce((s, [, d]) => s + (d.clk||0), 0) || 1;
+    const summRow = ds.getRow(r);
+    summRow.height = 28;
+    let col = 2;
     deviceEntries.forEach(([device, d]) => {
-      const row = deviceSheet.addRow({ device });
-      addMetricRow(row, d, 2);
+      const pctCost = Math.round(d.cost / totalCost * 100);
+      const pctClk = Math.round(d.clk / totalClk * 100);
+      const c = summRow.getCell(col);
+      c.value = `${device === 'PC' ? '🖥 PC' : '📱 MO'} — 비용 ${pctCost}% · 클릭 ${pctClk}%`;
+      c.font = { bold: true, size: 11, color: { argb: device === 'PC' ? C.blue : 'FFF97316' } };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subHeaderBg } };
+      c.border = thinBorder();
+      col += 6;
     });
-    autoWidth(deviceSheet);
+    r += 2;
+
+    r = addTableHeader(ds, r, ['디바이스']);
+    deviceEntries.forEach(([device, d], idx) => {
+      r = addMetricRow(ds, r, device, d, { stripe: idx % 2 === 1 });
+    });
   }
 
-  // ══ 5. 시간대별 시트 ══
+  // ══════════════════════════════════════════════════════════════════
+  // 6. 시간대별 시트
+  // ══════════════════════════════════════════════════════════════════
   const hourEntries = Object.entries(data.byHour).sort((a, b) => a[0].localeCompare(b[0]));
   if (hourEntries.length > 0) {
-    const hourSheet = workbook.addWorksheet('시간대별');
-    hourSheet.columns = [
-      { header: '시간', key: 'hour', width: 10 },
-      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
-      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
-      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
-      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
-      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
-      { header: '장바구니매출', key: 'cartAmt' },
-    ];
-    styleHeaderRow(hourSheet);
+    const hs = workbook.addWorksheet('시간대별');
+    setupSheetDefaults(hs);
+    setMetricColumnWidths(hs, [10]);
 
-    hourEntries.forEach(([h, d]) => {
-      const row = hourSheet.addRow({ hour: `${parseInt(h)}시` });
-      addMetricRow(row, d, 2);
+    let r = 3;
+    r = addSectionTitle(hs, r, `시간대별 성과 분포 (${period})`);
+    r++;
+
+    // 클릭 히트맵 바 (조건부 서식 대용 - 셀 배경 그라데이션)
+    const maxClk = Math.max(...hourEntries.map(([, d]) => d.clk), 1);
+    const topHours = [...hourEntries].sort((a, b) => b[1].clk - a[1].clk).slice(0, 3);
+    const topHourKeys = topHours.map(([h]) => h);
+
+    r = addSubTitle(hs, r, '시간대별 클릭수 히트맵 (진할수록 높음)', 13);
+    const heatRow = hs.getRow(r);
+    heatRow.height = 30;
+    for (let h = 0; h < 24; h++) {
+      if (h + 2 > 25) break;
+      const hKey = String(h).padStart(2, '0');
+      const d = data.byHour[hKey];
+      const clk = d ? d.clk : 0;
+      const intensity = Math.round(clk / maxClk * 200);
+      const cell = heatRow.getCell(h + 2);
+      cell.value = clk;
+      cell.numFmt = FMT.num;
+      cell.font = { size: 8, bold: topHourKeys.includes(hKey), color: { argb: intensity > 100 ? C.white : C.subHeaderText } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      const g = Math.max(0, 200 - intensity);
+      const hexG = g.toString(16).padStart(2, '0');
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${(Math.min(50 + intensity, 255)).toString(16).padStart(2,'0')}${hexG}${(Math.min(100 + intensity, 255)).toString(16).padStart(2,'0')}` } };
+      cell.border = thinBorder();
+    }
+    r++;
+    // 시간 라벨
+    const hLabelRow = hs.getRow(r);
+    for (let h = 0; h < 24; h++) {
+      if (h + 2 > 25) break;
+      const c = hLabelRow.getCell(h + 2);
+      c.value = `${h}시`;
+      c.font = { size: 8, color: { argb: C.gray } };
+      c.alignment = { horizontal: 'center' };
+    }
+    r += 2;
+
+    // 최적 시간대 표시
+    r = addSubTitle(hs, r, `⏰ 클릭 최적 시간대: ${topHours.map(([h, d]) => `${parseInt(h)}시(${d.clk}회)`).join(', ')}`, 13);
+    r++;
+
+    // 데이터 테이블
+    r = addTableHeader(hs, r, ['시간']);
+    hourEntries.forEach(([h, d], idx) => {
+      const isTop = topHourKeys.includes(h);
+      r = addMetricRow(hs, r, `${parseInt(h)}시`, d, {
+        stripe: idx % 2 === 1,
+        bold: isTop,
+        labelColor: isTop ? C.green : undefined,
+      });
     });
-    autoWidth(hourSheet);
   }
 
-  // ══ 6. 일자별 시트 (주간/월간) ══
+  // ══════════════════════════════════════════════════════════════════
+  // 7. 일자별 시트
+  // ══════════════════════════════════════════════════════════════════
   const dateEntries = Object.entries(data.byDate).sort((a, b) => a[0].localeCompare(b[0]));
   if (dateEntries.length > 1) {
-    const dateSheet = workbook.addWorksheet('일자별');
-    dateSheet.columns = [
-      { header: '일자', key: 'date', width: 16 },
-      { header: '총비용', key: 'cost' }, { header: '노출수', key: 'imp' },
-      { header: '평균순위', key: 'avgRank' }, { header: '클릭수', key: 'clk' },
-      { header: 'CPC', key: 'cpc' }, { header: 'CTR', key: 'ctr' },
-      { header: '구매완료', key: 'purchaseCnt' }, { header: '구매매출', key: 'purchaseAmt' },
-      { header: 'ROAS', key: 'roas' }, { header: '장바구니', key: 'cartCnt' },
-      { header: '장바구니매출', key: 'cartAmt' },
-    ];
-    styleHeaderRow(dateSheet);
+    const dts = workbook.addWorksheet('일자별');
+    setupSheetDefaults(dts);
+    setMetricColumnWidths(dts, [18]);
 
+    let r = 3;
+    r = addSectionTitle(dts, r, `일자별 성과 추이 (${period})`);
+    r++;
+
+    // 일자별 비용 미니바 차트 (셀 내)
+    const maxDateCost = Math.max(...dateEntries.map(([, d]) => d.cost), 1);
+    r = addSubTitle(dts, r, '일자별 비용 분포', 13);
     dateEntries.forEach(([dt, d]) => {
       const dayOfWeek = ['일', '월', '화', '수', '목', '금', '토'][new Date(dt).getDay()];
-      const row = dateSheet.addRow({ date: `${dt} (${dayOfWeek})` });
-      addMetricRow(row, d, 2);
+      const row = dts.getRow(r);
+      row.height = 18;
+      const lc = row.getCell(2);
+      lc.value = `${dt.slice(5)} (${dayOfWeek})`;
+      lc.font = { size: 9, color: { argb: C.gray } };
+      lc.alignment = { vertical: 'middle' };
+
+      const bc = row.getCell(3);
+      const barLen = Math.max(1, Math.round(d.cost / maxDateCost * 30));
+      bc.value = '█'.repeat(barLen) + ` ${f.won(d.cost)}`;
+      bc.font = { size: 9, color: { argb: '8B5CF6' } };
+      bc.alignment = { vertical: 'middle' };
+      r++;
     });
-    autoWidth(dateSheet);
+    r += 2;
+
+    // 데이터 테이블
+    r = addTableHeader(dts, r, ['일자']);
+    dateEntries.forEach(([dt, d], idx) => {
+      const dayOfWeek = ['일', '월', '화', '수', '목', '금', '토'][new Date(dt).getDay()];
+      const isWeekend = [0, 6].includes(new Date(dt).getDay());
+      r = addMetricRow(dts, r, `${dt} (${dayOfWeek})`, d, {
+        stripe: idx % 2 === 1,
+        labelColor: isWeekend ? C.red : undefined,
+      });
+    });
+
+    // 합계
+    r++;
+    const dateTotal = { cost: 0, imp: 0, clk: 0, cpc: 0, ctr: 0, avgRank: 0, rankSum: 0, rankCount: 0, purchaseCnt: 0, purchaseAmt: 0, roas: 0, cartCnt: 0, cartAmt: 0 };
+    dateEntries.forEach(([, d]) => {
+      dateTotal.cost += d.cost||0; dateTotal.imp += d.imp||0; dateTotal.clk += d.clk||0;
+      dateTotal.purchaseCnt += d.purchaseCnt||0; dateTotal.purchaseAmt += d.purchaseAmt||0;
+      dateTotal.cartCnt += d.cartCnt||0; dateTotal.cartAmt += d.cartAmt||0;
+    });
+    dateTotal.cpc = dateTotal.clk > 0 ? Math.round(dateTotal.cost / dateTotal.clk) : 0;
+    dateTotal.ctr = dateTotal.imp > 0 ? (dateTotal.clk / dateTotal.imp * 100) : 0;
+    dateTotal.roas = dateTotal.cost > 0 ? Math.round(dateTotal.purchaseAmt / dateTotal.cost * 100) : 0;
+    r = addMetricRow(dts, r, '합계', dateTotal, { bold: true, bg: C.totalBg });
+
+    dts.views = [{ state: 'frozen', xSplit: 2, ySplit: 0, showGridLines: false }];
   }
 
   // Buffer로 반환
