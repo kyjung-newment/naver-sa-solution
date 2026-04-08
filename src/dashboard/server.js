@@ -2454,7 +2454,17 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
         document.getElementById('ab-count').textContent=kws.length+'개 키워드';
         if(!kws.length){document.getElementById('ab-list').innerHTML='<div class="empty">등록된 자동입찰 키워드가 없습니다.<br><span style="font-size:12px;color:#cbd5e1">+ 키워드 추가 버튼으로 키워드를 등록해주세요.</span></div>';return;}
 
-        const scheduleHtml=(sch)=>Array.from({length:24},(_,h)=>'<span style="display:inline-block;width:14px;height:14px;border-radius:2px;font-size:8px;line-height:14px;text-align:center;margin:0 1px;background:'+(sch[h]==='1'?'#dcfce7':'#f1f5f9')+';color:'+(sch[h]==='1'?'#166534':'#cbd5e1')+'">'+h+'</span>').join('');
+        const scheduleHtml=(sch)=>{
+          if(!sch||sch==='111111111111111111111111') return '<span style="color:#166534;font-size:11px">24시간</span>';
+          if(sch==='000000000000000000000000') return '<span style="color:#dc2626;font-size:11px">OFF</span>';
+          // 연속 구간 요약: "9-18시" 또는 "9-12,14-18시"
+          const ranges=[];let start=null;
+          for(let h=0;h<=24;h++){
+            if(h<24&&sch[h]==='1'){if(start===null)start=h;}
+            else{if(start!==null){ranges.push(start===h-1?start+'시':start+'-'+(h-1)+'시');start=null;}}
+          }
+          return '<span style="font-size:11px;color:#334155">'+ranges.join(', ')+'</span>';
+        };
 
         const rankBadge=(targetBid,currentBid)=>{
           if(!targetBid||targetBid<=0) return '<span style="color:#cbd5e1">-</span>';
@@ -2470,7 +2480,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
           return '<span class="badge badge-gray">'+r+'위</span>';
         };
 
-        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right">목표입찰가</th><th style="text-align:center">입찰상태</th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
+        document.getElementById('ab-list').innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>키워드</th><th>캠페인 / 그룹</th><th style="text-align:center">지면</th><th style="text-align:center">희망순위</th><th style="text-align:center">현재순위</th><th style="text-align:right">현재입찰가</th><th style="text-align:right;font-size:11px">순위 평균<br>입찰가</th><th style="text-align:right">최대CPC</th><th style="text-align:center">간격</th><th>실행시간</th><th style="text-align:center">사용</th><th></th></tr></thead><tbody>'
           +kws.map(k=>{
             const kData=JSON.stringify(k).replace(/'/g,"\\\\'").replace(/"/g,"&quot;");
             return '<tr>'
@@ -2480,8 +2490,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="text-align:center;font-weight:600">'+k.target_rank+'위</td>'
             +'<td style="text-align:center">'+realRankBadge(k.last_real_rank, k.last_run)+'</td>'
             +'<td style="text-align:right">'+(k.last_bid>0?'₩'+Number(k.last_bid).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
-            +'<td style="text-align:right">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
-            +'<td style="text-align:center">'+rankBadge(k.last_rank,k.last_bid)+'</td>'
+            +'<td style="text-align:right;color:#94a3b8;font-size:12px">'+(k.last_rank>0?'₩'+Number(k.last_rank).toLocaleString():'<span style="color:#cbd5e1">-</span>')+'</td>'
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
@@ -2603,7 +2612,7 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
     await db.upsertAutoBidKeyword(account.id, req.body);
     res.json({ ok: true });
 
-    // 백그라운드: 저장된 키워드 순위 즉시 조회
+    // 백그라운드: 저장된 키워드 즉시 조회 (현재입찰가 + 참고입찰가 + 실시간순위)
     (async () => {
       try {
         const creds = await db.getApiCredentials(req.session.userId);
@@ -2618,21 +2627,31 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
           currentBid = kwInfo?.bidAmt || 0;
         } catch (e) { /* fallback */ }
 
-        // 목표 순위에 필요한 입찰가 조회 → last_rank에 targetBid 저장
-        let targetBid = 0;
+        // 참고입찰가 (28일 평균) → last_rank 필드에 저장
+        let refBid = 0;
         try {
           const targetRank = parseInt(req.body.target_rank) || 3;
           const est = await client.getEstimatedBidForPosition(kwId, device, targetRank);
-          targetBid = est?.estimate?.[0]?.bid || 0;
-        } catch (estErr) {
-          console.log(`  입찰가 추정 실패 [${req.body.keyword}]:`, estErr.message);
+          refBid = est?.estimate?.[0]?.bid || 0;
+        } catch (e) {}
+
+        // 실시간 순위 조회
+        let realRank = 0;
+        const siteUrls = (account.site_url || '').split(',').map(u => u.trim()).filter(Boolean);
+        if (siteUrls.length > 0) {
+          const { findAdRank } = require('../api/naverRankScraper');
+          try {
+            for (const siteUrl of siteUrls) {
+              const result = await findAdRank(req.body.keyword, device, siteUrl);
+              if (result.rank > 0) { realRank = result.rank; break; }
+            }
+          } catch (e) {}
         }
 
-        // last_rank 필드에 목표입찰가 저장 (의미: targetBid)
-        await db.updateAutoBidKeywordStatus(kwId, device, targetBid, currentBid);
-        console.log(`✅ [${req.body.keyword}] ${device} 목표입찰가: ₩${targetBid}, 현재: ₩${currentBid} → ${currentBid >= targetBid && targetBid > 0 ? '달성' : '미달'}`);
+        await db.updateAutoBidKeywordStatus(kwId, device, refBid, currentBid, realRank);
+        console.log(`✅ [${req.body.keyword}] ${device} 현재:₩${currentBid}, 참고:₩${refBid}, 순위:${realRank||'순위밖'}`);
       } catch (e) {
-        console.error(`⚠️ [${req.body.keyword}] 순위 즉시 조회 실패:`, e.message);
+        console.error(`⚠️ [${req.body.keyword}] 즉시 조회 실패:`, e.message);
       }
     })();
   } catch (err) {
@@ -2854,10 +2873,10 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
           }
         }
 
-        console.log(`  📊 [${abKw.keyword}] ${abKw.device} 목표:${abKw.target_rank}위, 실시간:${realRank||'-'}, 필요:₩${targetBid}, 현재:₩${currentBid}`);
+        console.log(`  📊 [${abKw.keyword}] ${abKw.device} 목표:${abKw.target_rank}위, 현재순위:${realRank||'순위밖'}, 평균입찰가:₩${targetBid}, 현재입찰가:₩${currentBid}`);
 
         await db.updateAutoBidKeywordStatus(abKw.keyword_id, abKw.device, targetBid, currentBid, realRank);
-        details.push({ keyword: abKw.keyword, device: abKw.device, targetBid, currentBid, realRank, status: currentBid >= targetBid ? '달성' : '미달' });
+        details.push({ keyword: abKw.keyword, device: abKw.device, refBid: targetBid, currentBid, realRank });
         checked++;
         await new Promise(r => setTimeout(r, 200));
       } catch (e) {

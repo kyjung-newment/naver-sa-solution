@@ -72,7 +72,9 @@ async function runAutoBiddingForAccount(account) {
 }
 
 /**
- * 개별 키워드 입찰가 조정
+ * 개별 키워드 입찰가 조정 (실시간 순위 기반)
+ * - 실시간 순위 스크래핑 → 목표순위와 비교 → 조정입찰가만큼 단계적 조정
+ * - Estimate API 사용하지 않음 (28일 평균이라 부정확)
  * @returns {boolean} 입찰가 변경 여부
  */
 async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
@@ -84,18 +86,9 @@ async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
     try {
       const kwInfo = await client.getKeywordInfo(keyword_id);
       currentBid = kwInfo?.bidAmt || currentBid;
-    } catch (e) { /* fallback */ }
+    } catch (e) { /* fallback to last_bid */ }
 
-    // 2. 목표 순위에 필요한 입찰가 조회 (estimate API)
-    let targetBid = 0;
-    try {
-      const est = await client.getEstimatedBidForPosition(keyword_id, device, target_rank);
-      targetBid = est?.estimate?.[0]?.bid || 0;
-    } catch (e) {
-      console.log(`  순위 추정 실패 [${keyword}]:`, e.message);
-    }
-
-    // 3. 실시간 순위 조회 (검색결과 파싱)
+    // 2. 실시간 순위 조회 (검색결과 스크래핑)
     let realRank = 0;
     if (siteUrls && siteUrls.length > 0) {
       const cacheKey = `${keyword}_${device}`;
@@ -115,35 +108,37 @@ async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
       }
     }
 
-    // 4. 입찰가 조정 로직
+    // 3. 입찰가 조정 로직 (실시간 순위 기반)
     let newBid = currentBid;
+    let action = '유지';
 
-    if (realRank > 0 && realRank <= target_rank) {
-      // 실시간 순위 달성 → 입찰가 과다 시 점진 하향
-      if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
-        newBid = Math.max(currentBid - adjust_amt, 70);
-      }
-      // 순위 달성 중이면 유지
-    } else if (targetBid > 0 && currentBid < targetBid) {
-      // 목표 순위 미달 → adjust_amt만큼 점진 상향
+    if (realRank === 0) {
+      // 순위밖 → 입찰가 상향
       newBid = Math.min(currentBid + adjust_amt, max_bid);
-    } else if (targetBid > 0 && currentBid > targetBid + adjust_amt) {
-      // 입찰가 과다 → adjust_amt만큼 점진 하향
+      action = '순위밖→상향';
+    } else if (realRank > target_rank) {
+      // 현재순위가 목표보다 낮음 (예: 5위인데 3위 원함) → 상향
+      newBid = Math.min(currentBid + adjust_amt, max_bid);
+      action = `${realRank}위→상향`;
+    } else if (realRank < target_rank) {
+      // 현재순위가 목표보다 높음 (예: 1위인데 3위 원함) → 하향 (비용 절감)
       newBid = Math.max(currentBid - adjust_amt, 70);
-    } else if (targetBid === 0 && realRank === 0) {
-      // estimate 조회 실패 + 순위 밖 → 상향 시도
-      newBid = Math.min(currentBid + adjust_amt, max_bid);
+      action = `${realRank}위→하향`;
+    } else {
+      // 목표순위 정확히 달성 → 유지
+      action = `${realRank}위=목표`;
     }
 
     const changed = newBid !== currentBid && newBid > 0;
     if (changed) {
       await client.updateKeywordBid(keyword_id, newBid);
-      const rankStr = realRank > 0 ? realRank + '위' : '순위밖';
-      console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${rankStr} → 목표:${target_rank}위, 필요:${targetBid}원)`);
+      console.log(`  🎯 [${keyword}] ${device} ${currentBid}→${newBid}원 (${action}, 목표:${target_rank}위)`);
+    } else {
+      console.log(`  ✓ [${keyword}] ${device} ${currentBid}원 ${action}`);
     }
 
     // DB 상태 + last_run 갱신
-    await db.updateAutoBidKeywordStatus(keyword_id, device, targetBid, newBid || currentBid, realRank).catch(() => {});
+    await db.updateAutoBidKeywordStatus(keyword_id, device, 0, newBid || currentBid, realRank).catch(() => {});
 
     return changed;
   } catch (err) {
