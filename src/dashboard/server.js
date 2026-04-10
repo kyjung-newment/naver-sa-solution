@@ -1420,6 +1420,46 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
     <!-- 요약 탭 -->
     <div id="tab-summary" class="tab-content">
+      <!-- 성과지표 추이 차트 -->
+      <div class="card" style="margin-bottom:20px" id="trend-chart-wrap">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span class="card-title">성과지표</span>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+              <select id="trend-metric-1" style="border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;background:#fff;cursor:pointer;color:#374151;font-weight:500">
+                <option value="imp">노출수</option>
+                <option value="clk">클릭수</option>
+                <option value="cost">비용</option>
+                <option value="purchaseAmt">구매전환매출</option>
+                <option value="roas">구매전환 ROAS</option>
+                <option value="cpc">CPC</option>
+                <option value="ctr">클릭률</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
+              <select id="trend-metric-2" style="border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;background:#fff;cursor:pointer;color:#374151;font-weight:500">
+                <option value="imp">노출수</option>
+                <option value="clk">클릭수</option>
+                <option value="cost">비용</option>
+                <option value="purchaseAmt">구매전환매출</option>
+                <option value="roas">구매전환 ROAS</option>
+                <option value="cpc" selected>CPC</option>
+                <option value="ctr">클릭률</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="card-body" style="padding:12px 16px 16px">
+          <div id="trend-sub" style="font-size:11px;color:#94a3b8;margin-bottom:8px"></div>
+          <div style="position:relative;width:100%;height:240px" id="trend-canvas-wrap">
+            <canvas id="trend-canvas" style="width:100%;height:100%"></canvas>
+          </div>
+          <div id="trend-tooltip" style="display:none;position:absolute;background:rgba(30,41,59,0.95);color:#fff;padding:8px 12px;border-radius:8px;font-size:11px;pointer-events:none;z-index:100;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)"></div>
+        </div>
+      </div>
+
       <div class="kpi-grid" id="kpi-grid">
         ${[
           {l:'노출수',c:'kpi-blue'},{l:'클릭수',c:'kpi-cyan'},{l:'CTR',c:'kpi-green'},{l:'총비용',c:'kpi-red'},
@@ -1549,7 +1589,204 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         renderKpi(json.stats);
       } catch(e) { toast('조회 실패: '+e.message, true); }
+      // 트렌드 차트 로딩 (병렬)
+      loadTrendChart();
     }
+
+    // ── 성과지표 추이 차트 ──
+    let trendData = [];
+    const metricLabels = { imp: '노출수', clk: '클릭수', cost: '비용', purchaseAmt: '구매전환매출', roas: '구매전환 ROAS', cpc: 'CPC', ctr: '클릭률' };
+    const metricFormats = {
+      imp: v => num(v), clk: v => num(v), cost: v => won(v),
+      purchaseAmt: v => won(v), roas: v => v+'%', cpc: v => won(v), ctr: v => v.toFixed(2)+'%'
+    };
+    const metricColors = { 1: '#ef4444', 2: '#f59e0b' };
+
+    async function loadTrendChart() {
+      const sub = document.getElementById('trend-sub');
+      if (sub) sub.textContent = '데이터 로딩 중...';
+      try {
+        const res = await fetch('/smart-sa/api/stats/trend?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        trendData = json.trend || [];
+        if (trendData.length < 2) {
+          if (sub) sub.textContent = '추이 차트는 2일 이상의 데이터가 필요합니다.';
+          return;
+        }
+        const m1 = metricLabels[document.getElementById('trend-metric-1').value] || '';
+        const m2 = metricLabels[document.getElementById('trend-metric-2').value] || '';
+        if (sub) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
+        drawTrendChart();
+      } catch(e) {
+        if (sub) sub.textContent = '추이 데이터 로딩 실패: ' + e.message;
+      }
+    }
+
+    function drawTrendChart() {
+      const canvas = document.getElementById('trend-canvas');
+      if (!canvas || !trendData.length) return;
+      const wrap = document.getElementById('trend-canvas-wrap');
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = wrap.offsetWidth * dpr;
+      canvas.height = wrap.offsetHeight * dpr;
+      canvas.style.width = wrap.offsetWidth + 'px';
+      canvas.style.height = wrap.offsetHeight + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      const W = wrap.offsetWidth, H = wrap.offsetHeight;
+      ctx.clearRect(0, 0, W, H);
+
+      const m1Key = document.getElementById('trend-metric-1').value;
+      const m2Key = document.getElementById('trend-metric-2').value;
+      const vals1 = trendData.map(d => Number(d[m1Key]) || 0);
+      const vals2 = trendData.map(d => Number(d[m2Key]) || 0);
+      const n = trendData.length;
+
+      // 레이아웃
+      const padL = 70, padR = 70, padT = 20, padB = 36;
+      const chartW = W - padL - padR;
+      const chartH = H - padT - padB;
+
+      // Y축 범위 계산
+      function niceRange(arr) {
+        const mn = Math.min(...arr), mx = Math.max(...arr);
+        if (mx === mn) return { min: 0, max: mx > 0 ? mx * 1.5 : 10, step: mx > 0 ? mx * 0.3 : 2 };
+        const range = mx - mn;
+        const mag = Math.pow(10, Math.floor(Math.log10(range)));
+        let step = mag;
+        if (range / step < 3) step = mag / 2;
+        if (range / step > 8) step = mag * 2;
+        const nMin = Math.floor(mn / step) * step;
+        const nMax = Math.ceil(mx / step) * step;
+        return { min: Math.max(0, nMin), max: nMax || 10, step: step || 1 };
+      }
+      const r1 = niceRange(vals1), r2 = niceRange(vals2);
+
+      // 그리드 + Y축 라벨
+      ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
+      const ySteps = 5;
+      for (let i = 0; i <= ySteps; i++) {
+        const y = padT + chartH - (i / ySteps) * chartH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+        // 왼쪽 Y축 (m1)
+        const v1 = r1.min + (i / ySteps) * (r1.max - r1.min);
+        ctx.fillStyle = '#ef4444'; ctx.font = '10px -apple-system,sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(shortNum(v1, m1Key), padL - 8, y + 4);
+        // 오른쪽 Y축 (m2)
+        const v2 = r2.min + (i / ySteps) * (r2.max - r2.min);
+        ctx.fillStyle = '#f59e0b'; ctx.textAlign = 'left';
+        ctx.fillText(shortNum(v2, m2Key), W - padR + 8, y + 4);
+      }
+
+      // X축 라벨
+      ctx.fillStyle = '#94a3b8'; ctx.font = '10px -apple-system,sans-serif'; ctx.textAlign = 'center';
+      const maxLabels = Math.min(n, Math.floor(chartW / 55));
+      const labelStep = Math.max(1, Math.ceil(n / maxLabels));
+      trendData.forEach((d, i) => {
+        if (i % labelStep !== 0 && i !== n - 1) return;
+        const x = padL + (i / (n - 1)) * chartW;
+        const dt = d.date.slice(5); // MM-DD
+        const dayNames = ['일','월','화','수','목','금','토'];
+        const dow = dayNames[new Date(d.date).getDay()];
+        ctx.fillText(dt.replace('-','.') + '(' + dow + ')', x, H - 6);
+      });
+
+      // 라인 그리기
+      function drawLine(vals, range, color) {
+        ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        ctx.beginPath();
+        vals.forEach((v, i) => {
+          const x = padL + (i / (n - 1)) * chartW;
+          const y = padT + chartH - ((v - range.min) / (range.max - range.min || 1)) * chartH;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        // 점
+        vals.forEach((v, i) => {
+          const x = padL + (i / (n - 1)) * chartW;
+          const y = padT + chartH - ((v - range.min) / (range.max - range.min || 1)) * chartH;
+          ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+        });
+      }
+      drawLine(vals1, r1, '#ef4444');
+      drawLine(vals2, r2, '#f59e0b');
+
+      // 마우스 호버 이벤트
+      canvas.onmousemove = function(e) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const idx = Math.round(((mx - padL) / chartW) * (n - 1));
+        if (idx < 0 || idx >= n) { document.getElementById('trend-tooltip').style.display = 'none'; return; }
+        const d = trendData[idx];
+        const tip = document.getElementById('trend-tooltip');
+        const dt = d.date.slice(5).replace('-','.');
+        const dayNames = ['일','월','화','수','목','금','토'];
+        const dow = dayNames[new Date(d.date).getDay()];
+        tip.innerHTML = '<div style="font-weight:600;margin-bottom:4px">' + d.date + ' (' + dow + ')</div>'
+          + '<div style="color:#fca5a5">' + metricLabels[m1Key] + ': ' + metricFormats[m1Key](vals1[idx]) + '</div>'
+          + '<div style="color:#fcd34d">' + metricLabels[m2Key] + ': ' + metricFormats[m2Key](vals2[idx]) + '</div>';
+        tip.style.display = 'block';
+        const tipX = e.clientX - wrap.getBoundingClientRect().left + 12;
+        const tipY = e.clientY - wrap.getBoundingClientRect().top - 10;
+        tip.style.left = Math.min(tipX, W - 180) + 'px';
+        tip.style.top = tipY + 'px';
+        // 하이라이트 세로선
+        drawTrendChart.__highlight = idx;
+        drawTrendChartWithHighlight(idx);
+      };
+      canvas.onmouseleave = function() {
+        document.getElementById('trend-tooltip').style.display = 'none';
+        drawTrendChart.__highlight = -1;
+        drawTrendChart();
+      };
+    }
+
+    function drawTrendChartWithHighlight(idx) {
+      drawTrendChart();
+      if (idx < 0 || idx >= trendData.length) return;
+      const canvas = document.getElementById('trend-canvas');
+      const wrap = document.getElementById('trend-canvas-wrap');
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const W = wrap.offsetWidth, H = wrap.offsetHeight;
+      const n = trendData.length;
+      const padL = 70, padR = 70, padT = 20, padB = 36;
+      const chartW = W - padL - padR;
+      const x = padL + (idx / (n - 1)) * chartW;
+      ctx.save(); ctx.scale(dpr, dpr);
+      ctx.strokeStyle = 'rgba(148,163,184,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    function shortNum(v, key) {
+      if (key === 'ctr' || key === 'roas') return v.toFixed(1) + '%';
+      if (Math.abs(v) >= 1e8) return (v/1e8).toFixed(1) + '억';
+      if (Math.abs(v) >= 1e4) return (v/1e4).toFixed(1) + '만';
+      if (Math.abs(v) >= 1e3) return (v/1e3).toFixed(1) + 'K';
+      return v.toFixed(key === 'cpc' ? 0 : (Number.isInteger(v) ? 0 : 1));
+    }
+
+    // 드롭다운 변경 시 차트 다시 그리기
+    document.getElementById('trend-metric-1').addEventListener('change', function() {
+      const sub = document.getElementById('trend-sub');
+      const m1 = metricLabels[this.value] || '';
+      const m2 = metricLabels[document.getElementById('trend-metric-2').value] || '';
+      if (sub && trendData.length) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
+      drawTrendChart();
+    });
+    document.getElementById('trend-metric-2').addEventListener('change', function() {
+      const sub = document.getElementById('trend-sub');
+      const m1 = metricLabels[document.getElementById('trend-metric-1').value] || '';
+      const m2 = metricLabels[this.value] || '';
+      if (sub && trendData.length) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
+      drawTrendChart();
+    });
+    // 창 리사이즈 시 차트 재그리기
+    window.addEventListener('resize', function() { if (trendData.length) drawTrendChart(); });
 
     function renderKpi(s) {
       const roas = s?.roas || 0;
@@ -2411,6 +2648,61 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
 
     const maxItems = lim === 'all' ? 99999 : 10;
     res.json({ ok: true, hasMaster, source: 'api', powerlink: powerlink.slice(0, maxItems), shopping: shopping.slice(0, maxItems), other: other.slice(0, maxItems), powerlinkTotal: powerlink.length, shoppingTotal: shopping.length, otherTotal: other.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 성과지표 추이 (트렌드 차트용) ──────────────────────────────
+router.get('/api/stats/trend', requireLogin, async (req, res) => {
+  try {
+    const { period = '7days', accountId } = req.query;
+    if (!accountId) return res.status(400).json({ ok: false, error: '광고주 선택 필요' });
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+
+    // DB 동기화 데이터 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const rows = await db.queryStatsTrend(account.id, dateRange.since, dateRange.until);
+      const trend = rows.map(r => ({
+        date: r.date.slice(0, 10),
+        imp: Number(r.imp),
+        clk: Number(r.clk),
+        cost: Number(r.cost),
+        purchaseAmt: Number(r.purchaseAmt),
+        purchaseCnt: Number(r.purchaseCnt),
+        ctr: r.imp > 0 ? (r.clk / r.imp * 100) : 0,
+        cpc: r.clk > 0 ? Math.round(Number(r.cost) / r.clk) : 0,
+        roas: Number(r.cost) > 0 ? Math.round(Number(r.purchaseAmt) / Number(r.cost) * 100) : 0,
+      }));
+      return res.json({ ok: true, trend, source: 'db' });
+    }
+
+    // Fallback: API에서 일별 데이터 구성
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 미등록' });
+    const client = makeClient(creds, account.customer_id);
+
+    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
+    const byDate = {};
+    for (const { date, cols } of adRows) {
+      if (cols.length < 14) continue;
+      if (!byDate[date]) byDate[date] = { imp: 0, clk: 0, cost: 0, purchaseAmt: 0, purchaseCnt: 0 };
+      byDate[date].imp += parseInt(cols[11]) || 0;
+      byDate[date].clk += parseInt(cols[12]) || 0;
+      byDate[date].cost += parseInt(cols[13]) || 0;
+    }
+    const trend = Object.entries(byDate).sort((a,b) => a[0].localeCompare(b[0])).map(([date, d]) => ({
+      date,
+      ...d,
+      ctr: d.imp > 0 ? (d.clk / d.imp * 100) : 0,
+      cpc: d.clk > 0 ? Math.round(d.cost / d.clk) : 0,
+      roas: d.cost > 0 ? Math.round(d.purchaseAmt / d.cost * 100) : 0,
+    }));
+    res.json({ ok: true, trend, source: 'api' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

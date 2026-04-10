@@ -798,6 +798,20 @@ async function getEnabledShoppingBidKeywords(accountId) {
   return all('SELECT * FROM shopping_bid_keywords WHERE account_id = $1 AND enabled = 1', [accountId]);
 }
 
+/** 일자별 추이 데이터 (성과지표 트렌드 차트용) */
+async function queryStatsTrend(accountId, since, until) {
+  return all(`
+    SELECT stat_date::text AS date,
+           COALESCE(SUM(imp),0)::int AS imp,
+           COALESCE(SUM(clk),0)::int AS clk,
+           COALESCE(SUM(sales_amt),0)::bigint AS cost,
+           COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_campaign_daily WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    GROUP BY stat_date ORDER BY stat_date
+  `, [accountId, since, until]);
+}
+
 module.exports = Object.assign(module.exports, {
   initDb, query, get, all,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
@@ -810,5 +824,5 @@ module.exports = Object.assign(module.exports, {
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
   getShoppingBidKeywords, upsertShoppingBidKeyword, deleteShoppingBidKeyword, updateShoppingBidKeywordStatus, getEnabledShoppingBidKeywords,
-  isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups,
+  isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups, queryStatsTrend,
 });
