@@ -1716,22 +1716,30 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       // 마우스 호버 이벤트
       canvas.onmousemove = function(e) {
         const rect = canvas.getBoundingClientRect();
-        const mx = e.clientX - rect.left;
+        const mx = (e.clientX - rect.left) * (W / rect.width);
         const idx = Math.round(((mx - padL) / chartW) * (n - 1));
         if (idx < 0 || idx >= n) { document.getElementById('trend-tooltip').style.display = 'none'; return; }
         const d = trendData[idx];
         const tip = document.getElementById('trend-tooltip');
-        const dt = d.date.slice(5).replace('-','.');
         const dayNames = ['일','월','화','수','목','금','토'];
         const dow = dayNames[new Date(d.date).getDay()];
         tip.innerHTML = '<div style="font-weight:600;margin-bottom:4px">' + d.date + ' (' + dow + ')</div>'
           + '<div style="color:#fca5a5">' + metricLabels[m1Key] + ': ' + metricFormats[m1Key](vals1[idx]) + '</div>'
           + '<div style="color:#fcd34d">' + metricLabels[m2Key] + ': ' + metricFormats[m2Key](vals2[idx]) + '</div>';
         tip.style.display = 'block';
-        const tipX = e.clientX - wrap.getBoundingClientRect().left + 12;
-        const tipY = e.clientY - wrap.getBoundingClientRect().top - 10;
-        tip.style.left = Math.min(tipX, W - 180) + 'px';
-        tip.style.top = tipY + 'px';
+        // 데이터 점 위치 기준으로 툴팁 배치
+        const dotX = padL + (idx / (n - 1)) * chartW;
+        const y1 = padT + chartH - ((vals1[idx] - r1.min) / (r1.max - r1.min || 1)) * chartH;
+        const y2 = padT + chartH - ((vals2[idx] - r2.min) / (r2.max - r2.min || 1)) * chartH;
+        const dotY = Math.min(y1, y2); // 더 높은(위쪽) 점 기준
+        tip.style.left = (dotX + 12) + 'px';
+        tip.style.top = (dotY - 10) + 'px';
+        // 오른쪽 넘침 방지
+        const tipRect = tip.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        if (tipRect.right > wrapRect.right - 4) {
+          tip.style.left = (dotX - tip.offsetWidth - 12) + 'px';
+        }
         // 하이라이트 세로선
         drawTrendChart.__highlight = idx;
         drawTrendChartWithHighlight(idx);
