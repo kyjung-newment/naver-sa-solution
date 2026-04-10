@@ -1416,28 +1416,54 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       <div class="card" style="margin-bottom:20px" id="trend-chart-wrap">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <span class="card-title">성과지표</span>
-          <div style="display:flex;align-items:center;gap:12px">
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block"></span>
-              <select id="trend-metric-1" style="border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;background:#fff;cursor:pointer;color:#374151;font-weight:500">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+              <select id="trend-metric-1" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer;color:#374151;font-weight:500;min-width:76px">
                 <option value="imp">노출수</option>
                 <option value="clk">클릭수</option>
                 <option value="cost">비용</option>
                 <option value="purchaseAmt">구매전환매출</option>
-                <option value="roas">구매전환 ROAS</option>
+                <option value="roas">ROAS</option>
                 <option value="cpc">CPC</option>
                 <option value="ctr">클릭률</option>
               </select>
             </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
-              <select id="trend-metric-2" style="border:1px solid #e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;background:#fff;cursor:pointer;color:#374151;font-weight:500">
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
+              <select id="trend-metric-2" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer;color:#374151;font-weight:500;min-width:76px">
                 <option value="imp">노출수</option>
                 <option value="clk">클릭수</option>
                 <option value="cost">비용</option>
                 <option value="purchaseAmt">구매전환매출</option>
-                <option value="roas">구매전환 ROAS</option>
+                <option value="roas">ROAS</option>
                 <option value="cpc" selected>CPC</option>
+                <option value="ctr">클릭률</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#3b82f6;display:inline-block"></span>
+              <select id="trend-metric-3" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer;color:#374151;font-weight:500;min-width:76px">
+                <option value="">선택안함</option>
+                <option value="imp">노출수</option>
+                <option value="clk">클릭수</option>
+                <option value="cost">비용</option>
+                <option value="purchaseAmt">구매전환매출</option>
+                <option value="roas">ROAS</option>
+                <option value="cpc">CPC</option>
+                <option value="ctr">클릭률</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block"></span>
+              <select id="trend-metric-4" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer;color:#374151;font-weight:500;min-width:76px">
+                <option value="">선택안함</option>
+                <option value="imp">노출수</option>
+                <option value="clk">클릭수</option>
+                <option value="cost">비용</option>
+                <option value="purchaseAmt">구매전환매출</option>
+                <option value="roas">ROAS</option>
+                <option value="cpc">CPC</option>
                 <option value="ctr">클릭률</option>
               </select>
             </div>
@@ -1585,14 +1611,31 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       loadTrendChart();
     }
 
-    // ── 성과지표 추이 차트 ──
+    // ── 성과지표 추이 차트 (최대 4개 지표) ──
     let trendData = [];
-    const metricLabels = { imp: '노출수', clk: '클릭수', cost: '비용', purchaseAmt: '구매전환매출', roas: '구매전환 ROAS', cpc: 'CPC', ctr: '클릭률' };
+    const metricLabels = { imp: '노출수', clk: '클릭수', cost: '비용', purchaseAmt: '구매전환매출', roas: 'ROAS', cpc: 'CPC', ctr: '클릭률' };
     const metricFormats = {
       imp: v => num(v), clk: v => num(v), cost: v => won(v),
       purchaseAmt: v => won(v), roas: v => v+'%', cpc: v => won(v), ctr: v => v.toFixed(2)+'%'
     };
-    const metricColors = { 1: '#ef4444', 2: '#f59e0b' };
+    const metricColorList = ['#ef4444','#f59e0b','#3b82f6','#10b981'];
+    const metricTipColors = ['#fca5a5','#fcd34d','#93c5fd','#6ee7b7'];
+
+    function getActiveMetrics() {
+      const arr = [];
+      for (let i = 1; i <= 4; i++) {
+        const sel = document.getElementById('trend-metric-'+i);
+        if (sel && sel.value) arr.push({ idx: i, key: sel.value, color: metricColorList[i-1], tipColor: metricTipColors[i-1] });
+      }
+      return arr;
+    }
+
+    function updateTrendSub() {
+      const sub = document.getElementById('trend-sub');
+      if (!sub || !trendData.length) return;
+      const names = getActiveMetrics().map(m => metricLabels[m.key]).filter(Boolean);
+      sub.textContent = names.join(', ') + ' 기준 ' + trendData.length + '일간 추이';
+    }
 
     async function loadTrendChart() {
       const sub = document.getElementById('trend-sub');
@@ -1606,9 +1649,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           if (sub) sub.textContent = '추이 차트는 2일 이상의 데이터가 필요합니다.';
           return;
         }
-        const m1 = metricLabels[document.getElementById('trend-metric-1').value] || '';
-        const m2 = metricLabels[document.getElementById('trend-metric-2').value] || '';
-        if (sub) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
+        updateTrendSub();
         drawTrendChart();
       } catch(e) {
         if (sub) sub.textContent = '추이 데이터 로딩 실패: ' + e.message;
@@ -1629,18 +1670,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const W = wrap.offsetWidth, H = wrap.offsetHeight;
       ctx.clearRect(0, 0, W, H);
 
-      const m1Key = document.getElementById('trend-metric-1').value;
-      const m2Key = document.getElementById('trend-metric-2').value;
-      const vals1 = trendData.map(d => Number(d[m1Key]) || 0);
-      const vals2 = trendData.map(d => Number(d[m2Key]) || 0);
+      const metrics = getActiveMetrics();
+      if (!metrics.length) return;
       const n = trendData.length;
 
-      // 레이아웃
-      const padL = 70, padR = 70, padT = 20, padB = 36;
-      const chartW = W - padL - padR;
-      const chartH = H - padT - padB;
-
-      // Y축 범위 계산
+      // 각 지표의 값과 범위 계산
       function niceRange(arr) {
         const mn = Math.min(...arr), mx = Math.max(...arr);
         if (mx === mn) return { min: 0, max: mx > 0 ? mx * 1.5 : 10, step: mx > 0 ? mx * 0.3 : 2 };
@@ -1653,22 +1687,35 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         const nMax = Math.ceil(mx / step) * step;
         return { min: Math.max(0, nMin), max: nMax || 10, step: step || 1 };
       }
-      const r1 = niceRange(vals1), r2 = niceRange(vals2);
 
-      // 그리드 + Y축 라벨
+      const mData = metrics.map(m => {
+        const vals = trendData.map(d => Number(d[m.key]) || 0);
+        return { ...m, vals, range: niceRange(vals) };
+      });
+
+      // 레이아웃: 좌측에 1번, 우측에 2번 Y축 표시, 3~4번은 Y축 없음
+      const padL = 70, padR = 70, padT = 20, padB = 36;
+      const chartW = W - padL - padR;
+      const chartH = H - padT - padB;
+
+      // 그리드
       ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 1;
       const ySteps = 5;
       for (let i = 0; i <= ySteps; i++) {
         const y = padT + chartH - (i / ySteps) * chartH;
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-        // 왼쪽 Y축 (m1)
-        const v1 = r1.min + (i / ySteps) * (r1.max - r1.min);
-        ctx.fillStyle = '#ef4444'; ctx.font = '10px -apple-system,sans-serif'; ctx.textAlign = 'right';
-        ctx.fillText(shortNum(v1, m1Key), padL - 8, y + 4);
-        // 오른쪽 Y축 (m2)
-        const v2 = r2.min + (i / ySteps) * (r2.max - r2.min);
-        ctx.fillStyle = '#f59e0b'; ctx.textAlign = 'left';
-        ctx.fillText(shortNum(v2, m2Key), W - padR + 8, y + 4);
+        // 왼쪽 Y축: 1번 지표
+        if (mData[0]) {
+          const v = mData[0].range.min + (i / ySteps) * (mData[0].range.max - mData[0].range.min);
+          ctx.fillStyle = mData[0].color; ctx.font = '10px -apple-system,sans-serif'; ctx.textAlign = 'right';
+          ctx.fillText(shortNum(v, mData[0].key), padL - 8, y + 4);
+        }
+        // 오른쪽 Y축: 2번 지표
+        if (mData[1]) {
+          const v = mData[1].range.min + (i / ySteps) * (mData[1].range.max - mData[1].range.min);
+          ctx.fillStyle = mData[1].color; ctx.font = '10px -apple-system,sans-serif'; ctx.textAlign = 'left';
+          ctx.fillText(shortNum(v, mData[1].key), W - padR + 8, y + 4);
+        }
       }
 
       // X축 라벨
@@ -1678,7 +1725,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       trendData.forEach((d, i) => {
         if (i % labelStep !== 0 && i !== n - 1) return;
         const x = padL + (i / (n - 1)) * chartW;
-        const dt = d.date.slice(5); // MM-DD
+        const dt = d.date.slice(5);
         const dayNames = ['일','월','화','수','목','금','토'];
         const dow = dayNames[new Date(d.date).getDay()];
         ctx.fillText(dt.replace('-','.') + '(' + dow + ')', x, H - 6);
@@ -1694,16 +1741,14 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         });
         ctx.stroke();
-        // 점
         vals.forEach((v, i) => {
           const x = padL + (i / (n - 1)) * chartW;
           const y = padT + chartH - ((v - range.min) / (range.max - range.min || 1)) * chartH;
-          ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
           ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
         });
       }
-      drawLine(vals1, r1, '#ef4444');
-      drawLine(vals2, r2, '#f59e0b');
+      mData.forEach(m => drawLine(m.vals, m.range, m.color));
 
       // 마우스 호버 이벤트
       canvas.onmousemove = function(e) {
@@ -1715,24 +1760,26 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         const tip = document.getElementById('trend-tooltip');
         const dayNames = ['일','월','화','수','목','금','토'];
         const dow = dayNames[new Date(d.date).getDay()];
-        tip.innerHTML = '<div style="font-weight:600;margin-bottom:4px">' + d.date + ' (' + dow + ')</div>'
-          + '<div style="color:#fca5a5">' + metricLabels[m1Key] + ': ' + metricFormats[m1Key](vals1[idx]) + '</div>'
-          + '<div style="color:#fcd34d">' + metricLabels[m2Key] + ': ' + metricFormats[m2Key](vals2[idx]) + '</div>';
+        let html = '<div style="font-weight:600;margin-bottom:4px">' + d.date + ' (' + dow + ')</div>';
+        mData.forEach(m => {
+          html += '<div style="color:' + m.tipColor + '">' + metricLabels[m.key] + ': ' + metricFormats[m.key](m.vals[idx]) + '</div>';
+        });
+        tip.innerHTML = html;
         tip.style.display = 'block';
-        // 데이터 점 위치 기준으로 툴팁 배치
+        // 가장 높은(위쪽) 점 기준 툴팁 배치
         const dotX = padL + (idx / (n - 1)) * chartW;
-        const y1 = padT + chartH - ((vals1[idx] - r1.min) / (r1.max - r1.min || 1)) * chartH;
-        const y2 = padT + chartH - ((vals2[idx] - r2.min) / (r2.max - r2.min || 1)) * chartH;
-        const dotY = Math.min(y1, y2); // 더 높은(위쪽) 점 기준
+        let minY = H;
+        mData.forEach(m => {
+          const yy = padT + chartH - ((m.vals[idx] - m.range.min) / (m.range.max - m.range.min || 1)) * chartH;
+          if (yy < minY) minY = yy;
+        });
         tip.style.left = (dotX + 12) + 'px';
-        tip.style.top = (dotY - 10) + 'px';
-        // 오른쪽 넘침 방지
+        tip.style.top = (minY - 10) + 'px';
         const tipRect = tip.getBoundingClientRect();
         const wrapRect = wrap.getBoundingClientRect();
         if (tipRect.right > wrapRect.right - 4) {
           tip.style.left = (dotX - tip.offsetWidth - 12) + 'px';
         }
-        // 하이라이트 세로선
         drawTrendChart.__highlight = idx;
         drawTrendChartWithHighlight(idx);
       };
@@ -1771,19 +1818,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     }
 
     // 드롭다운 변경 시 차트 다시 그리기
-    document.getElementById('trend-metric-1').addEventListener('change', function() {
-      const sub = document.getElementById('trend-sub');
-      const m1 = metricLabels[this.value] || '';
-      const m2 = metricLabels[document.getElementById('trend-metric-2').value] || '';
-      if (sub && trendData.length) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
-      drawTrendChart();
-    });
-    document.getElementById('trend-metric-2').addEventListener('change', function() {
-      const sub = document.getElementById('trend-sub');
-      const m1 = metricLabels[document.getElementById('trend-metric-1').value] || '';
-      const m2 = metricLabels[this.value] || '';
-      if (sub && trendData.length) sub.textContent = m1 + ', ' + m2 + ' 기준 ' + trendData.length + '일간 추이';
-      drawTrendChart();
+    [1,2,3,4].forEach(function(i) {
+      document.getElementById('trend-metric-'+i).addEventListener('change', function() {
+        updateTrendSub();
+        drawTrendChart();
+      });
     });
     // 창 리사이즈 시 차트 재그리기
     window.addEventListener('resize', function() { if (trendData.length) drawTrendChart(); });
