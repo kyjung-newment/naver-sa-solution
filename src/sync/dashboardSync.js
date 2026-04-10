@@ -234,6 +234,15 @@ async function syncMasterData(account) {
     const kwRows = await client.syncMaster('Keyword');
     await db.upsertMasterKeywords(account.id, kwRows);
 
+    // 품질지수(Qi) 마스터 → master_keywords.qi_grade 업데이트
+    try {
+      const qiRows = await client.syncMaster('Qi');
+      const qiUpdated = await db.upsertMasterQi(account.id, qiRows);
+      console.log(`  📊 [${account.name}] Qi 동기화: ${qiRows.length}행 → ${qiUpdated}건 업데이트`);
+    } catch (e) {
+      console.log(`  ⚠️ Qi 동기화 실패:`, e.message);
+    }
+
     console.log(`  📋 [${account.name}] 마스터 동기화: 캠페인 ${campRows.length}, 광고그룹 ${agRows.length}, 키워드 ${kwRows.length}`);
   } catch (e) {
     console.log(`  ⚠️ [${account.name}] 마스터 동기화 실패:`, e.message);

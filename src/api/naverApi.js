@@ -166,6 +166,51 @@ function createApiClient(creds) {
       });
     },
 
+    // ─── 지역별/요일별 breakdown 통계 조회 ────────────────────────────
+    // breakdown: 'regnNo'(지역), 'dayw'(요일), 'hh24'(시간), 'pcMblTp'(PC/모바일)
+    getStatsByBreakdown: async (breakdown, { timeRange = 'last7days', startDate, endDate } = {}) => {
+      const campaigns = await apiCall('GET', '/ncc/campaigns');
+      const dateRange = resolveDateRange(timeRange, startDate, endDate);
+      const byBreakdown = {};
+
+      const statsResults = await Promise.allSettled(
+        (campaigns || []).map(camp =>
+          apiCall('GET', '/stats', {
+            id: camp.nccCampaignId,
+            fields: JSON.stringify(['clkCnt', 'impCnt', 'salesAmt', 'cpc', 'ccnt']),
+            timeRange: JSON.stringify(dateRange),
+            timeIncrement: 'allDays',
+            breakdown,
+          }).then(result => ({ camp, result }))
+        )
+      );
+
+      for (const sr of statsResults) {
+        if (sr.status !== 'fulfilled') continue;
+        const { result } = sr.value;
+        if (!result?.data?.length) continue;
+        for (const d of result.data) {
+          if (!d.breakdowns?.length) continue;
+          for (const bd of d.breakdowns) {
+            const key = bd.name || 'unknown';
+            if (!byBreakdown[key]) byBreakdown[key] = { impCnt: 0, clkCnt: 0, salesAmt: 0, ccnt: 0 };
+            byBreakdown[key].impCnt += bd.impCnt || 0;
+            byBreakdown[key].clkCnt += bd.clkCnt || 0;
+            byBreakdown[key].salesAmt += bd.salesAmt || 0;
+            byBreakdown[key].ccnt += bd.ccnt || 0;
+          }
+        }
+      }
+
+      // 계산 필드 추가
+      Object.values(byBreakdown).forEach(v => {
+        v.ctr = v.impCnt > 0 ? (v.clkCnt / v.impCnt * 100) : 0;
+        v.cpc = v.clkCnt > 0 ? Math.round(v.salesAmt / v.clkCnt) : 0;
+      });
+
+      return byBreakdown;
+    },
+
     // ─── 전체 캠페인 통계 합산 조회 ─────────────────────────────────
     // salesAmt=총비용, convAmt=총전환매출(장바구니포함), purchaseAmt=구매완료전환매출
     getStats: async ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
@@ -394,20 +439,25 @@ function createApiClient(creds) {
 
     downloadMasterReport: downloadReport,
 
-    // 마스터 동기화 전체 프로세스
-    syncMaster: async (item) => {
-      const report = await apiCall('POST', '/master-reports', {}, { item });
+    // 마스터 동기화 전체 프로세스 (Full 또는 Delta)
+    // fromTime: ISO 8601 형식 → 해당 시점 이후 변경분만 다운로드 (Delta sync)
+    syncMaster: async (item, fromTime) => {
+      const body = { item };
+      if (fromTime) body.fromTime = fromTime;
+      const report = await apiCall('POST', '/master-reports', {}, body);
       const reportId = report.id;
 
       let status = report.status;
       let downloadUrl = report.downloadUrl;
       for (let i = 0; i < 15 && status !== 'BUILT'; i++) {
+        if (status === 'NONE') return []; // 변경 데이터 없음 (Delta sync)
         await new Promise(r => setTimeout(r, 2000));
         const check = await apiCall('GET', `/master-reports/${reportId}`);
         status = check.status;
         downloadUrl = check.downloadUrl;
         if (status === 'ERROR') throw new Error(`마스터 리포트 빌드 실패 (${item})`);
       }
+      if (status === 'NONE') return []; // 변경분 없음
       if (status !== 'BUILT') throw new Error(`마스터 리포트 타임아웃 (${item})`);
 
       const tsvText = await downloadReport(downloadUrl);

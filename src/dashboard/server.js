@@ -1404,8 +1404,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
     <!-- 탭 메뉴 -->
     <div class="tab-bar">
-      ${['summary','keywords','hourly','target','adgroups'].map((tab, i) => {
-        const labels = ['요약','키워드별','시간대별','타겟별','그룹별'];
+      ${['summary','keywords','hourly','target','regional','adgroups'].map((tab, i) => {
+        const labels = ['요약','키워드별','시간대별','타겟별','지역별','그룹별'];
         return `<button class="tab-btn dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')">${labels[i]}</button>`;
       }).join('')}
     </div>
@@ -1507,6 +1507,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       <div id="target-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
     </div>
 
+    <!-- 지역별 탭 -->
+    <div id="tab-regional" class="tab-content" style="display:none">
+      <div id="regional-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
     <!-- 그룹별 탭 -->
     <div id="tab-adgroups" class="tab-content" style="display:none">
       <div id="adgroups-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
@@ -1580,6 +1585,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       else if (currentTab === 'keywords' && !tabLoaded.keywords) loadKeywords();
       else if (currentTab === 'hourly' && !tabLoaded.hourly) loadHourly();
       else if (currentTab === 'target' && !tabLoaded.target) loadDevice();
+      else if (currentTab === 'regional' && !tabLoaded.regional) loadRegional();
       else if (currentTab === 'adgroups' && !tabLoaded.adgroups) loadAdgroups();
     }
 
@@ -1923,6 +1929,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       { key:'campaignName', label:'캠페인', tp:'s' },
       { key:'adgroupName', label:'광고그룹', tp:'s' },
       { key:'keyword', label:'키워드', tp:'s' },
+      { key:'qi', label:'Qi', tp:'n' },
       { key:'imp', label:'노출', tp:'n' },
       { key:'clk', label:'클릭', tp:'n' },
       { key:'ctr', label:'CTR', tp:'n' },
@@ -1993,6 +2000,9 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.campaignName||'-')+'</td>';
         html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.adgroupName||'-')+'</td>';
         html += '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong></td>';
+        var qiV = kw.qi||0;
+        var qiColor = qiV>=5?'#16a34a':qiV>=3?'#f59e0b':'#ef4444';
+        html += '<td style="text-align:right;white-space:nowrap">'+(qiV>0?'<span style="display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;background:'+(qiV>=5?'#dcfce7':qiV>=3?'#fef3c7':'#fef2f2')+';color:'+qiColor+'">'+qiV+'</span>':'<span style="color:#cbd5e1;font-size:11px">-</span>')+'</td>';
         html += '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>';
@@ -2136,6 +2146,62 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       });
       html += '</div></div>';
 
+      wrap.innerHTML = html;
+    }
+
+    // ── 지역별 탭 ──
+    async function loadRegional() {
+      const wrap = document.getElementById('regional-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 지역별 데이터 로딩 중... (10~30초 소요)</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/regional?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        tabLoaded.regional = true;
+        renderRegionalTab(json.regions);
+      } catch(e) { wrap.innerHTML = '<div class="empty">지역별 조회 실패: '+e.message+'</div>'; }
+    }
+
+    function renderRegionalTab(regions) {
+      const wrap = document.getElementById('regional-tab-content');
+      if (!regions || !regions.length) { wrap.innerHTML = '<div class="empty">지역별 데이터가 없습니다.<br><span style="font-size:12px;color:#94a3b8">최근 7일 이내 기간에서만 조회 가능합니다.</span></div>'; return; }
+      var totalCost = regions.reduce(function(s,r){return s+r.salesAmt},0) || 1;
+      var totalClk = regions.reduce(function(s,r){return s+r.clkCnt},0) || 1;
+
+      // 비용 기준 상위 10개 지역 비율 차트
+      var top10 = regions.slice(0, 10);
+      var barColors = ['#3b82f6','#8b5cf6','#ef4444','#f59e0b','#10b981','#06b6d4','#ec4899','#f97316','#14b8a6','#6366f1'];
+      var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">📍 지역별 비용 비율 (Top 10)</span></div><div class="card-body">';
+      top10.forEach(function(r, i) {
+        var pct = (r.salesAmt / totalCost * 100).toFixed(1);
+        html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+        html += '<div style="width:60px;font-size:13px;font-weight:600;text-align:right;flex-shrink:0">'+r.name+'</div>';
+        html += '<div style="flex:1;height:24px;background:#f1f5f9;border-radius:6px;overflow:hidden">';
+        html += '<div style="width:'+pct+'%;height:100%;background:'+barColors[i%10]+';display:flex;align-items:center;padding-left:8px;min-width:40px">';
+        html += '<span style="font-size:11px;font-weight:600;color:#fff">'+pct+'%</span></div></div>';
+        html += '<div style="width:80px;font-size:12px;text-align:right;color:#64748b;flex-shrink:0">'+won(r.salesAmt)+'</div>';
+        html += '</div>';
+      });
+      html += '</div></div>';
+
+      // 전체 지역 테이블
+      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span></div><div class="card-body" style="overflow-x:auto">';
+      html += '<table style="table-layout:auto"><thead><tr>';
+      html += '<th style="width:30px">#</th><th>지역</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">비용비중</th>';
+      html += '</tr></thead><tbody>';
+      regions.forEach(function(r, i) {
+        var costPct = (r.salesAmt / totalCost * 100).toFixed(1);
+        html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
+        html += '<td style="font-weight:600">'+r.name+'</td>';
+        html += '<td style="text-align:right">'+num(r.impCnt)+'</td>';
+        html += '<td style="text-align:right;color:#2563eb;font-weight:600">'+num(r.clkCnt)+'</td>';
+        html += '<td style="text-align:right">'+pct(r.ctr)+'</td>';
+        html += '<td style="text-align:right">'+won(r.salesAmt)+'</td>';
+        html += '<td style="text-align:right">'+won(r.cpc)+'</td>';
+        html += '<td style="text-align:right;font-weight:600">'+costPct+'%</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div></div>';
       wrap.innerHTML = html;
     }
 
@@ -2360,11 +2426,12 @@ async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
 // 마스터 데이터 없을 때 API에서 이름 매핑 빌드
 // Naver API campaignTp: 정수 또는 문자열 모두 처리
 function normalizeCampaignTp(tp) {
+  // 공식 API: 1=WEB_SITE(파워링크), 2=SHOPPING(쇼핑검색), 3=POWER_CONTENTS(파워콘텐츠), 4=BRAND(브랜드검색), 6=LOCAL_SMB(로컬)
   if (tp === 1 || tp === '1' || tp === 'WEB_SITE') return 1;
   if (tp === 2 || tp === '2' || tp === 'SHOPPING') return 2;
-  if (tp === 3 || tp === '3' || tp === 'BRAND' || tp === 'BRAND_SEARCH') return 3;
-  if (tp === 4 || tp === '4') return 4;
-  if (tp === 5 || tp === '5' || tp === 'POWER_CONTENTS') return 5;
+  if (tp === 3 || tp === '3' || tp === 'POWER_CONTENTS') return 3;
+  if (tp === 4 || tp === '4' || tp === 'BRAND' || tp === 'BRAND_SEARCH') return 4;
+  if (tp === 6 || tp === '6' || tp === 'LOCAL_SMB') return 6;
   return parseInt(tp) || 1;
 }
 
@@ -2484,6 +2551,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
             campaignTp: campTp,
             campaignName: r.campaignName,
             adgroupName: r.adgroupName,
+            qi: r.qiGrade || 0,
             imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
           };
         }
@@ -2553,6 +2621,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
           campaignTp: campTp,
           campaignName: info.campaignName || campMap[campId]?.name || '',
           adgroupName: info.adgroupName || agInfo.name || '',
+          qi: info.qi || 0,
           imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
         };
       }
@@ -2809,6 +2878,41 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     }
 
     res.json({ ok: true, source: 'api', pc: enrich(byDevice.PC), mobile: enrich(byDevice.MO) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 탭 데이터 (지역별) ────────────────────────────────────────
+// Stats API breakdown=regnNo로 지역별 성과 조회 (최근 7일 이내만 가능)
+const REGION_NAMES = {
+  '01': '서울', '02': '인천', '03': '대전', '04': '대구', '05': '부산',
+  '06': '울산', '07': '광주', '08': '경기', '09': '강원', '10': '충북',
+  '11': '충남', '12': '전북', '13': '전남', '14': '경북', '15': '경남',
+  '16': '제주', '17': '세종',
+};
+router.get('/api/tab/regional', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const client = makeClient(creds, account.customer_id);
+
+    const byRegion = await client.getStatsByBreakdown('regnNo', { startDate: dateRange.since, endDate: dateRange.until });
+
+    // 지역 코드를 한글 이름으로 변환 후 비용순 정렬
+    const regions = Object.entries(byRegion).map(([code, data]) => ({
+      code,
+      name: REGION_NAMES[code] || code,
+      ...data,
+    })).sort((a, b) => b.salesAmt - a.salesAmt);
+
+    res.json({ ok: true, regions });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -4495,11 +4599,11 @@ router.get('/api/shopping-bid/campaigns', requireLogin, async (req, res) => {
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     const campaigns = await client.getCampaigns();
-    // 쇼핑검색 캠페인만 필터 (campaignTp: 4 = 쇼핑검색)
+    // 쇼핑검색 캠페인만 필터 (공식 API: campaignTp 2=쇼핑검색)
     const active = (campaigns || []).filter(c => {
       const isActive = c.status === 'ELIGIBLE' || !c.status;
-      // 쇼핑검색 캠페인 타입: 4 또는 이름에 '쇼핑' 포함
-      const isShopping = c.campaignTp === 4 || c.campaignTp === '4' || (c.name && c.name.includes('쇼핑'));
+      // 쇼핑검색 캠페인 타입: 2 (공식), 또는 이름에 '쇼핑' 포함 (fallback)
+      const isShopping = c.campaignTp === 2 || c.campaignTp === '2' || (c.name && c.name.includes('쇼핑'));
       return isActive && isShopping;
     });
     // 쇼핑검색 캠페인이 없으면 전체 활성 캠페인 반환 (fallback)

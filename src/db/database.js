@@ -225,6 +225,37 @@ async function initDb() {
     await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS naver_cookie TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // master_keywords에 품질지수(Qi) 컬럼 추가
+  try {
+    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS qi_grade INTEGER DEFAULT 0`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
+  // master_campaigns에 확장 필드 추가 (ON/OFF, 예산, 기간)
+  try {
+    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS daily_budget BIGINT DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS use_period INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_start TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_end TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
+  // master_adgroups에 확장 필드 추가 (입찰가, 키워드확장, ON/OFF, 상태)
+  try {
+    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS bid_amt INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS use_keyword_plus INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS keyword_plus_weight INTEGER DEFAULT 100`);
+    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS status TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
+  // master_keywords에 확장 필드 추가 (ON/OFF, 검수상태, 랜딩URL)
+  try {
+    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS inspect_status TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS pc_landing_url TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS mo_landing_url TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS shopping_bid_keywords (
@@ -453,44 +484,79 @@ async function updateSyncStatus(accountId, status, counts = {}) {
 
 async function upsertMasterCampaigns(accountId, rows) {
   await pool.query('DELETE FROM master_campaigns WHERE account_id = $1', [accountId]);
+  // Campaign TSV: [0]customerId, [1]campaignId, [2]name, [3]campaignTp, [4]deliveryMethod,
+  //   [5]useDailyBudget, [6]dailyBudget, [7]userLock, [8]regTime, [9]editTime,
+  //   [10]usePeriod, [11]periodStartDt, [12]periodEndDt
   for (const r of rows) {
     await pool.query(
-      `INSERT INTO master_campaigns (account_id, customer_id, campaign_id, campaign_name, campaign_tp, delivery_method, use_daily_budget, reg_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [accountId, r[0], r[1], r[2], parseInt(r[3]) || 1, parseInt(r[4]) || 1, parseInt(r[5]) || 0, r[8] || '']
+      `INSERT INTO master_campaigns (account_id, customer_id, campaign_id, campaign_name, campaign_tp, delivery_method, use_daily_budget, daily_budget, user_lock, reg_time, use_period, period_start, period_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [accountId, r[0], r[1], r[2],
+       parseInt(r[3]) || 1, parseInt(r[4]) || 1, parseInt(r[5]) || 0,
+       parseInt(r[6]) || 0, parseInt(r[7]) || 0, r[8] || '',
+       parseInt(r[10]) || 0, r[11] || '', r[12] || '']
     );
   }
 }
 
 async function upsertMasterAdgroups(accountId, rows) {
   await pool.query('DELETE FROM master_adgroups WHERE account_id = $1', [accountId]);
-  // TSV 실제 컬럼 순서: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName, [4]..., [7]regTime
+  // Adgroup TSV: [0]customerId, [1]adgroupId, [2]campaignId, [3]name, [4]useDailyBudget,
+  //   [5]dailyBudget, [6]bidAmt, [7]regTime, [8]editTime, [9]userLock,
+  //   [10]useKeywordPlus, [11]keywordPlusWeight, ... [16]status, [17]statusReason
   for (const r of rows) {
     if (r.length < 4) continue;
     await pool.query(
-      `INSERT INTO master_adgroups (account_id, customer_id, adgroup_id, adgroup_name, campaign_id, use_daily_budget, reg_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [accountId, r[0], r[1], r[3] || '', r[2] || '', parseInt(r[4]) || 0, r[7] || '']
+      `INSERT INTO master_adgroups (account_id, customer_id, adgroup_id, adgroup_name, campaign_id, use_daily_budget, bid_amt, reg_time, user_lock, use_keyword_plus, keyword_plus_weight, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [accountId, r[0], r[1], r[3] || '', r[2] || '',
+       parseInt(r[4]) || 0, parseInt(r[6]) || 0, r[7] || '',
+       parseInt(r[9]) || 0, parseInt(r[10]) || 0, parseInt(r[11]) || 100,
+       r.length > 16 ? (r[16] || '') : '']
     );
   }
 }
 
 async function upsertMasterKeywords(accountId, rows) {
   await pool.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
-  // TSV 실제 컬럼 순서: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트), [4]bidAmt, [5]useGroupBid, [6]status, [7]regTime
+  // Keyword TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword, [4]bidAmt,
+  //   [5]useGroupBidAmt, [6]userLock, [7]inspectStatus, [8]status, [9]regTime,
+  //   [10]editTime, [11]pcLandingUrl, [12]moLandingUrl
   for (const r of rows) {
     if (r.length < 4) continue;
     try {
       await pool.query(
-        `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, status, reg_time)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [accountId, r[0], r[2], r[3] || '', r[1] || '', parseInt(r[4]) || 0, parseInt(r[5]) || 0, r[6] || '', r[7] || '']
+        `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, user_lock, inspect_status, status, reg_time, pc_landing_url, mo_landing_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [accountId, r[0], r[2], r[3] || '', r[1] || '',
+         parseInt(r[4]) || 0, parseInt(r[5]) || 0,
+         parseInt(r[6]) || 0, r[7] || '', r[8] || '', r[9] || '',
+         r[11] || '', r[12] || '']
       );
     } catch (e) {
-      // 중복 키워드 등 에러 시 skip (전체 실패 방지)
       if (!e.message.includes('duplicate')) console.log(`키워드 저장 실패: ${e.message}`);
     }
   }
+}
+
+/**
+ * Qi(품질지수) 마스터 동기화 → master_keywords.qi_grade 업데이트
+ * Qi TSV: [0]customerId, [1]keywordId, [2]qi(1~7)
+ */
+async function upsertMasterQi(accountId, rows) {
+  let updated = 0;
+  for (const r of rows) {
+    if (r.length < 3) continue;
+    const keywordId = r[1];
+    const qi = parseInt(r[2]) || 0;
+    if (qi <= 0) continue;
+    const result = await pool.query(
+      'UPDATE master_keywords SET qi_grade = $1 WHERE account_id = $2 AND keyword_id = $3',
+      [qi, accountId, keywordId]
+    );
+    if (result.rowCount > 0) updated++;
+  }
+  return updated;
 }
 
 async function getMasterCampaigns(accountId) {
@@ -531,6 +597,7 @@ async function buildKeywordMaps(accountId) {
       campaignId: ag.campaignId || '',
       campaignName: camp.name || '',
       campaignTp: camp.tp || 1,
+      qi: kw.qi_grade || 0,
     };
   }
 
@@ -659,13 +726,14 @@ async function queryStatsSummary(accountId, since, until) {
 
 /** 키워드 탭 */
 async function queryStatsKeywords(accountId, since, until) {
-  // 파워링크: keyword_id로 그룹핑, 키워드 텍스트 표시
+  // 파워링크: keyword_id로 그룹핑, 키워드 텍스트 + 품질지수(Qi) 표시
   const powerlink = await all(`
     SELECT d.keyword_id, d.adgroup_id, d.campaign_id,
            CASE WHEN d.keyword_id = '-' THEN COALESCE(ma.adgroup_name, d.adgroup_id) ELSE COALESCE(mk.keyword, d.keyword_id) END AS keyword,
            COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
            COALESCE(mc.campaign_tp, 1) AS "campaignTp",
            COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+           COALESCE(mk.qi_grade, 0)::int AS "qiGrade",
            COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
            COALESCE(SUM(d.cost),0)::bigint AS cost,
            COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
@@ -676,7 +744,7 @@ async function queryStatsKeywords(accountId, since, until) {
     LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
     WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
       AND (mc.campaign_tp IS NULL OR mc.campaign_tp != 2)
-    GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, mk.keyword, mc.campaign_name, mc.campaign_tp, ma.adgroup_name
+    GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, mk.keyword, mc.campaign_name, mc.campaign_tp, ma.adgroup_name, mk.qi_grade
     ORDER BY SUM(d.cost) DESC
   `, [accountId, since, until]);
 
@@ -820,7 +888,7 @@ module.exports = Object.assign(module.exports, {
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount,
   resetAdminPassword, deleteAllUsers,
-  updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords,
+  updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords, upsertMasterQi,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
   getShoppingBidKeywords, upsertShoppingBidKeyword, deleteShoppingBidKeyword, updateShoppingBidKeywordStatus, getEnabledShoppingBidKeywords,

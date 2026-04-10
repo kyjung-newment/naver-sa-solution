@@ -416,8 +416,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
     // ── 캠페인 유형별 ──
     const emptyMetric = { cost: 0, imp: 0, clk: 0, cpc: 0, ctr: 0, avgRank: 0, purchaseCnt: 0, purchaseAmt: 0, roas: 0, cartCnt: 0, cartAmt: 0 };
     const ctMap = data.byCampaignType || {};
-    // 필수 유형 보장: 쇼핑검색, 파워링크, 브랜드검색
-    const requiredTypes = ['쇼핑검색', '파워링크', '브랜드검색'];
+    // 필수 유형 보장: 파워링크, 쇼핑검색, 브랜드검색, 파워콘텐츠
+    const requiredTypes = ['파워링크', '쇼핑검색', '브랜드검색', '파워콘텐츠'];
     for (const tp of requiredTypes) {
       if (!ctMap[tp]) ctMap[tp] = { ...emptyMetric };
     }
