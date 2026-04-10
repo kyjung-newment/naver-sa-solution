@@ -57,13 +57,11 @@ async function syncAccountDate(account, date) {
     return [...cols.slice(0, 5), '', '', ...cols.slice(5)];
   }
 
+  // AD_DETAIL에 이미 전체 성과 데이터(파워링크+쇼핑 포함)가 있으므로
+  // SHOPPINGKEYWORD_DETAIL은 총합에 병합하지 않음 (이전 버그: keywordId='-' 필터가 파워링크 데이터도 제거)
+  // SHOPPINGKEYWORD_DETAIL은 키워드별 분석용으로만 사용 (리포트 generator에서 처리)
   if (shopKwRows.length > 0) {
-    const remapped = shopKwRows.map(remapShoppingRow);
-    adRows = [...adRows.filter(cols => cols[4] !== '-'), ...remapped];
-  }
-  if (shopConvRows.length > 0) {
-    const remapped = shopConvRows.map(remapShoppingRow);
-    convRows = [...convRows.filter(cols => cols[4] !== '-'), ...remapped];
+    console.log(`  📋 SHOPPINGKEYWORD_DETAIL ${shopKwRows.length}행 (키워드 분석 전용, 총합 미반영)`);
   }
 
   // 3. 전환 데이터 lookup 맵 빌드

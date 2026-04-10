@@ -76,11 +76,17 @@ function remapShoppingRow(cols) {
 
 /**
  * AD_DETAIL + AD_CONVERSION_DETAIL 데이터를 수집하여 다차원 집계
+ *
+ * 핵심: AD_DETAIL은 전체 성과(총합) 용도로 필터 없이 사용하고,
+ * SHOPPINGKEYWORD_DETAIL은 쇼핑 키워드별 분석 용도로만 별도 저장한다.
+ * (이전에는 keywordId='-' 행을 모두 제거해 파워링크+쇼핑 데이터 손실이 발생)
  */
 async function collectDetailData(client, dateRange) {
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const rawAdDetail = [];
   const rawConvDetail = [];
+  const rawShopKwDetail = [];
+  const rawShopConvDetail = [];
 
   // 날짜별 3개씩 병렬 처리 (API 부하 완화 + 속도 개선)
   const BATCH_SIZE = 3;
@@ -95,37 +101,43 @@ async function collectDetailData(client, dateRange) {
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
         ]);
 
-        let adRows = adResult.status === 'fulfilled' ? adResult.value : [];
+        // AD_DETAIL: 전체 성과 데이터 (파워링크+쇼핑 모두 포함, 필터 없음)
+        const adRows = adResult.status === 'fulfilled' ? adResult.value : [];
         if (adResult.status === 'rejected') console.log(`AD_DETAIL 실패 (${dt}):`, adResult.reason?.message);
 
-        let convRows = convResult.status === 'fulfilled' ? convResult.value : [];
+        // AD_CONVERSION_DETAIL: 전체 전환 데이터 (필터 없음)
+        const convRows = convResult.status === 'fulfilled' ? convResult.value : [];
 
-        // SHOPPINGKEYWORD 데이터 리매핑 (13열 → 15열 AD_DETAIL 포맷 맞춤)
+        // SHOPPINGKEYWORD_DETAIL: 쇼핑 키워드별 분석 전용 (리매핑만, 총합에는 미반영)
+        let shopKwRows = [];
         if (shopResult.status === 'fulfilled' && shopResult.value.length > 0) {
-          const remapped = shopResult.value.map(remapShoppingRow);
-          adRows = [...adRows.filter(r => r[4] !== '-'), ...remapped];
-        }
-        if (shopConvResult.status === 'fulfilled' && shopConvResult.value.length > 0) {
-          const remapped = shopConvResult.value.map(remapShoppingRow);
-          convRows = [...convRows.filter(r => r[4] !== '-'), ...remapped];
+          shopKwRows = shopResult.value.map(remapShoppingRow);
         }
 
-        return { dt, adRows, convRows };
+        // SHOPPINGKEYWORD_CONVERSION_DETAIL: 쇼핑 키워드별 전환 전용
+        let shopConvRows = [];
+        if (shopConvResult.status === 'fulfilled' && shopConvResult.value.length > 0) {
+          shopConvRows = shopConvResult.value.map(remapShoppingRow);
+        }
+
+        return { dt, adRows, convRows, shopKwRows, shopConvRows };
       })
     );
 
     for (const result of batchResults) {
       if (result.status === 'fulfilled') {
-        const { dt, adRows, convRows } = result.value;
+        const { dt, adRows, convRows, shopKwRows, shopConvRows } = result.value;
         rawAdDetail.push(...adRows.map(r => ({ date: dt, cols: r })));
         rawConvDetail.push(...convRows.map(r => ({ date: dt, cols: r })));
+        rawShopKwDetail.push(...shopKwRows.map(r => ({ date: dt, cols: r })));
+        rawShopConvDetail.push(...shopConvRows.map(r => ({ date: dt, cols: r })));
       } else {
         console.log(`배치 처리 실패:`, result.reason?.message);
       }
     }
   }
 
-  return { rawAdDetail, rawConvDetail };
+  return { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail };
 }
 
 /**
@@ -168,7 +180,7 @@ function getPrevDateRange(type, dateRange) {
  * 6:channelId, 7:hour, 8:code, 9:queryId, 10:device, 11:directFlag,
  * 12:convType, 13:convCnt, 14:convAmt
  */
-function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap) {
+function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail) {
   campTypeMap = campTypeMap || {};
   kwNameMap = kwNameMap || {};
 
@@ -191,17 +203,16 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   // 전환 데이터를 캠페인/광고그룹/디바이스/시간별/키워드별 집계
   const convMap = {}; // key → { purchaseCnt, purchaseAmt, cartCnt, cartAmt }
   const convTypeSet = new Set(); // 디버깅: 실제 convType 값 수집
-  for (const { cols } of rawConvDetail) {
-    if (cols.length < 13) continue; // 최소 13열 (리매핑 전 shopping 행도 처리)
+  for (const { date: convDate, cols } of rawConvDetail) {
+    if (cols.length < 15) continue;
     const campaignId = cols[2];
     const adgroupId = cols[3];
     const keywordId = cols[4];
-    // 15열 포맷 기준 인덱스
-    const device = cols.length >= 15 ? (cols[10] === 'P' ? 'PC' : 'MO') : (cols[8] === 'P' ? 'PC' : 'MO');
-    const hour = cols.length >= 15 ? (parseInt(cols[7]) || 0) : (parseInt(cols[5]) || 0);
-    const convType = cols.length >= 15 ? cols[12] : cols[10];
-    const cnt = cols.length >= 15 ? (parseInt(cols[13]) || 0) : (parseInt(cols[11]) || 0);
-    const amt = cols.length >= 15 ? (parseInt(cols[14]) || 0) : (parseInt(cols[12]) || 0);
+    const device = cols[10] === 'P' ? 'PC' : 'MO';
+    const hour = parseInt(cols[7]) || 0;
+    const convType = cols[12];
+    const cnt = parseInt(cols[13]) || 0;
+    const amt = parseInt(cols[14]) || 0;
     const campType = getCampTypeLabel(campaignId);
 
     convTypeSet.add(convType);
@@ -221,6 +232,7 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
       convKwKey,
       `campType:${campType}`,
       `total`,
+      `date:${convDate}`,
     ];
     for (const key of keys) {
       if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
@@ -233,6 +245,24 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
       }
     }
   }
+  // SHOPPINGKEYWORD_CONVERSION_DETAIL → 쇼핑 키워드별 전환만 convMap에 추가 (kw: 키만)
+  for (const { cols } of (rawShopConvDetail || [])) {
+    if (cols.length < 15) continue;
+    const keywordId = cols[4];
+    if (!keywordId || keywordId === '-' || keywordId === '') continue;
+    const convType = cols[12];
+    const cnt = parseInt(cols[13]) || 0;
+    const amt = parseInt(cols[14]) || 0;
+    const convTypeLower = (convType || '').toLowerCase();
+    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
+      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
+    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
+    const key = `kw:${keywordId}`;
+    if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
+    if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
+    else if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
+  }
+
   if (convTypeSet.size > 0) console.log(`  📊 전환 타입 목록: ${[...convTypeSet].join(', ')}`);
   if (rawConvDetail.length > 0) console.log(`  📊 전환 행 수: ${rawConvDetail.length}, convMap keys: ${Object.keys(convMap).length}`);
 
@@ -325,6 +355,32 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     if (rank > 0) { byDate[date].rankSum += rank * imp; byDate[date].rankCount += imp; }
   }
 
+  // SHOPPINGKEYWORD_DETAIL → 쇼핑 키워드별 성과 (키워드 분석용으로만 사용, 총합에 미반영)
+  for (const { date, cols } of (rawShopKwDetail || [])) {
+    if (cols.length < 15) continue;
+    const campaignId = cols[2];
+    const adgroupId = cols[3];
+    const keywordId = cols[4];
+    if (!keywordId || keywordId === '-' || keywordId === '0' || keywordId === '') continue;
+    const imp = parseInt(cols[11]) || 0;
+    const clk = parseInt(cols[12]) || 0;
+    const cost = parseInt(cols[13]) || 0;
+    const rank = parseFloat(cols[14]) || 0;
+    const campType = getCampTypeLabel(campaignId);
+    const kwKey = `kw:${keywordId}`;
+    if (!byKeyword[kwKey]) byKeyword[kwKey] = {
+      name: kwNameMap[keywordId] || keywordId,
+      campaignName: campNameMap[campaignId] || '',
+      adgroupName: agNameMap[adgroupId] || '',
+      campaignType: campType,
+      imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0,
+    };
+    byKeyword[kwKey].imp += imp;
+    byKeyword[kwKey].clk += clk;
+    byKeyword[kwKey].cost += cost;
+    if (rank > 0) { byKeyword[kwKey].rankSum += rank * imp; byKeyword[kwKey].rankCount += imp; }
+  }
+
   // 계산 필드 추가 헬퍼
   function enrich(obj, convKey) {
     const conv = convMap[convKey] || { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
@@ -346,7 +402,7 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   Object.keys(byKeyword).forEach(k => enrich(byKeyword[k], k));
   Object.keys(byDevice).forEach(k => enrich(byDevice[k], `device:${k}`));
   Object.keys(byHour).forEach(k => enrich(byHour[k], `hour:${parseInt(k)}`));
-  Object.keys(byDate).forEach(k => enrich(byDate[k], ''));
+  Object.keys(byDate).forEach(k => enrich(byDate[k], `date:${k}`));
 
   return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate };
 }
@@ -399,11 +455,11 @@ async function generateAndSend(account, type) {
       console.log('  ⚠️ 마스터 리포트 매핑 실패:', e.message);
     }
 
-    // 2. AD_DETAIL + AD_CONVERSION_DETAIL 수집
-    const { rawAdDetail, rawConvDetail } = await collectDetailData(client, dateRange);
+    // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
+    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
 
     // 3. 다차원 집계
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail);
 
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     let prevData = null;
@@ -412,9 +468,9 @@ async function generateAndSend(account, type) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
       try {
-        const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, prevRange);
-        prevData = aggregateData(pAd, pConv, campNameMap, agNameMap, campTypeMap, kwNameMap);
-        console.log(`  ✅ ${prevLabel} 데이터 완료: ${pAd.length}건`);
+        const prev = await collectDetailData(client, prevRange);
+        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail);
+        console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
       } catch (e) {
         console.log(`  ⚠️ ${prevLabel} 데이터 실패:`, e.message);
       }
@@ -468,16 +524,16 @@ async function generatePreview(account, type) {
     for (const r of kwRows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
   } catch (e) {}
 
-  const { rawAdDetail, rawConvDetail } = await collectDetailData(client, dateRange);
-  const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap);
+  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
+  const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail);
 
   // 이전 기간 (일간/주간/월간 모두)
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
     try {
-      const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, prevRange);
-      prevData = aggregateData(pAd, pConv, campNameMap, agNameMap, campTypeMap, kwNameMap);
+      const prev = await collectDetailData(client, prevRange);
+      prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail);
     } catch (e) {}
   }
 

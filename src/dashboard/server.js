@@ -2527,28 +2527,29 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       fetchAllStatRows(client, account.customer_id, 'SHOPPINGKEYWORD_DETAIL', dateRange),
       fetchAllStatRows(client, account.customer_id, 'SHOPPINGKEYWORD_CONVERSION_DETAIL', dateRange),
     ]);
-    let adRows = adRes.status === 'fulfilled' ? adRes.value : [];
-    let convRows = convRes.status === 'fulfilled' ? convRes.value : [];
-    if (shopRes.status === 'fulfilled' && shopRes.value.length > 0) {
-      adRows = [...adRows.filter(r => r.cols[4] !== '-'), ...shopRes.value];
-    }
-    if (shopConvRes.status === 'fulfilled' && shopConvRes.value.length > 0) {
-      convRows = [...convRows.filter(r => r.cols[4] !== '-'), ...shopConvRes.value];
-    }
+    // AD_DETAIL: 파워링크 키워드 분석용 (keywordId != '-' 행만)
+    // SHOPPINGKEYWORD_DETAIL: 쇼핑 키워드 분석용
+    // (이전 버그: keywordId='-' 필터가 파워링크 데이터까지 제거)
+    const adRows = adRes.status === 'fulfilled' ? adRes.value : [];
+    const convRows = convRes.status === 'fulfilled' ? convRes.value : [];
+    const shopKwRows = shopRes.status === 'fulfilled' ? shopRes.value : [];
+    const shopConvRows = shopConvRes.status === 'fulfilled' ? shopConvRes.value : [];
 
     const byKw = {};
+    // 파워링크 키워드 (AD_DETAIL에서 keywordId가 실제 키워드인 행)
     for (const { cols } of adRows) {
       if (cols.length < 15) continue;
       const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
+      if (!kwId || kwId === '-' || kwId === '0' || kwId === '') continue;
       const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
-      // 쇼핑검색: SHOPPINGKEYWORD_DETAIL 사용 시 kwId가 검색어 텍스트
+      if (campTp === 2) continue; // 쇼핑검색은 SHOPPINGKEYWORD_DETAIL에서 처리
       const groupKey = `kw:${kwId}`;
       if (!byKw[groupKey]) {
         const info = kwMap[kwId] || {};
         const agInfo = agMap[agId] || {};
         byKw[groupKey] = {
           keywordId: kwId,
-          keyword: (campTp === 2) ? kwId : (info.keyword || kwId),
+          keyword: info.keyword || kwId,
           campaignTp: campTp,
           campaignName: info.campaignName || campMap[campId]?.name || '',
           adgroupName: info.adgroupName || agInfo.name || '',
@@ -2559,14 +2560,53 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].clk += parseInt(cols[12]) || 0;
       byKw[groupKey].cost += parseInt(cols[13]) || 0;
     }
+    // 쇼핑 키워드 (SHOPPINGKEYWORD_DETAIL)
+    for (const { cols } of shopKwRows) {
+      if (cols.length < 13) continue;
+      const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
+      if (!kwId || kwId === '-' || kwId === '') continue;
+      const groupKey = `kw:${kwId}`;
+      if (!byKw[groupKey]) {
+        const agInfo = agMap[agId] || {};
+        byKw[groupKey] = {
+          keywordId: kwId,
+          keyword: kwId,
+          campaignTp: 2,
+          campaignName: campMap[campId]?.name || '',
+          adgroupName: agInfo.name || '',
+          imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
+        };
+      }
+      // SHOPPINGKEYWORD_DETAIL: [0]date [1]custId [2]campId [3]agId [4]kwId [5]hour [6]code [7]queryGrpId [8]device [9]imp [10]clk [11]cost [12]rank
+      byKw[groupKey].imp += parseInt(cols[9]) || 0;
+      byKw[groupKey].clk += parseInt(cols[10]) || 0;
+      byKw[groupKey].cost += parseInt(cols[11]) || 0;
+    }
+    // 파워링크 전환 (AD_CONVERSION_DETAIL)
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
-      const campId = cols[2]; const kwId = cols[4]; const convType = cols[12];
-      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const kwId = cols[4]; const convType = cols[12];
+      if (!kwId || kwId === '-') continue;
+      const convTypeLower = (convType || '').toLowerCase();
+      if (convTypeLower !== 'purchase' && convTypeLower !== 'purchase_complete' && convTypeLower !== 'complete_purchase'
+        && convTypeLower !== 'conversion' && convTypeLower !== 'conv' && convTypeLower !== '1') continue;
       const groupKey = `kw:${kwId}`;
       if (!byKw[groupKey]) continue;
       byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
       byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
+    }
+    // 쇼핑 전환 (SHOPPINGKEYWORD_CONVERSION_DETAIL)
+    for (const { cols } of shopConvRows) {
+      if (cols.length < 13) continue;
+      const kwId = cols[4]; const convType = cols[10];
+      if (!kwId || kwId === '-') continue;
+      const convTypeLower = (convType || '').toLowerCase();
+      if (convTypeLower !== 'purchase' && convTypeLower !== 'purchase_complete' && convTypeLower !== 'complete_purchase'
+        && convTypeLower !== 'conversion' && convTypeLower !== 'conv' && convTypeLower !== '1') continue;
+      const groupKey = `kw:${kwId}`;
+      if (!byKw[groupKey]) continue;
+      byKw[groupKey].purchaseCnt += parseInt(cols[11]) || 0;
+      byKw[groupKey].purchaseAmt += parseInt(cols[12]) || 0;
     }
 
     const allKw = Object.values(byKw).map(kw => ({ ...kw, ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0, cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0, roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0 }));
