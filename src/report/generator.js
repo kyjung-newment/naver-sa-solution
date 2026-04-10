@@ -420,35 +420,13 @@ async function generateAndSend(account, type) {
       }
     }
 
-    // 5. 성별/연령 데이터 수집 (쿠키가 있는 경우만)
-    let demographics = null;
-    if (account.naver_cookie && (type === 'weekly' || type === 'monthly')) {
-      try {
-        const { fetchDemographicData } = require('../api/naverApi');
-        const [genderResult, ageResult] = await Promise.allSettled([
-          fetchDemographicData(account.customer_id, account.naver_cookie, dateRange, 'gender'),
-          fetchDemographicData(account.customer_id, account.naver_cookie, dateRange, 'age'),
-        ]);
-        demographics = {
-          gender: genderResult.status === 'fulfilled' ? genderResult.value : [],
-          age: ageResult.status === 'fulfilled' ? ageResult.value : [],
-        };
-        if (demographics.gender.length || demographics.age.length) {
-          console.log(`  👫 성별/연령 데이터: 성별 ${demographics.gender.length}건, 연령 ${demographics.age.length}건`);
-        }
-      } catch (e) {
-        console.log(`  ⚠️ 성별/연령 데이터 실패:`, e.message);
-      }
-    }
-
-    // 6. 리포트 발송
+    // 5. 리포트 발송
     await sendReport({
       account,
       type,
       period,
       data,
       prevData,
-      demographics,
     });
 
     console.log(`✅ [${account.name}] ${type.toUpperCase()} 완료`);

@@ -119,9 +119,21 @@ async function adjustBidForKeyword(client, abKw, siteUrls, rankCache) {
     let action = '유지';
 
     if (realRank === 0) {
-      // 순위밖 → 입찰가 상향
-      newBid = Math.min(currentBid + adjust_amt, max_bid);
-      action = '순위밖→상향';
+      // 순위 조회 실패 또는 순위밖
+      // ⚠️ 이전에 목표순위를 달성한 상태였으면 스크래퍼 실패로 간주 → 입찰가 유지
+      const lastRank = abKw.last_rank || 0;
+      if (lastRank > 0 && lastRank <= target_rank) {
+        // 이전에 목표 달성/초과 상태 → 스크래퍼 오류로 판단, 입찰가 유지
+        action = `순위조회실패→유지(이전${lastRank}위)`;
+        console.log(`  ⚠️ [${keyword}] ${device} 순위조회 실패 but 이전순위 ${lastRank}위(목표:${target_rank}위) → 입찰가 유지 ₩${currentBid}`);
+      } else if (currentBid >= max_bid) {
+        // 이미 최대입찰가 도달 → 더 이상 상향하지 않음
+        action = `순위밖+최대입찰가→유지`;
+        console.log(`  ⚠️ [${keyword}] ${device} 순위밖 but 이미 최대입찰가 ₩${max_bid} → 유지`);
+      } else {
+        newBid = Math.min(currentBid + adjust_amt, max_bid);
+        action = '순위밖→상향';
+      }
     } else if (realRank > target_rank) {
       // 현재순위가 목표보다 낮음 (예: 5위인데 3위 원함) → 상향
       newBid = Math.min(currentBid + adjust_amt, max_bid);

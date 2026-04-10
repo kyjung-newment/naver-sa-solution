@@ -1,16 +1,16 @@
 {
   "version": 2,
   "regions": ["icn1"],
-  "builds": [
-    {
-      "src": "src/index.js",
-      "use": "@vercel/node"
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 300,
+      "includeFiles": "src/**,config/**,public/**,node_modules/**"
     }
-  ],
-  "routes": [
+  },
+  "rewrites": [
     {
-      "src": "/(.*)",
-      "dest": "src/index.js"
+      "source": "/(.*)",
+      "destination": "/api/index.js"
     }
   ],
   "crons": [
@@ -19,16 +19,20 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/smart-sa/api/cron/shopping-autobid",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/smart-sa/api/cron/sync-dashboard",
-      "schedule": "0 16 * * *"
+      "schedule": "0 23 * * *"
     },
     {
       "path": "/smart-sa/api/cron/sync-backfill",
-      "schedule": "30 16 * * *"
+      "schedule": "30 23 * * *"
     },
     {
       "path": "/smart-sa/api/cron/daily",
-      "schedule": "0 23 * * *"
+      "schedule": "0 0 * * *"
     },
     {
       "path": "/smart-sa/api/cron/weekly",

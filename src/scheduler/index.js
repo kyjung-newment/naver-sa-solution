@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { config } = require('../../config');
 const { generateAndSend } = require('../report/generator');
 const { runAutoBiddingForAccount } = require('./autoBid');
+const { runShoppingAutoBidForAccount } = require('./shoppingAutoBid');
 const db = require('../db/database');
 
 function startScheduler() {
@@ -31,8 +32,7 @@ function startScheduler() {
   }, { timezone: 'Asia/Seoul' });
   console.log(`  ✅ 월간 리포트: ${config.cron.monthly}`);
 
-  // ── 자동입찰 (각 광고주별 설정 간격) ────────────────────────
-  // 1분마다 자동입찰 ON 계정 조회 후 각 계정의 interval 확인
+  // ── 파워링크 자동입찰 (각 광고주별 설정 간격) ────────────────
   cron.schedule('* * * * *', async () => {
     const accounts = await db.getAllAccountsWithFeature('auto_bidding');
     const now = Date.now();
@@ -45,7 +45,16 @@ function startScheduler() {
       }
     }
   }, { timezone: 'Asia/Seoul' });
-  console.log('  ✅ 자동입찰: 활성 광고주별 개별 간격\n');
+  console.log('  ✅ 파워링크 자동입찰: 활성 광고주별 개별 간격');
+
+  // ── 쇼핑검색 자동입찰 (5분마다) ──────────────────────────────
+  cron.schedule('*/5 * * * *', async () => {
+    const accounts = await db.getAllAccountsWithFeature('shopping_auto_bidding');
+    for (const account of accounts) {
+      runShoppingAutoBidForAccount(account).catch(console.error);
+    }
+  }, { timezone: 'Asia/Seoul' });
+  console.log('  ✅ 쇼핑검색 자동입찰: 5분 간격\n');
 }
 
 const autoBidLastRun = new Map();

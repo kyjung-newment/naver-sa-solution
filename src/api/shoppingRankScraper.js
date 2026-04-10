@@ -43,12 +43,14 @@ async function getShoppingAds(keyword, device = 'PC') {
 
     const $ = cheerio.load(response.data);
 
-    // PC: #shp_dui_root / MO: #shp_lis_root
-    let section = $('#shp_dui_root');
+    // PC: #shp_gui_root (구: #shp_dui_root) / MO: #shp_tli_root (구: #shp_lis_root)
+    let section = $('#shp_gui_root');
+    if (section.length === 0) section = $('#shp_dui_root');
+    if (section.length === 0) section = $('#shp_tli_root');
     if (section.length === 0) section = $('#shp_lis_root');
     if (section.length === 0) {
       // fallback: data-slog-container로 찾기
-      section = $('[data-slog-container="shp_dui"], [data-slog-container="shp_lis"]');
+      section = $('[data-slog-container*="shp_"]');
     }
 
     if (section.length === 0) {

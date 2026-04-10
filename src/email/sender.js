@@ -125,7 +125,7 @@ function section(title, icon, content) {
 }
 
 // ─── 메인 HTML 리포트 빌더 ─────────────────────────────────────────
-function buildHtmlReport({ type, period, accountName, data, prevData, demographics }) {
+function buildHtmlReport({ type, period, accountName, data, prevData }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
   const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
   const t = data.total;
@@ -514,71 +514,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData, demographi
   html += section('핵심 인사이트 요약', '💡', insights);
 
   // ══════════════════════════════════════════════════════════════
-  // 9. 성별/연령 데이터 (주간/월간 only, demographics 있을 때)
-  // ══════════════════════════════════════════════════════════════
-  if (demographics && (type === 'weekly' || type === 'monthly')) {
-    const genderOrder = ['남성','여성','알수없음'];
-    const genderColors = {'남성':'#3b82f6','여성':'#ec4899','알수없음':'#94a3b8'};
-
-    // 성별 섹션
-    if (demographics.gender && demographics.gender.length > 0) {
-      const gData = [...demographics.gender].sort((a,b) => {
-        const ai = genderOrder.indexOf(a.label), bi = genderOrder.indexOf(b.label);
-        return (ai===-1?99:ai) - (bi===-1?99:bi);
-      });
-      const gTotal = gData.reduce((s,d) => s+(d.cost||0), 0) || 1;
-      let gHtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f3f4f6">';
-      ['성별','노출','클릭','CTR','총비용','비중','전환수','전환매출'].forEach(h => {
-        gHtml += `<th style="padding:8px;text-align:${h==='성별'?'left':'right'};border-bottom:1px solid #e5e7eb;font-size:11px">${h}</th>`;
-      });
-      gHtml += '</tr></thead><tbody>';
-      gData.forEach(d => {
-        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2)+'%' : '0%';
-        const color = genderColors[d.label] || '#374151';
-        gHtml += `<tr><td style="padding:8px;font-weight:600;color:${color};border-bottom:1px solid #f3f4f6">${d.label}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.imp)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.clk)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${ctr}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.won(d.cost)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${(d.cost/gTotal*100).toFixed(1)}%</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.convCnt)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.won(d.convAmt)}</td></tr>`;
-      });
-      gHtml += '</tbody></table>';
-      html += section('성별 성과', '👫', gHtml);
-    }
-
-    // 연령대 섹션
-    if (demographics.age && demographics.age.length > 0) {
-      const aData = [...demographics.age].sort((a,b) => {
-        if (a.label === '알수없음') return 1;
-        if (b.label === '알수없음') return -1;
-        return (parseInt(b.label)||0) - (parseInt(a.label)||0);
-      });
-      const aTotal = aData.reduce((s,d) => s+(d.cost||0), 0) || 1;
-      let aHtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f3f4f6">';
-      ['연령대','노출','클릭','CTR','총비용','비중','전환수','전환매출'].forEach(h => {
-        aHtml += `<th style="padding:8px;text-align:${h==='연령대'?'left':'right'};border-bottom:1px solid #e5e7eb;font-size:11px">${h}</th>`;
-      });
-      aHtml += '</tr></thead><tbody>';
-      aData.forEach(d => {
-        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2)+'%' : '0%';
-        aHtml += `<tr><td style="padding:8px;font-weight:600;border-bottom:1px solid #f3f4f6">${d.label}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.imp)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.clk)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${ctr}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.won(d.cost)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${(d.cost/aTotal*100).toFixed(1)}%</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.num(d.convCnt)}</td>`
-          + `<td style="padding:8px;text-align:right;border-bottom:1px solid #f3f4f6">${f.won(d.convAmt)}</td></tr>`;
-      });
-      aHtml += '</tbody></table>';
-      html += section('연령대별 성과', '📊', aHtml);
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // 10. 푸터
+  // 9. 푸터
   // ══════════════════════════════════════════════════════════════
   html += `
 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:0 0 14px 14px;padding:14px 20px;text-align:center">
@@ -594,7 +530,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData, demographi
 const { buildExcelReport } = require('./excelReport');
 
 // ─── 이메일 발송 ────────────────────────────────────────────────────
-async function sendReport({ account, type, period, data, prevData, demographics }) {
+async function sendReport({ account, type, period, data, prevData }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
   const today = new Date().toLocaleDateString('ko-KR');
   const recipients = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
@@ -608,12 +544,12 @@ async function sendReport({ account, type, period, data, prevData, demographics 
     return;
   }
 
-  const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData, demographics });
+  const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData });
 
   // 엑셀 리포트 생성
   let excelBuffer = null;
   try {
-    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, demographics });
+    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData });
     console.log(`📊 [${account.name}] 엑셀 리포트 생성 완료 (${Math.round(excelBuffer.length / 1024)}KB)`);
   } catch (e) {
     console.warn(`⚠️ [${account.name}] 엑셀 리포트 생성 실패:`, e.message);

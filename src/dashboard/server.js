@@ -1298,14 +1298,6 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             <label>리포트 수신 이메일 (쉼표로 구분)</label>
             <input name="report_emails" value="${v('report_emails')}" placeholder="a@a.com,b@b.com">
           </div>
-          <div class="form-group">
-            <label>네이버 광고관리 쿠키 (성별/연령 데이터 조회용, 선택사항)</label>
-            <textarea name="naver_cookie" rows="3" placeholder="네이버 광고관리 시스템(ads.naver.com) 로그인 후 브라우저 개발자도구 > Application > Cookies에서 복사" style="font-size:11px;font-family:monospace">${v('naver_cookie')}</textarea>
-            <p style="font-size:11px;color:#94a3b8;margin-top:4px">
-              📋 설정방법: ads.naver.com 로그인 → F12 → Application → Cookies → 모든 쿠키값 복사 붙여넣기<br>
-              ⚠️ 쿠키는 주기적으로 만료됩니다. 성별/연령 데이터가 안 나오면 쿠키를 갱신해주세요.
-            </p>
-          </div>
         </div>
       </div>
 
@@ -2063,112 +2055,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         tabLoaded.target = true;
         renderDeviceTab(json);
-        // 성별/연령 데이터 비동기 로딩
-        loadDemographics();
       } catch(e) { wrap.innerHTML = '<div class="empty">타겟별 조회 실패: '+e.message+'</div>'; }
-    }
-
-    async function loadDemographics() {
-      const genderWrap = document.getElementById('demo-gender-content');
-      const ageWrap = document.getElementById('demo-age-content');
-      if (!genderWrap || !ageWrap) return;
-      genderWrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 성별 데이터 조회 중...</div>';
-      ageWrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 연령대 데이터 조회 중...</div>';
-      try {
-        const res = await fetch('/smart-sa/api/tab/demographics?'+periodParams());
-        const json = await res.json();
-        if (!json.ok) throw new Error(json.error);
-        renderGenderSection(json.gender || []);
-        renderAgeSection(json.age || []);
-      } catch(e) {
-        const msg = '<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px">'+e.message+'</div>';
-        genderWrap.innerHTML = msg;
-        ageWrap.innerHTML = msg;
-      }
-    }
-
-    function renderGenderSection(data) {
-      const wrap = document.getElementById('demo-gender-content');
-      if (!data.length) { wrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8">성별 데이터가 없습니다.</div>'; return; }
-      const genderOrder = ['남성','여성','알수없음'];
-      data.sort((a,b) => {
-        const ai = genderOrder.indexOf(a.label), bi = genderOrder.indexOf(b.label);
-        return (ai===-1?99:ai) - (bi===-1?99:bi);
-      });
-      const totalCost = data.reduce((s,d) => s+(d.cost||0), 0) || 1;
-      const totalClk = data.reduce((s,d) => s+(d.clk||0), 0) || 1;
-      const colors = {'남성':'#3b82f6','여성':'#ec4899','알수없음':'#94a3b8'};
-      const icons = {'남성':'♂️','여성':'♀️','알수없음':'❓'};
-      // 비율 바
-      let html = '<div style="display:flex;height:28px;border-radius:8px;overflow:hidden;margin-bottom:16px">';
-      data.forEach(d => {
-        const pct = (d.cost/totalCost*100).toFixed(0);
-        const color = colors[d.label] || '#64748b';
-        html += '<div style="width:'+pct+'%;background:'+color+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;min-width:40px">'+(icons[d.label]||'')+' '+d.label+' '+pct+'%</div>';
-      });
-      html += '</div>';
-      // 테이블
-      html += '<table style="table-layout:auto"><thead><tr><th>성별</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">비용비중</th><th style="text-align:right">전환수</th><th style="text-align:right">전환매출</th></tr></thead><tbody>';
-      data.forEach(d => {
-        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2) : '0.00';
-        const costPct = (d.cost/totalCost*100).toFixed(1);
-        html += '<tr><td style="font-weight:600;color:'+(colors[d.label]||'#333')+'">'+(icons[d.label]||'')+' '+d.label+'</td>'
-          +'<td style="text-align:right">'+num(d.imp)+'</td>'
-          +'<td style="text-align:right">'+num(d.clk)+'</td>'
-          +'<td style="text-align:right">'+ctr+'%</td>'
-          +'<td style="text-align:right">'+won(d.cost)+'</td>'
-          +'<td style="text-align:right">'+costPct+'%</td>'
-          +'<td style="text-align:right">'+num(d.convCnt)+'</td>'
-          +'<td style="text-align:right">'+won(d.convAmt)+'</td></tr>';
-      });
-      html += '</tbody></table>';
-      wrap.innerHTML = html;
-    }
-
-    function renderAgeSection(data) {
-      const wrap = document.getElementById('demo-age-content');
-      if (!data.length) { wrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8">연령대 데이터가 없습니다.</div>'; return; }
-      // 연령대 내림차순 정렬, 알수없음은 마지막
-      data.sort((a,b) => {
-        if (a.label === '알수없음') return 1;
-        if (b.label === '알수없음') return -1;
-        // 숫자 추출하여 내림차순
-        const na = parseInt(a.label) || 0, nb = parseInt(b.label) || 0;
-        return nb - na;
-      });
-      const totalCost = data.reduce((s,d) => s+(d.cost||0), 0) || 1;
-      const maxCost = Math.max(...data.map(d => d.cost||0), 1);
-      const ageColors = ['#8b5cf6','#7c3aed','#6d28d9','#5b21b6','#4c1d95','#3b0764','#94a3b8'];
-      // 바 차트
-      let html = '<div style="margin-bottom:16px">';
-      data.forEach((d,i) => {
-        const pct = (d.cost/totalCost*100).toFixed(1);
-        const barW = (d.cost/maxCost*100).toFixed(0);
-        const color = i < ageColors.length ? ageColors[i] : '#64748b';
-        html += '<div style="display:flex;align-items:center;margin-bottom:6px">'
-          +'<div style="width:80px;font-size:12px;font-weight:600;color:#374151">'+d.label+'</div>'
-          +'<div style="flex:1;height:20px;background:#f1f5f9;border-radius:4px;overflow:hidden">'
-          +'<div style="width:'+barW+'%;height:100%;background:'+color+';border-radius:4px;display:flex;align-items:center;justify-content:flex-end;padding-right:6px">'
-          +'<span style="color:#fff;font-size:10px;font-weight:600">'+pct+'%</span></div></div>'
-          +'<div style="width:100px;text-align:right;font-size:12px;color:#64748b">'+won(d.cost)+'</div></div>';
-      });
-      html += '</div>';
-      // 테이블
-      html += '<table style="table-layout:auto"><thead><tr><th>연령대</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">비용비중</th><th style="text-align:right">전환수</th><th style="text-align:right">전환매출</th></tr></thead><tbody>';
-      data.forEach(d => {
-        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2) : '0.00';
-        const costPct = (d.cost/totalCost*100).toFixed(1);
-        html += '<tr><td style="font-weight:600">'+d.label+'</td>'
-          +'<td style="text-align:right">'+num(d.imp)+'</td>'
-          +'<td style="text-align:right">'+num(d.clk)+'</td>'
-          +'<td style="text-align:right">'+ctr+'%</td>'
-          +'<td style="text-align:right">'+won(d.cost)+'</td>'
-          +'<td style="text-align:right">'+costPct+'%</td>'
-          +'<td style="text-align:right">'+num(d.convCnt)+'</td>'
-          +'<td style="text-align:right">'+won(d.convAmt)+'</td></tr>';
-      });
-      html += '</tbody></table>';
-      wrap.innerHTML = html;
     }
 
     function renderDeviceTab(d) {
@@ -2209,12 +2096,6 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         html += '</div></div>';
       });
       html += '</div></div>';
-
-      // 성별 섹션
-      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">👫 성별 성과</span></div><div class="card-body" id="demo-gender-content"><div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 로딩 대기 중...</div></div></div>';
-
-      // 연령대 섹션
-      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">📊 연령대별 성과</span></div><div class="card-body" id="demo-age-content"><div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 로딩 대기 중...</div></div></div>';
 
       wrap.innerHTML = html;
     }
@@ -2849,48 +2730,6 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     }
 
     res.json({ ok: true, source: 'api', pc: enrich(byDevice.PC), mobile: enrich(byDevice.MO) });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// ─── API: 탭 데이터 (성별/연령) ────────────────────────────────────
-router.get('/api/tab/demographics', requireLogin, async (req, res) => {
-  try {
-    const { period = 'yesterday', accountId } = req.query;
-    const account = await db.getAccountById(accountId, req.session.userId);
-    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-
-    const cookie = account.naver_cookie;
-    if (!cookie) {
-      return res.json({ ok: false, error: '네이버 광고관리 쿠키가 설정되지 않았습니다.\\n광고주 설정에서 네이버 쿠키를 등록해주세요.' });
-    }
-
-    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
-    const { fetchDemographicData } = require('../api/naverApi');
-
-    const [genderResult, ageResult] = await Promise.allSettled([
-      fetchDemographicData(account.customer_id, cookie, dateRange, 'gender'),
-      fetchDemographicData(account.customer_id, cookie, dateRange, 'age'),
-    ]);
-
-    const gender = genderResult.status === 'fulfilled' ? genderResult.value : [];
-    const age = ageResult.status === 'fulfilled' ? ageResult.value : [];
-
-    if (genderResult.status === 'rejected') {
-      console.log('성별 데이터 조회 실패:', genderResult.reason?.message);
-    }
-    if (ageResult.status === 'rejected') {
-      console.log('연령대 데이터 조회 실패:', ageResult.reason?.message);
-    }
-
-    // 성별/연령 데이터 모두 실패한 경우
-    if (!gender.length && !age.length) {
-      const errMsg = genderResult.status === 'rejected' ? genderResult.reason.message : '데이터가 없습니다.';
-      return res.json({ ok: false, error: errMsg });
-    }
-
-    res.json({ ok: true, gender, age });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

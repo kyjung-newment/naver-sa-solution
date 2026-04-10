@@ -8,7 +8,7 @@ const f = {
   won: n => `₩${Number(n || 0).toLocaleString('ko-KR')}`,
 };
 
-async function buildExcelReport({ type, period, accountName, data, prevData, demographics }) {
+async function buildExcelReport({ type, period, accountName, data, prevData }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = '뉴먼트 솔루션';
   wb.created = new Date();
@@ -160,7 +160,6 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dem
   const sheetList = [['요약·캠페인','KPI 요약 + 캠페인별 성과']];
   if (prevData && type !== 'daily') sheetList.push(['기간비교','캠페인유형별·광고그룹별 전기간 비교']);
   sheetList.push(['유형 및 기기별','캠페인유형별 + PC/모바일 성과'], ['광고그룹별','광고그룹별 성과 (TOP 10)'], ['키워드별','키워드별 전환/ROAS/비효율 TOP'], ['시간대별','구매전환매출 기준 시간대 분포'], ['일자별','일자별 성과 추이']);
-  if (demographics && (demographics.gender?.length || demographics.age?.length)) sheetList.push(['성별·연령대','성별/연령대별 성과 분석']);
   sheetList.forEach(([n, d], i) => {
     const row = cover.getRow(cr + i); row.height = 22;
     [{v:`sheet${i+1}`}, {v:n, bold:true}, {v:d}].forEach((item, j) => {
@@ -698,105 +697,6 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dem
   }
 
   // 기간비교는 요약·캠페인 바로 다음(section 2-1)으로 이동 완료
-
-  // ══════════════════════════════════════════════════════════════════
-  // 9. 성별·연령대 (demographics 있을 때만)
-  // ══════════════════════════════════════════════════════════════════
-  if (demographics && (demographics.gender?.length || demographics.age?.length)) {
-    const ds = wb.addWorksheet('성별·연령대');
-    setup(ds);
-    ds.getColumn(2).width = 16;
-    [18, 13, 13, 10, 15, 10, 12, 16].forEach((w, i) => { ds.getColumn(i + 3).width = w; });
-
-    let r = 3;
-    r = sectionTitle(ds, r, `성별·연령대별 성과 분석 (${period})`, 10);
-    r++;
-
-    const demoHeaders = ['노출수','클릭수','CTR','총비용','비용비중','전환수','전환매출'];
-    const demoFmts = [FMT.num, FMT.num, FMT.pct, FMT.won, FMT.pct, FMT.num, FMT.won];
-
-    function demoTableHeader(ws, row, label) {
-      const hRow = ws.getRow(row); hRow.height = 26;
-      [label, ...demoHeaders].forEach((h, i) => {
-        const c = hRow.getCell(i + 2);
-        c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
-        c.alignment = cm; c.border = border;
-      });
-      return row + 1;
-    }
-
-    function demoDataRow(ws, row, label, d, totalCost, opts = {}) {
-      const dRow = ws.getRow(row); dRow.height = 23;
-      const lc = dRow.getCell(2);
-      lc.value = label; lc.font = { size: 10, bold: !!opts.bold, color: { argb: opts.color || C.dark } };
-      lc.alignment = cm; lc.border = border;
-      if (opts.bg) lc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
-
-      const ctr = d.imp > 0 ? (d.clk / d.imp * 100) : 0;
-      const costPct = totalCost > 0 ? (d.cost / totalCost * 100) : 0;
-      const vals = [d.imp||0, d.clk||0, ctr, d.cost||0, costPct, d.convCnt||0, d.convAmt||0];
-      vals.forEach((v, i) => {
-        const c = dRow.getCell(i + 3);
-        c.value = v; c.numFmt = demoFmts[i];
-        c.font = { size: 10, bold: !!opts.bold, color: { argb: opts.bold ? C.dark : C.gray } };
-        c.alignment = cm; c.border = border;
-        if (opts.bg) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
-        else if (opts.stripe) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
-      });
-      return row + 1;
-    }
-
-    // ── 성별 ──
-    if (demographics.gender && demographics.gender.length > 0) {
-      const genderOrder = ['남성','여성','알수없음'];
-      const gData = [...demographics.gender].sort((a,b) => {
-        const ai = genderOrder.indexOf(a.label), bi = genderOrder.indexOf(b.label);
-        return (ai===-1?99:ai) - (bi===-1?99:bi);
-      });
-      const gTotal = gData.reduce((s,d) => s+(d.cost||0), 0);
-
-      r = subTitle(ds, r, '👫 성별 성과', 10);
-      r = demoTableHeader(ds, r, '성별');
-      gData.forEach((d, idx) => {
-        const gColors = {'남성':C.blue,'여성':'FFEC4899','알수없음':C.gray};
-        r = demoDataRow(ds, r, d.label, d, gTotal, {
-          bold: d.label !== '알수없음',
-          color: gColors[d.label] || C.dark,
-          stripe: idx % 2 === 1,
-        });
-      });
-      // 합계
-      const gTotalData = { imp: gData.reduce((s,d) => s+(d.imp||0),0), clk: gData.reduce((s,d) => s+(d.clk||0),0), cost: gTotal, convCnt: gData.reduce((s,d) => s+(d.convCnt||0),0), convAmt: gData.reduce((s,d) => s+(d.convAmt||0),0) };
-      r++;
-      r = demoDataRow(ds, r, '합계', gTotalData, gTotal, { bold: true, bg: C.totalBg });
-      r += 3;
-    }
-
-    // ── 연령대 ──
-    if (demographics.age && demographics.age.length > 0) {
-      const aData = [...demographics.age].sort((a,b) => {
-        if (a.label === '알수없음') return 1;
-        if (b.label === '알수없음') return -1;
-        return (parseInt(b.label)||0) - (parseInt(a.label)||0);
-      });
-      const aTotal = aData.reduce((s,d) => s+(d.cost||0), 0);
-
-      r = subTitle(ds, r, '📊 연령대별 성과', 10);
-      r = demoTableHeader(ds, r, '연령대');
-      aData.forEach((d, idx) => {
-        r = demoDataRow(ds, r, d.label, d, aTotal, {
-          bold: d.label !== '알수없음',
-          color: d.label === '알수없음' ? C.gray : C.dark,
-          stripe: idx % 2 === 1,
-        });
-      });
-      // 합계
-      const aTotalData = { imp: aData.reduce((s,d) => s+(d.imp||0),0), clk: aData.reduce((s,d) => s+(d.clk||0),0), cost: aTotal, convCnt: aData.reduce((s,d) => s+(d.convCnt||0),0), convAmt: aData.reduce((s,d) => s+(d.convAmt||0),0) };
-      r++;
-      r = demoDataRow(ds, r, '합계', aTotalData, aTotal, { bold: true, bg: C.totalBg });
-    }
-  }
 
   return await wb.xlsx.writeBuffer();
 }
