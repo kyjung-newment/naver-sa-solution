@@ -31,30 +31,53 @@ async function syncAccountDate(account, date) {
 
   console.log(`  📥 [${account.name}] ${date} 동기화 시작...`);
 
-  // 1. AD_DETAIL 다운로드
-  let adRows = [];
-  try {
-    adRows = await client.createAndDownloadStatReport('AD_DETAIL', date);
-  } catch (e) {
-    console.log(`  ⚠️ AD_DETAIL 다운로드 실패 (${date}):`, e.message);
+  // 4개 리포트를 병렬 다운로드 (속도 개선)
+  const [adResult, convResult, shopResult, shopConvResult] = await Promise.allSettled([
+    client.createAndDownloadStatReport('AD_DETAIL', date),
+    client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', date),
+    client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', date),
+    client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', date),
+  ]);
+
+  let adRows = adResult.status === 'fulfilled' ? adResult.value : [];
+  if (adResult.status === 'rejected') console.log(`  ⚠️ AD_DETAIL 실패 (${date}):`, adResult.reason?.message);
+
+  let convRows = convResult.status === 'fulfilled' ? convResult.value : [];
+  if (convResult.status === 'rejected') console.log(`  ⚠️ AD_CONVERSION_DETAIL 실패 (${date}):`, convResult.reason?.message);
+
+  const shopKwRows = shopResult.status === 'fulfilled' ? shopResult.value : [];
+  if (shopResult.status === 'fulfilled' && shopKwRows.length > 0) console.log(`  🔍 SHOPPINGKEYWORD_DETAIL: ${shopKwRows.length}행`);
+
+  const shopConvRows = shopConvResult.status === 'fulfilled' ? shopConvResult.value : [];
+
+  // SHOPPINGKEYWORD 데이터 리매핑 (13열 → 15열 AD_DETAIL 포맷 맞춤)
+  // Shopping rows는 adId(5), channelId(6) 컬럼이 없으므로 빈 값 삽입
+  function remapShoppingRow(cols) {
+    if (cols.length >= 15) return cols;
+    return [...cols.slice(0, 5), '', '', ...cols.slice(5)];
   }
 
-  // 2. AD_CONVERSION_DETAIL 다운로드
-  let convRows = [];
-  try {
-    convRows = await client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', date);
-  } catch (e) {
-    console.log(`  ⚠️ AD_CONVERSION_DETAIL 다운로드 실패 (${date}):`, e.message);
+  if (shopKwRows.length > 0) {
+    const remapped = shopKwRows.map(remapShoppingRow);
+    adRows = [...adRows.filter(cols => cols[4] !== '-'), ...remapped];
+  }
+  if (shopConvRows.length > 0) {
+    const remapped = shopConvRows.map(remapShoppingRow);
+    convRows = [...convRows.filter(cols => cols[4] !== '-'), ...remapped];
   }
 
   // 3. 전환 데이터 lookup 맵 빌드
   // key: campaignId:adgroupId:keywordId:hour:device
   const convMap = {};
+  const convTypeSet = new Set();
   for (const cols of convRows) {
     if (cols.length < 15) continue;
     const convType = cols[12];
-    const isPurchase = convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase';
-    const isCart = convType === 'add_to_cart' || convType === 'cart';
+    convTypeSet.add(convType);
+    const convTypeLower = (convType || '').toLowerCase();
+    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
+      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
+    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
     if (!isPurchase && !isCart) continue;
 
     const key = `${cols[2]}:${cols[3]}:${cols[4]}:${cols[7]}:${cols[10]}`;
@@ -64,6 +87,7 @@ async function syncAccountDate(account, date) {
     if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
     if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
   }
+  if (convTypeSet.size > 0) console.log(`  📊 [${account.name}] ${date} 전환 타입: ${[...convTypeSet].join(', ')} (${convRows.length}행)`);
 
   // 4. AD_DETAIL 행 + 전환 데이터 병합 후 DB에 저장
   // 먼저 기존 데이터 삭제
@@ -152,8 +176,8 @@ async function syncAccountDate(account, date) {
       for (const cols of convRows) {
         if (cols.length < 15) continue;
         if (cols[2] !== camp.nccCampaignId) continue;
-        const ct = cols[12];
-        if (ct === 'purchase' || ct === 'purchase_complete' || ct === 'complete_purchase') {
+        const ct = (cols[12] || '').toLowerCase();
+        if (ct === 'purchase' || ct === 'purchase_complete' || ct === 'complete_purchase' || ct === 'conversion' || ct === 'conv' || ct === '1') {
           purchaseCnt += parseInt(cols[13]) || 0;
           purchaseAmt += parseInt(cols[14]) || 0;
         }
@@ -186,6 +210,36 @@ async function syncAccountDate(account, date) {
 
   console.log(`  ✅ [${account.name}] ${date} 동기화 완료 (${adRows.length}행)`);
   return adRows.length;
+}
+
+/**
+ * 마스터 데이터 동기화 (캠페인/광고그룹/키워드 이름)
+ */
+async function syncMasterData(account) {
+  const { createApiClient } = require('../api/naverApi');
+  const client = createApiClient({
+    apiKey: account.api_key,
+    secretKey: account.secret_key,
+    customerId: account.customer_id,
+  });
+
+  try {
+    // 캠페인 마스터
+    const campRows = await client.syncMaster('Campaign');
+    await db.upsertMasterCampaigns(account.id, campRows);
+
+    // 광고그룹 마스터
+    const agRows = await client.syncMaster('Adgroup');
+    await db.upsertMasterAdgroups(account.id, agRows);
+
+    // 키워드 마스터
+    const kwRows = await client.syncMaster('Keyword');
+    await db.upsertMasterKeywords(account.id, kwRows);
+
+    console.log(`  📋 [${account.name}] 마스터 동기화: 캠페인 ${campRows.length}, 광고그룹 ${agRows.length}, 키워드 ${kwRows.length}`);
+  } catch (e) {
+    console.log(`  ⚠️ [${account.name}] 마스터 동기화 실패:`, e.message);
+  }
 }
 
 /**
@@ -226,6 +280,24 @@ async function runDashboardSync(timeoutMs = 50000) {
         totalSynced++;
       }
 
+      // 마스터 데이터 동기화 (키워드 이름 등) - 매일 갱신
+      const masterLog = await db.get(
+        `SELECT status FROM sync_log WHERE account_id = $1 AND sync_type = 'master' AND stat_date = $2`,
+        [account.id, yesterday]
+      );
+      if (!masterLog || masterLog.status !== 'done') {
+        if (Date.now() - startTime < timeoutMs - 15000) { // 15초 여유 확보
+          await syncMasterData(account);
+          await db.pool.query(
+            `INSERT INTO sync_log (account_id, sync_type, stat_date, status, completed_at)
+             VALUES ($1, 'master', $2, 'done', CURRENT_TIMESTAMP)
+             ON CONFLICT (account_id, sync_type, stat_date)
+             DO UPDATE SET status = 'done', completed_at = CURRENT_TIMESTAMP`,
+            [account.id, yesterday]
+          );
+        }
+      }
+
       // 계정별 마지막 동기화 시간 업데이트
       await db.pool.query(
         'UPDATE ad_accounts SET last_dashboard_sync = CURRENT_TIMESTAMP WHERE id = $1',
@@ -244,9 +316,9 @@ async function runDashboardSync(timeoutMs = 50000) {
 /**
  * 과거 데이터 백필 (최초 또는 누락 데이터 보충)
  * @param {number} timeoutMs - 최대 실행 시간
- * @param {number} days - 백필할 일수 (기본 30일)
+ * @param {number} days - 백필할 일수 (기본 60일 - 전월 리포트 조회용)
  */
-async function runBackfill(timeoutMs = 50000, days = 30) {
+async function runBackfill(timeoutMs = 50000, days = 60) {
   const startTime = Date.now();
   console.log(`🔄 백필 동기화 시작 (${days}일)...`);
 

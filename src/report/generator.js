@@ -64,6 +64,17 @@ function getDatesBetween(since, until) {
 }
 
 /**
+ * SHOPPINGKEYWORD_DETAIL (13열) → AD_DETAIL (15열) 컬럼 리매핑
+ * Shopping rows는 adId(5), channelId(6) 컬럼이 없음 → 빈 값 삽입
+ */
+function remapShoppingRow(cols) {
+  if (cols.length >= 15) return cols; // 이미 15열 이상이면 그대로
+  // [0:date, 1:custId, 2:campId, 3:agId, 4:kwId, 5:hour, 6:code, 7:queryGrpId, 8:device, 9:imp, 10:clk, 11:cost, 12:rank]
+  // → [0:date, 1:custId, 2:campId, 3:agId, 4:kwId, '','', 5:hour, 6:code, 7:queryGrpId, 8:device, 9:imp, 10:clk, 11:cost, 12:rank]
+  return [...cols.slice(0, 5), '', '', ...cols.slice(5)];
+}
+
+/**
  * AD_DETAIL + AD_CONVERSION_DETAIL 데이터를 수집하여 다차원 집계
  */
 async function collectDetailData(client, dateRange) {
@@ -71,19 +82,79 @@ async function collectDetailData(client, dateRange) {
   const rawAdDetail = [];
   const rawConvDetail = [];
 
-  for (const dt of dates) {
-    try {
-      const rows = await client.createAndDownloadStatReport('AD_DETAIL', dt);
-      rawAdDetail.push(...rows.map(r => ({ date: dt, cols: r })));
-    } catch (e) { console.log(`AD_DETAIL 실패 (${dt}):`, e.message); }
+  // 날짜별 3개씩 병렬 처리 (API 부하 완화 + 속도 개선)
+  const BATCH_SIZE = 3;
+  for (let i = 0; i < dates.length; i += BATCH_SIZE) {
+    const batch = dates.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (dt) => {
+        const [adResult, convResult, shopResult, shopConvResult] = await Promise.allSettled([
+          client.createAndDownloadStatReport('AD_DETAIL', dt),
+          client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),
+          client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
+          client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
+        ]);
 
-    try {
-      const rows = await client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt);
-      rawConvDetail.push(...rows.map(r => ({ date: dt, cols: r })));
-    } catch (e) { /* 전환 데이터 없으면 무시 */ }
+        let adRows = adResult.status === 'fulfilled' ? adResult.value : [];
+        if (adResult.status === 'rejected') console.log(`AD_DETAIL 실패 (${dt}):`, adResult.reason?.message);
+
+        let convRows = convResult.status === 'fulfilled' ? convResult.value : [];
+
+        // SHOPPINGKEYWORD 데이터 리매핑 (13열 → 15열 AD_DETAIL 포맷 맞춤)
+        if (shopResult.status === 'fulfilled' && shopResult.value.length > 0) {
+          const remapped = shopResult.value.map(remapShoppingRow);
+          adRows = [...adRows.filter(r => r[4] !== '-'), ...remapped];
+        }
+        if (shopConvResult.status === 'fulfilled' && shopConvResult.value.length > 0) {
+          const remapped = shopConvResult.value.map(remapShoppingRow);
+          convRows = [...convRows.filter(r => r[4] !== '-'), ...remapped];
+        }
+
+        return { dt, adRows, convRows };
+      })
+    );
+
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled') {
+        const { dt, adRows, convRows } = result.value;
+        rawAdDetail.push(...adRows.map(r => ({ date: dt, cols: r })));
+        rawConvDetail.push(...convRows.map(r => ({ date: dt, cols: r })));
+      } else {
+        console.log(`배치 처리 실패:`, result.reason?.message);
+      }
+    }
   }
 
   return { rawAdDetail, rawConvDetail };
+}
+
+/**
+ * 이전 기간 날짜 범위 계산
+ */
+function getPrevDateRange(type, dateRange) {
+  if (type === 'daily') {
+    const d = new Date(dateRange.since);
+    d.setDate(d.getDate() - 1);
+    const prev = d.toISOString().slice(0, 10);
+    return { since: prev, until: prev };
+  }
+  if (type === 'weekly') {
+    // 전주: 현재 주간 범위에서 7일 전
+    const prevSince = new Date(dateRange.since);
+    prevSince.setDate(prevSince.getDate() - 7);
+    const prevUntil = new Date(dateRange.until);
+    prevUntil.setDate(prevUntil.getDate() - 7);
+    return { since: prevSince.toISOString().slice(0, 10), until: prevUntil.toISOString().slice(0, 10) };
+  }
+  if (type === 'monthly') {
+    // 전전월: 현재 리포트가 전월이므로 그 이전 달
+    const currStart = new Date(dateRange.since);
+    const prevEnd = new Date(currStart);
+    prevEnd.setDate(prevEnd.getDate() - 1); // 전전월 마지막일
+    const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+    return { since: prevStart.toISOString().slice(0, 10), until: prevEnd.toISOString().slice(0, 10) };
+  }
+  return null;
 }
 
 /**
@@ -101,47 +172,69 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   campTypeMap = campTypeMap || {};
   kwNameMap = kwNameMap || {};
 
-  // 캠페인 유형 라벨
-  const typeLabels = { '1': '파워링크', '2': '쇼핑검색', '4': '쇼핑검색', '3': '브랜드검색', '5': '성과형DA' };
+  // 캠페인 유형 라벨 (네이버 SA API campaignTp 값)
+  const typeLabels = {
+    '1': '파워링크', 'WEB_SITE': '파워링크',
+    '2': '쇼핑검색', '4': '쇼핑검색', 'SHOPPING': '쇼핑검색',
+    '3': '브랜드검색', 'BRAND': '브랜드검색', 'BRAND_SEARCH': '브랜드검색',
+    '5': '파워컨텐츠', 'POWER_CONTENTS': '파워컨텐츠',
+  };
   function getCampTypeLabel(campaignId) {
     const tp = String(campTypeMap[campaignId] || '1');
-    return typeLabels[tp] || `유형${tp}`;
+    return typeLabels[tp] || `기타(${tp})`;
+  }
+  function isShopping(campaignId) {
+    const tp = String(campTypeMap[campaignId] || '1');
+    return tp === '2' || tp === '4' || tp === 'SHOPPING';
   }
 
   // 전환 데이터를 캠페인/광고그룹/디바이스/시간별/키워드별 집계
   const convMap = {}; // key → { purchaseCnt, purchaseAmt, cartCnt, cartAmt }
+  const convTypeSet = new Set(); // 디버깅: 실제 convType 값 수집
   for (const { cols } of rawConvDetail) {
-    if (cols.length < 15) continue;
+    if (cols.length < 13) continue; // 최소 13열 (리매핑 전 shopping 행도 처리)
     const campaignId = cols[2];
     const adgroupId = cols[3];
     const keywordId = cols[4];
-    const device = cols[10] === 'P' ? 'PC' : 'MO';
-    const hour = parseInt(cols[7]) || 0;
-    const convType = cols[12];
-    const cnt = parseInt(cols[13]) || 0;
-    const amt = parseInt(cols[14]) || 0;
+    // 15열 포맷 기준 인덱스
+    const device = cols.length >= 15 ? (cols[10] === 'P' ? 'PC' : 'MO') : (cols[8] === 'P' ? 'PC' : 'MO');
+    const hour = cols.length >= 15 ? (parseInt(cols[7]) || 0) : (parseInt(cols[5]) || 0);
+    const convType = cols.length >= 15 ? cols[12] : cols[10];
+    const cnt = cols.length >= 15 ? (parseInt(cols[13]) || 0) : (parseInt(cols[11]) || 0);
+    const amt = cols.length >= 15 ? (parseInt(cols[14]) || 0) : (parseInt(cols[12]) || 0);
     const campType = getCampTypeLabel(campaignId);
 
+    convTypeSet.add(convType);
+
+    // 구매 전환 판별 (다양한 형식 대응)
+    const convTypeLower = (convType || '').toLowerCase();
+    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
+      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
+    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
+
+    const convKwKey = (keywordId && keywordId !== '-') ? `kw:${keywordId}` : `ag:${adgroupId}`;
     const keys = [
       `camp:${campaignId}`,
       `ag:${adgroupId}`,
       `device:${device}`,
       `hour:${hour}`,
-      `kw:${keywordId}`,
+      convKwKey,
       `campType:${campType}`,
       `total`,
     ];
     for (const key of keys) {
       if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
-      if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+      if (isPurchase) {
         convMap[key].purchaseCnt += cnt;
         convMap[key].purchaseAmt += amt;
-      } else if (convType === 'add_to_cart') {
+      } else if (isCart) {
         convMap[key].cartCnt += cnt;
         convMap[key].cartAmt += amt;
       }
     }
   }
+  if (convTypeSet.size > 0) console.log(`  📊 전환 타입 목록: ${[...convTypeSet].join(', ')}`);
+  if (rawConvDetail.length > 0) console.log(`  📊 전환 행 수: ${rawConvDetail.length}, convMap keys: ${Object.keys(convMap).length}`);
 
   // AD_DETAIL 집계
   const byCampaign = {};
@@ -193,13 +286,20 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     byAdgroup[adgroupId].cost += cost;
     if (rank > 0) { byAdgroup[adgroupId].rankSum += rank * imp; byAdgroup[adgroupId].rankCount += imp; }
 
-    // 키워드별
-    if (keywordId && keywordId !== '0' && keywordId !== '') {
-      if (!byKeyword[keywordId]) byKeyword[keywordId] = { name: kwNameMap[keywordId] || keywordId, campaignName: campNameMap[campaignId] || '', adgroupName: agNameMap[adgroupId] || '', campaignType: campType, imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0 };
-      byKeyword[keywordId].imp += imp;
-      byKeyword[keywordId].clk += clk;
-      byKeyword[keywordId].cost += cost;
-      if (rank > 0) { byKeyword[keywordId].rankSum += rank * imp; byKeyword[keywordId].rankCount += imp; }
+    // 키워드별 (SHOPPINGKEYWORD_DETAIL 사용 시 cols[4]에 검색어 텍스트)
+    if (keywordId && keywordId !== '0' && keywordId !== '' && keywordId !== '-') {
+      const kwKey = `kw:${keywordId}`;
+      if (!byKeyword[kwKey]) byKeyword[kwKey] = {
+        name: kwNameMap[keywordId] || keywordId,
+        campaignName: campNameMap[campaignId] || '',
+        adgroupName: agNameMap[adgroupId] || '',
+        campaignType: campType,
+        imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0,
+      };
+      byKeyword[kwKey].imp += imp;
+      byKeyword[kwKey].clk += clk;
+      byKeyword[kwKey].cost += cost;
+      if (rank > 0) { byKeyword[kwKey].rankSum += rank * imp; byKeyword[kwKey].rankCount += imp; }
     }
 
     // 디바이스별
@@ -243,7 +343,7 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   Object.keys(byCampaign).forEach(k => enrich(byCampaign[k], `camp:${k}`));
   Object.keys(byCampaignType).forEach(k => enrich(byCampaignType[k], `campType:${k}`));
   Object.keys(byAdgroup).forEach(k => enrich(byAdgroup[k], `ag:${k}`));
-  Object.keys(byKeyword).forEach(k => enrich(byKeyword[k], `kw:${k}`));
+  Object.keys(byKeyword).forEach(k => enrich(byKeyword[k], k));
   Object.keys(byDevice).forEach(k => enrich(byDevice[k], `device:${k}`));
   Object.keys(byHour).forEach(k => enrich(byHour[k], `hour:${parseInt(k)}`));
   Object.keys(byDate).forEach(k => enrich(byDate[k], ''));
@@ -268,32 +368,36 @@ async function generateAndSend(account, type) {
     const dateRange = getDateRange(type);
     const period = getPeriodLabel(type, dateRange);
 
-    // 1. 캠페인/광고그룹/키워드 이름 매핑 구축
-    const campaigns = await client.getCampaigns().catch(() => []);
+    // 1. 마스터 리포트 API로 전체 캠페인/광고그룹/키워드 이름 매핑 (빠른 벌크 다운로드)
     const campNameMap = {};
     const campTypeMap = {};
     const agNameMap = {};
     const kwNameMap = {};
-    for (const c of (campaigns || [])) {
-      campNameMap[c.nccCampaignId] = c.name;
-      campTypeMap[c.nccCampaignId] = c.campaignTp;
-      try {
-        const ags = await client.getAdGroups(c.nccCampaignId);
-        for (const ag of (ags || [])) {
-          agNameMap[ag.nccAdgroupId] = ag.name;
-          // 키워드 이름 매핑 (파워링크 캠페인만)
-          try {
-            const kws = await client.getKeywords(ag.nccAdgroupId);
-            for (const kw of (kws || [])) {
-              if (kw.nccKeywordId && kw.keyword) {
-                kwNameMap[kw.nccKeywordId] = kw.keyword;
-              }
-            }
-          } catch (e) { /* 키워드 없는 그룹 무시 */ }
-        }
-      } catch (e) {}
+    try {
+      const [campRows, agRows, kwRows] = await Promise.all([
+        client.syncMaster('Campaign').catch(() => []),
+        client.syncMaster('Adgroup').catch(() => []),
+        client.syncMaster('Keyword').catch(() => []),
+      ]);
+      for (const r of campRows) {
+        if (r.length < 3) continue;
+        campNameMap[r[1]] = r[2];
+        campTypeMap[r[1]] = parseInt(r[3]) || 1;
+      }
+      // 광고그룹 TSV: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName
+      for (const r of agRows) {
+        if (r.length < 4) continue;
+        agNameMap[r[1]] = r[3];
+      }
+      // 키워드 TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트)
+      for (const r of kwRows) {
+        if (r.length < 4) continue;
+        kwNameMap[r[2]] = r[3];
+      }
+      console.log(`  📋 마스터 리포트 매핑: 캠페인 ${campRows.length}, 그룹 ${agRows.length}, 키워드 ${kwRows.length}`);
+    } catch (e) {
+      console.log('  ⚠️ 마스터 리포트 매핑 실패:', e.message);
     }
-    console.log(`  📋 매핑: 캠페인 ${Object.keys(campNameMap).length}, 그룹 ${Object.keys(agNameMap).length}, 키워드 ${Object.keys(kwNameMap).length}`);
 
     // 2. AD_DETAIL + AD_CONVERSION_DETAIL 수집
     const { rawAdDetail, rawConvDetail } = await collectDetailData(client, dateRange);
@@ -301,16 +405,19 @@ async function generateAndSend(account, type) {
     // 3. 다차원 집계
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap);
 
-    // 4. 이전 기간 데이터 (일간만)
+    // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     let prevData = null;
-    if (type === 'daily') {
-      const d = new Date(dateRange.since);
-      d.setDate(d.getDate() - 1);
-      const prevDate = d.toISOString().slice(0, 10);
+    const prevRange = getPrevDateRange(type, dateRange);
+    if (prevRange) {
+      const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
+      console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
       try {
-        const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, { since: prevDate, until: prevDate });
+        const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, prevRange);
         prevData = aggregateData(pAd, pConv, campNameMap, agNameMap, campTypeMap, kwNameMap);
-      } catch (e) {}
+        console.log(`  ✅ ${prevLabel} 데이터 완료: ${pAd.length}건`);
+      } catch (e) {
+        console.log(`  ⚠️ ${prevLabel} 데이터 실패:`, e.message);
+      }
     }
 
     // 5. 리포트 발송
@@ -344,39 +451,32 @@ async function generatePreview(account, type) {
   const dateRange = getDateRange(type);
   const period = getPeriodLabel(type, dateRange);
 
-  const campaigns = await client.getCampaigns().catch(() => []);
   const campNameMap = {};
   const campTypeMap = {};
   const agNameMap = {};
   const kwNameMap = {};
-  for (const c of (campaigns || [])) {
-    campNameMap[c.nccCampaignId] = c.name;
-    campTypeMap[c.nccCampaignId] = c.campaignTp;
-    try {
-      const ags = await client.getAdGroups(c.nccCampaignId);
-      for (const ag of (ags || [])) {
-        agNameMap[ag.nccAdgroupId] = ag.name;
-        try {
-          const kws = await client.getKeywords(ag.nccAdgroupId);
-          for (const kw of (kws || [])) {
-            if (kw.nccKeywordId && kw.keyword) kwNameMap[kw.nccKeywordId] = kw.keyword;
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
-  }
+  try {
+    const [campRows, agRows, kwRows] = await Promise.all([
+      client.syncMaster('Campaign').catch(() => []),
+      client.syncMaster('Adgroup').catch(() => []),
+      client.syncMaster('Keyword').catch(() => []),
+    ]);
+    for (const r of campRows) { if (r.length >= 3) { campNameMap[r[1]] = r[2]; campTypeMap[r[1]] = parseInt(r[3]) || 1; } }
+    // 광고그룹 TSV: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName
+    for (const r of agRows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
+    // 키워드 TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트)
+    for (const r of kwRows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
+  } catch (e) {}
 
   const { rawAdDetail, rawConvDetail } = await collectDetailData(client, dateRange);
   const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap);
 
-  // 이전 기간
+  // 이전 기간 (일간/주간/월간 모두)
   let prevData = null;
-  if (type === 'daily') {
-    const d = new Date(dateRange.since);
-    d.setDate(d.getDate() - 1);
-    const prevDate = d.toISOString().slice(0, 10);
+  const prevRange = getPrevDateRange(type, dateRange);
+  if (prevRange) {
     try {
-      const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, { since: prevDate, until: prevDate });
+      const { rawAdDetail: pAd, rawConvDetail: pConv } = await collectDetailData(client, prevRange);
       prevData = aggregateData(pAd, pConv, campNameMap, agNameMap, campTypeMap, kwNameMap);
     } catch (e) {}
   }

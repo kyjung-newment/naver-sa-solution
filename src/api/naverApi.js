@@ -122,9 +122,9 @@ function createApiClient(creds) {
         //      hour, code, queryId, device, directFlag, convType, convCnt, convAmt
         for (const cols of rows) {
           if (cols.length < 15) continue;
-          const convType = cols[12];
+          const convType = (cols[12] || '').toLowerCase();
           // 구매완료 타입만 필터 (purchase, purchase_complete 등)
-          if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+          if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase' || convType === 'conversion' || convType === 'conv' || convType === '1') {
             const campaignId = cols[2];
             const cnt = parseInt(cols[13]) || 0;
             const amt = parseInt(cols[14]) || 0;
@@ -341,6 +341,22 @@ function createApiClient(creds) {
     // ─── 광고 소재 / 비즈채널 조회 ─────────────────────────────────────
     getAds: (adGroupId) =>
       apiCall('GET', '/ncc/ads', { nccAdgroupId: adGroupId }),
+
+    getAdDetail: (adId) =>
+      apiCall('GET', `/ncc/ads/${adId}`),
+
+    // 쇼핑검색 소재 입찰가 수정 (adAttr.bidAmt)
+    updateAdBid: async (adId, bidAmt) => {
+      const adDetail = await apiCall('GET', `/ncc/ads/${adId}`);
+      if (!adDetail) throw new Error('소재 정보 조회 실패');
+      const adAttr = adDetail.adAttr || {};
+      adAttr.bidAmt = bidAmt;
+      return await apiCall('PUT', `/ncc/ads/${adId}`, { fields: 'adAttr' }, {
+        nccAdId: adId,
+        nccAdgroupId: adDetail.nccAdgroupId,
+        adAttr,
+      });
+    },
 
     getAdGroupDetail: (adGroupId) =>
       apiCall('GET', `/ncc/adgroups/${adGroupId}`),
