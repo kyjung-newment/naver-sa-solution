@@ -220,6 +220,11 @@ async function initDb() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_host TEXT DEFAULT 'outbound.daouoffice.com'`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // ad_accounts에 네이버 광고관리 쿠키 컬럼 추가 (성별/연령 등 고급 리포트 API용)
+  try {
+    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS naver_cookie TEXT DEFAULT ''`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS shopping_bid_keywords (
@@ -273,11 +278,11 @@ const all = async (sql, params = []) => {
 };
 
 // ─── Users ───────────────────────────────────────────────────────────
-async function createUser(username, password, name, { isAdmin = 0, approved = 0 } = {}) {
+async function createUser(username, password, name, { isAdmin = 0, approved = 0, daouEmail = '', daouPass = '' } = {}) {
   const passwordHash = hashPassword(password);
   const result = await pool.query(
-    'INSERT INTO users (username, password_hash, name, is_admin, approved, smtp_pass) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0, password]
+    'INSERT INTO users (username, password_hash, name, is_admin, approved, daou_email, smtp_pass) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0, daouEmail, daouPass]
   );
   return result.rows[0].id;
 }
@@ -297,8 +302,6 @@ async function authenticateUser(username, password) {
   const user = await getUserByUsername(username);
   if (!user) return null;
   if (!verifyPassword(password, user.password_hash)) return null;
-  // 로그인 시 SMTP 비밀번호 갱신 (비밀번호 변경 대비)
-  await pool.query('UPDATE users SET smtp_pass = $1 WHERE id = $2', [password, user.id]).catch(() => {});
   return { id: user.id, username: user.username, name: user.name, is_admin: user.is_admin, approved: user.approved };
 }
 
@@ -393,7 +396,7 @@ async function updateAccount(id, userId, data) {
       feat_keyword_monitor = $10, feat_auto_bidding = $11,
       auto_bid_target_rank = $12, auto_bid_max_bid = $13,
       auto_bid_min_bid = $14, auto_bid_interval = $15,
-      site_url = $18
+      site_url = $18, naver_cookie = $19
     WHERE id = $16 AND user_id = $17
   `, [
     data.name,
@@ -413,6 +416,7 @@ async function updateAccount(id, userId, data) {
     parseInt(data.auto_bid_interval) || 5,
     id, userId,
     data.site_url || '',
+    data.naver_cookie || '',
   ]);
 }
 
@@ -460,23 +464,32 @@ async function upsertMasterCampaigns(accountId, rows) {
 
 async function upsertMasterAdgroups(accountId, rows) {
   await pool.query('DELETE FROM master_adgroups WHERE account_id = $1', [accountId]);
+  // TSV 실제 컬럼 순서: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName, [4]..., [7]regTime
   for (const r of rows) {
+    if (r.length < 4) continue;
     await pool.query(
       `INSERT INTO master_adgroups (account_id, customer_id, adgroup_id, adgroup_name, campaign_id, use_daily_budget, reg_time)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [accountId, r[0], r[1], r[2], r[3] || '', parseInt(r[4]) || 0, r[7] || '']
+      [accountId, r[0], r[1], r[3] || '', r[2] || '', parseInt(r[4]) || 0, r[7] || '']
     );
   }
 }
 
 async function upsertMasterKeywords(accountId, rows) {
   await pool.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
+  // TSV 실제 컬럼 순서: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트), [4]bidAmt, [5]useGroupBid, [6]status, [7]regTime
   for (const r of rows) {
-    await pool.query(
-      `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, status, reg_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [accountId, r[0], r[1], r[2] || '', r[3] || '', parseInt(r[4]) || 0, parseInt(r[5]) || 0, r[6] || '', r[7] || '']
-    );
+    if (r.length < 4) continue;
+    try {
+      await pool.query(
+        `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, status, reg_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [accountId, r[0], r[2], r[3] || '', r[1] || '', parseInt(r[4]) || 0, parseInt(r[5]) || 0, r[6] || '', r[7] || '']
+      );
+    } catch (e) {
+      // 중복 키워드 등 에러 시 skip (전체 실패 방지)
+      if (!e.message.includes('duplicate')) console.log(`키워드 저장 실패: ${e.message}`);
+    }
   }
 }
 
@@ -646,10 +659,10 @@ async function queryStatsSummary(accountId, since, until) {
 
 /** 키워드 탭 */
 async function queryStatsKeywords(accountId, since, until) {
-  // AD_DETAIL 기반 키워드별 집계 + 마스터 데이터 조인
-  return all(`
+  // 파워링크: keyword_id로 그룹핑, 키워드 텍스트 표시
+  const powerlink = await all(`
     SELECT d.keyword_id, d.adgroup_id, d.campaign_id,
-           COALESCE(mk.keyword, d.keyword_id) AS keyword,
+           CASE WHEN d.keyword_id = '-' THEN COALESCE(ma.adgroup_name, d.adgroup_id) ELSE COALESCE(mk.keyword, d.keyword_id) END AS keyword,
            COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
            COALESCE(mc.campaign_tp, 1) AS "campaignTp",
            COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
@@ -662,9 +675,33 @@ async function queryStatsKeywords(accountId, since, until) {
     LEFT JOIN master_adgroups ma ON ma.account_id = d.account_id AND ma.adgroup_id = d.adgroup_id
     LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
     WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+      AND (mc.campaign_tp IS NULL OR mc.campaign_tp != 2)
     GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, mk.keyword, mc.campaign_name, mc.campaign_tp, ma.adgroup_name
     ORDER BY SUM(d.cost) DESC
   `, [accountId, since, until]);
+
+  // 쇼핑검색: SHOPPINGKEYWORD_DETAIL 동기화 후 keyword_id에 검색어 텍스트가 저장됨
+  // keyword_id로 그룹핑 → 검색어 텍스트 그대로 표시
+  const shopping = await all(`
+    SELECT d.keyword_id, d.adgroup_id, d.campaign_id,
+           d.keyword_id AS keyword,
+           COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
+           2 AS "campaignTp",
+           COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+           COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
+           COALESCE(SUM(d.cost),0)::bigint AS cost,
+           COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(d.purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail d
+    LEFT JOIN master_adgroups ma ON ma.account_id = d.account_id AND ma.adgroup_id = d.adgroup_id
+    LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
+    WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+      AND mc.campaign_tp = 2
+    GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, ma.adgroup_name, mc.campaign_name
+    ORDER BY SUM(d.cost) DESC
+  `, [accountId, since, until]);
+
+  return [...powerlink, ...shopping];
 }
 
 /** 시간대별 탭 */

@@ -47,69 +47,94 @@ async function requireApi(req, res, next) {
 }
 
 // ─── 공통 HTML 레이아웃 ────────────────────────────────────────────
+const logoBase64 = (() => { try { const fs = require('fs'); const p = require('path'); return 'data:image/png;base64,' + fs.readFileSync(p.join(__dirname, '..', 'assets', 'logo.png')).toString('base64'); } catch(e) { return ''; } })();
+
 const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@300;400;500;600;700;800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f0f2f5;color:#1e293b;font-size:14px}
+  body{font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f5f6fa;color:#1e293b;font-size:14px}
   a{text-decoration:none;color:inherit}
-  input,select,textarea{padding:9px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px;width:100%;background:#fff;outline:none;transition:border .15s}
-  input:focus,select:focus,textarea:focus{border-color:#03c75a;box-shadow:0 0 0 3px rgba(3,199,90,.1)}
-  label{display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:5px}
-  .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
-  .btn-primary{background:#03c75a;color:#fff} .btn-primary:hover{background:#02b350}
+  input,select,textarea{padding:10px 14px;border:1px solid #e5e7eb;border-radius:10px;font-size:14px;width:100%;background:#fff;outline:none;transition:all .2s;font-family:inherit}
+  input:focus,select:focus,textarea:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+  label{display:block;font-size:12px;font-weight:600;color:#6b7280;margin-bottom:6px;letter-spacing:.02em}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:10px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;font-family:inherit}
+  .btn-primary{background:#6366f1;color:#fff} .btn-primary:hover{background:#4f46e5;box-shadow:0 4px 12px rgba(99,102,241,.3)}
   .btn-danger{background:#ef4444;color:#fff} .btn-danger:hover{background:#dc2626}
-  .btn-outline{background:#fff;color:#374151;border:1px solid #e2e8f0} .btn-outline:hover{background:#f8fafc}
-  .btn-sm{padding:6px 12px;font-size:12px}
+  .btn-outline{background:#fff;color:#374151;border:1px solid #e5e7eb} .btn-outline:hover{background:#f9fafb;border-color:#d1d5db}
+  .btn-sm{padding:7px 14px;font-size:12px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .card{background:#fff;border-radius:12px;border:1px solid #e2e8f0;overflow:hidden}
-  .card-header{padding:16px 20px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between}
-  .card-title{font-size:15px;font-weight:600}
-  .card-body{padding:20px}
+  .card{background:#fff;border-radius:16px;border:none;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow:hidden}
+  .card-header{padding:18px 24px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between}
+  .card-title{font-size:15px;font-weight:700;color:#111827}
+  .card-body{padding:24px}
   table{width:100%;border-collapse:collapse}
-  th{padding:10px 14px;text-align:left;font-size:11px;color:#64748b;font-weight:600;background:#f8fafc;border-bottom:1px solid #f1f5f9;text-transform:uppercase;letter-spacing:.04em}
-  td{padding:11px 14px;border-bottom:1px solid #f8fafc;font-size:13px}
+  th{padding:12px 16px;text-align:left;font-size:11px;color:#9ca3af;font-weight:600;background:#fafbfc;border-bottom:1px solid #f3f4f6;text-transform:uppercase;letter-spacing:.05em}
+  td{padding:13px 16px;border-bottom:1px solid #f9fafb;font-size:13px;color:#374151}
   tr:last-child td{border-bottom:none}
-  tr:hover td{background:#fafbfc}
-  .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600}
-  .badge-green{background:#dcfce7;color:#16a34a} .badge-gray{background:#f1f5f9;color:#64748b}
-  .badge-blue{background:#dbeafe;color:#2563eb} .badge-red{background:#fee2e2;color:#dc2626}
-  .toggle{width:38px;height:22px;border-radius:11px;position:relative;cursor:default;flex-shrink:0;transition:background .2s}
-  .toggle-on{background:#03c75a} .toggle-off{background:#cbd5e1}
-  .toggle-dot{position:absolute;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:left .15s}
-  .toggle-on .toggle-dot{left:19px} .toggle-off .toggle-dot{left:3px}
-  .form-group{margin-bottom:16px}
-  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .alert{padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px}
-  .alert-err{background:#fee2e2;color:#dc2626;border:1px solid #fca5a5}
-  .alert-ok{background:#dcfce7;color:#16a34a;border:1px solid #86efac}
-  .alert-info{background:#dbeafe;color:#2563eb;border:1px solid #93c5fd}
-  .sidebar{width:240px;min-height:100vh;background:#1e293b;color:#fff;position:fixed;top:0;left:0;display:flex;flex-direction:column}
-  .sidebar-header{padding:20px 20px 16px;border-bottom:1px solid rgba(255,255,255,.1)}
-  .sidebar-logo{font-size:16px;font-weight:700;color:#ffffff}
-  .sidebar-sub{font-size:11px;color:#9ca3af;margin-top:3px}
-  .sidebar-section{padding:12px 12px 4px;font-size:10px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.08em}
-  .sidebar-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;font-size:13px;color:rgba(255,255,255,.7);cursor:pointer;transition:all .15s;margin:1px 8px;border:none;background:transparent;width:calc(100%-16px)}
-  .sidebar-link:hover,.sidebar-link.active{background:rgba(255,255,255,.1);color:#fff}
-  .sidebar-footer{margin-top:auto;padding:16px;border-top:1px solid rgba(255,255,255,.1)}
-  .sidebar-user{font-size:13px;color:rgba(255,255,255,.7)}
-  .main{margin-left:240px;min-height:100vh}
-  .topbar{background:#fff;border-bottom:1px solid #e2e8f0;padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-  .topbar-title{font-size:16px;font-weight:700}
-  .content{padding:24px}
-  .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+  tr:hover td{background:#fafbfe}
+  .badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:600}
+  .badge-green{background:#ecfdf5;color:#059669} .badge-gray{background:#f3f4f6;color:#6b7280}
+  .badge-blue{background:#eef2ff;color:#4f46e5} .badge-red{background:#fef2f2;color:#dc2626}
+  .toggle{width:40px;height:22px;border-radius:11px;position:relative;cursor:default;flex-shrink:0;transition:background .2s}
+  .toggle-on{background:#6366f1} .toggle-off{background:#d1d5db}
+  .toggle-dot{position:absolute;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15);transition:left .15s}
+  .toggle-on .toggle-dot{left:21px} .toggle-off .toggle-dot{left:3px}
+  .form-group{margin-bottom:18px}
+  .form-row{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .alert{padding:14px 18px;border-radius:10px;margin-bottom:16px;font-size:13px;font-weight:500}
+  .alert-err{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+  .alert-ok{background:#ecfdf5;color:#059669;border:1px solid #a7f3d0}
+  .alert-info{background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe}
+  .sidebar{width:260px;min-height:100vh;background:#ffffff;position:fixed;top:0;left:0;display:flex;flex-direction:column;border-right:1px solid #e5e7eb;z-index:200}
+  .sidebar-header{padding:20px 24px 18px;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:12px}
+  .sidebar-logo-img{height:32px;max-width:160px;object-fit:contain}
+  .sidebar-logo{font-size:16px;font-weight:700;color:#111827}
+  .sidebar-sub{font-size:11px;color:#9ca3af;margin-top:2px}
+  .sidebar-section{padding:16px 16px 6px;font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+  .sidebar-link{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:500;color:#6b7280;cursor:pointer;transition:all .15s;margin:2px 10px;border:none;background:transparent;width:calc(100% - 20px)}
+  .sidebar-link:hover{background:#f5f6fa;color:#374151}
+  .sidebar-link.active{background:#eef2ff;color:#4f46e5;font-weight:600}
+  .sidebar-link .sidebar-icon{width:20px;text-align:center;font-size:15px}
+  .sidebar-footer{margin-top:auto;padding:16px;border-top:1px solid #f3f4f6}
+  .sidebar-user{font-size:13px;color:#6b7280}
+  .main{margin-left:260px;min-height:100vh;background:#f5f6fa}
+  .topbar{background:#fff;border-bottom:1px solid #f3f4f6;padding:0 28px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  .topbar-title{font-size:17px;font-weight:700;color:#111827}
+  .content{padding:28px}
+  .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
   @media(max-width:1100px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
-  .kpi-card{background:#fff;border-radius:12px;padding:18px 20px;border:1px solid #e2e8f0}
-  .kpi-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
-  .kpi-value{font-size:24px;font-weight:700;color:#111827}
-  .period-tabs{display:flex;background:#fff;border-radius:8px;padding:3px;border:1px solid #e2e8f0;gap:2px}
-  .period-btn{padding:6px 16px;border-radius:6px;border:none;background:transparent;font-size:13px;font-weight:500;cursor:pointer;color:#64748b}
-  .period-btn.active{background:#03c75a;color:#fff}
-  .spinner{width:18px;height:18px;border:2px solid #e2e8f0;border-top-color:#03c75a;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+  .kpi-card{background:#fff;border-radius:16px;padding:22px 24px;border:none;box-shadow:0 1px 3px rgba(0,0,0,.04);position:relative;overflow:hidden}
+  .kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0}
+  .kpi-card.kpi-blue::before{background:linear-gradient(90deg,#6366f1,#818cf8)}
+  .kpi-card.kpi-green::before{background:linear-gradient(90deg,#10b981,#34d399)}
+  .kpi-card.kpi-red::before{background:linear-gradient(90deg,#f43f5e,#fb7185)}
+  .kpi-card.kpi-purple::before{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
+  .kpi-card.kpi-orange::before{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+  .kpi-card.kpi-cyan::before{background:linear-gradient(90deg,#06b6d4,#22d3ee)}
+  .kpi-label{font-size:12px;color:#9ca3af;font-weight:500;margin-bottom:10px;letter-spacing:.02em}
+  .kpi-value{font-size:26px;font-weight:800;color:#111827;letter-spacing:-.02em}
+  .kpi-sub{font-size:11px;margin-top:6px;font-weight:500}
+  .kpi-up{color:#059669} .kpi-down{color:#dc2626} .kpi-flat{color:#9ca3af}
+  .period-tabs{display:flex;background:#fff;border-radius:10px;padding:4px;border:1px solid #e5e7eb;gap:2px}
+  .period-btn{padding:7px 18px;border-radius:8px;border:none;background:transparent;font-size:13px;font-weight:500;cursor:pointer;color:#9ca3af;transition:all .15s}
+  .period-btn.active{background:#6366f1;color:#fff;box-shadow:0 2px 8px rgba(99,102,241,.2)}
+  .period-btn:hover:not(.active){background:#f5f6fa;color:#374151}
+  .spinner{width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
   @keyframes spin{to{transform:rotate(360deg)}}
-  .empty{text-align:center;padding:40px;color:#94a3b8}
+  .empty{text-align:center;padding:48px;color:#9ca3af;font-size:14px}
   .toast-wrap{position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:8px;z-index:999}
-  .toast{padding:12px 20px;border-radius:10px;font-size:13px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,.15);animation:fadeIn .2s ease}
-  .toast-ok{background:#1e293b;color:#fff} .toast-err{background:#dc2626;color:#fff}
-  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .toast{padding:14px 22px;border-radius:12px;font-size:13px;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.12);animation:toastIn .25s ease}
+  .toast-ok{background:#111827;color:#fff} .toast-err{background:#dc2626;color:#fff}
+  @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  th.sortable{cursor:pointer;user-select:none;position:relative;padding-right:18px!important}
+  th.sortable:hover{background:#f0f1ff}
+  th.sortable::after{content:'⇅';position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:10px;color:#cbd5e1}
+  th.sortable.sort-asc::after{content:'▲';color:#6366f1}
+  th.sortable.sort-desc::after{content:'▼';color:#6366f1}
+  .section-title{font-size:16px;font-weight:700;color:#111827;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  .tab-bar{display:flex;gap:4px;background:#f5f6fa;border-radius:10px;padding:4px;margin-bottom:16px}
+  .tab-btn{padding:8px 18px;border-radius:8px;border:none;background:transparent;font-size:13px;font-weight:500;cursor:pointer;color:#6b7280;transition:all .15s}
+  .tab-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.08);font-weight:600}
 `;
 
 function layout(title, body, user = null) {
@@ -134,22 +159,22 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const selectedAccountId = opts.selectedAccountId || '';
 
   const menuItems = [
-    { id: 'dashboard', icon: '📊', label: '성과 대시보드', href: '/smart-sa' },
-    { id: 'autobid',   icon: '🎯', label: '파워링크 자동입찰', href: '/smart-sa/autobid' },
-    { id: 'shopping-bid', icon: '🛒', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' },
-    { id: 'reports',   icon: '📧', label: '자동리포트',     href: '/smart-sa/reports' },
-    { id: 'accounts',  icon: '🏢', label: '광고주 관리',   href: '/smart-sa/accounts' },
-    { id: 'api',       icon: '🔑', label: 'API 설정',      href: '/smart-sa/api-settings' },
+    { id: 'dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label: '성과 대시보드', href: '/smart-sa' },
+    { id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' },
+    { id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' },
+    { id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: '자동리포트', href: '/smart-sa/reports' },
+    { id: 'accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', label: '광고주 관리', href: '/smart-sa/accounts' },
+    { id: 'api', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>', label: 'API 설정', href: '/smart-sa/api-settings' },
   ];
   if (user?.is_admin) {
-    menuItems.push({ id: 'admin', icon: '👥', label: '직원 관리', href: '/smart-sa/admin/users' });
+    menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
   }
 
   const accountSelector = accounts.length > 0 ? `
-    <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.1)">
-      <label style="font-size:10px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:4px">광고주 선택</label>
+    <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6">
+      <label style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:6px;font-weight:600">광고주 선택</label>
       <select id="account-selector" onchange="switchAccount(this.value)"
-        style="width:100%;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:#334155;color:#fff;font-size:13px;cursor:pointer">
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #e5e7eb;background:#f9fafb;color:#374151;font-size:13px;cursor:pointer;font-family:inherit;outline:none">
         <option value="">전체 광고주</option>
         ${accounts.map(a => `<option value="${a.id}" ${String(a.id) === String(selectedAccountId) ? 'selected' : ''}>${a.name} (${a.customer_id})</option>`).join('')}
       </select>
@@ -168,22 +193,26 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const sidebar = `
   <div class="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-logo">뉴먼트 솔루션</div>
-      <div class="sidebar-sub">Newment solution Naver SA</div>
+      ${logoBase64 ? `<img src="${logoBase64}" class="sidebar-logo-img" alt="NEWMENT">` : '<div class="sidebar-logo">NEWMENT</div>'}
     </div>
     ${accountSelector}
-    <div style="padding:8px">
+    <div class="sidebar-section">메뉴</div>
+    <div style="padding:0 6px;flex:1">
       ${menuItems.map(m => `
         <a href="${m.href}" class="sidebar-link ${activeMenu === m.id ? 'active' : ''}">
-          <span>${m.icon}</span><span>${m.label}</span>
+          <span class="sidebar-icon">${m.icon}</span><span>${m.label}</span>
         </a>
       `).join('')}
     </div>
     <div class="sidebar-footer">
       <a href="/smart-sa/profile" class="sidebar-link ${activeMenu === 'profile' ? 'active' : ''}" style="margin-bottom:4px">
-        <span>👤</span><span>${user?.name || user?.username}</span>
+        <span class="sidebar-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+        <span>${user?.name || user?.username}</span>
       </a>
-      <a href="/smart-sa/logout" class="sidebar-link" style="padding:6px 12px">↩ 로그아웃</a>
+      <a href="/smart-sa/logout" class="sidebar-link" style="padding:8px 14px">
+        <span class="sidebar-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></span>
+        <span>로그아웃</span>
+      </a>
     </div>
   </div>`;
 
@@ -206,12 +235,11 @@ router.get('/login', async (req, res) => {
   const err = req.query.err || '';
 
   res.send(layout('로그인', `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f9ff,#f0fdf4)">
-      <div style="width:100%;max-width:400px;padding:16px">
-        <div style="text-align:center;margin-bottom:32px">
-          <div style="font-size:40px;margin-bottom:8px">📊</div>
-          <h1 style="font-size:22px;font-weight:700;color:#111827">뉴먼트 솔루션</h1>
-          <p style="color:#9ca3af;margin-top:6px;font-size:13px">Newment solution Naver SA</p>
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f6fa">
+      <div style="width:100%;max-width:420px;padding:16px">
+        <div style="text-align:center;margin-bottom:36px">
+          ${logoBase64 ? `<img src="${logoBase64}" style="height:40px;margin-bottom:12px" alt="NEWMENT">` : '<h1 style="font-size:24px;font-weight:800;color:#111827;margin-bottom:8px">NEWMENT</h1>'}
+          <p style="color:#9ca3af;font-size:13px;font-weight:500">Naver Search Ad Solution</p>
         </div>
         <div class="card">
           <div class="card-body">
@@ -230,10 +258,10 @@ router.get('/login', async (req, res) => {
               ${!isFirst ? `
               <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;color:#64748b;white-space:nowrap">
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
-                  <input type="checkbox" id="save-id" style="accent-color:#03c75a"> 아이디 저장
+                  <input type="checkbox" id="save-id" style="accent-color:#6366f1"> 아이디 저장
                 </label>
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
-                  <input type="checkbox" name="remember" value="1" style="accent-color:#03c75a"> 로그인 유지
+                  <input type="checkbox" name="remember" value="1" style="accent-color:#6366f1"> 로그인 유지
                 </label>
               </div>` : ''}
               <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px">
@@ -243,7 +271,7 @@ router.get('/login', async (req, res) => {
             ${!isFirst ? `
             <div style="text-align:center;margin-top:16px;padding-top:16px;border-top:1px solid #f1f5f9">
               <span style="font-size:13px;color:#64748b">계정이 없으신가요?</span>
-              <a href="/smart-sa/signup" style="font-size:13px;color:#03c75a;font-weight:600;margin-left:6px">회원가입</a>
+              <a href="/smart-sa/signup" style="font-size:13px;color:#6366f1;font-weight:600;margin-left:6px">회원가입</a>
             </div>
             <div style="text-align:center;margin-top:8px">
               <a href="/smart-sa/reset-password" style="font-size:12px;color:#94a3b8">비밀번호를 잊으셨나요?</a>
@@ -342,7 +370,7 @@ router.get('/signup', (req, res) => {
               <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px">계정 생성</button>
             </form>
             <div style="text-align:center;margin-top:16px;padding-top:16px;border-top:1px solid #f1f5f9">
-              <a href="/smart-sa/login" style="font-size:13px;color:#03c75a;font-weight:600">← 로그인으로 돌아가기</a>
+              <a href="/smart-sa/login" style="font-size:13px;color:#6366f1;font-weight:600">← 로그인으로 돌아가기</a>
             </div>
           </div>
         </div>
@@ -354,12 +382,11 @@ router.get('/signup', (req, res) => {
 router.post('/signup', async (req, res) => {
   const { username, password, name, daou_email, daou_pass } = req.body;
   try {
-    // 승인 대기(approved=0) 상태로 생성
-    const id = await db.createUser(username, password, name || username, { isAdmin: false, approved: false });
-    // 다우오피스 정보 저장
-    if (daou_email && daou_pass) {
-      await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2 WHERE id = $3', [daou_email, daou_pass, id]).catch(() => {});
-    }
+    // 승인 대기(approved=0) 상태로 생성 + 다우오피스 정보 함께 저장
+    const id = await db.createUser(username, password, name || username, {
+      isAdmin: false, approved: false,
+      daouEmail: daou_email || '', daouPass: daou_pass || '',
+    });
     req.session.userId = id;
     req.session.userName = name || username;
     req.session.isAdmin = false;
@@ -463,17 +490,26 @@ router.post('/profile/smtp-test', requireLogin, async (req, res) => {
     if (!smtp?.daou_email || !smtp?.smtp_pass) {
       return res.json({ ok: false, error: 'SMTP 설정이 없습니다. 먼저 저장해주세요.' });
     }
-    const host = smtp.smtp_host || 'outbound.daouoffice.com';
     const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      host, port: 465, secure: true,
-      auth: { user: smtp.daou_email, pass: smtp.smtp_pass },
-      connectionTimeout: 10000,
-    });
-    await transporter.verify();
-    res.json({ ok: true, message: `SMTP 연결 성공! (${host}:465, ${smtp.daou_email})` });
+    const servers = [
+      { host: smtp.smtp_host || 'outbound.daouoffice.com', port: 465, secure: true },
+      { host: 'send.daouoffice.com', port: 465, secure: true },
+      { host: smtp.smtp_host || 'outbound.daouoffice.com', port: 587, secure: false },
+      { host: 'send.daouoffice.com', port: 587, secure: false },
+      { host: 'smtp.daouoffice.com', port: 465, secure: true },
+      { host: 'smtp.daouoffice.com', port: 587, secure: false },
+    ];
+    const errors = [];
+    for (const srv of servers) {
+      try {
+        const t = nodemailer.createTransport({ ...srv, auth: { user: smtp.daou_email, pass: smtp.smtp_pass }, connectionTimeout: 8000, greetingTimeout: 8000 });
+        await t.verify();
+        return res.json({ ok: true, message: `SMTP 연결 성공! (${srv.host}:${srv.port}, ${smtp.daou_email})` });
+      } catch (e) { errors.push(`${srv.host}:${srv.port} → ${e.message}`); }
+    }
+    res.json({ ok: false, error: `모든 SMTP 서버 연결 실패:\n${errors.join('\n')}` });
   } catch (e) {
-    res.json({ ok: false, error: `SMTP 연결 실패: ${e.message}` });
+    res.json({ ok: false, error: `SMTP 테스트 오류: ${e.message}` });
   }
 });
 
@@ -578,6 +614,40 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
   const allUsers = await db.getAllUsers();
   const msg = req.query.msg || '';
 
+  // 직원별 광고주 수, 자동입찰 키워드 수 조회
+  const userStats = {};
+  try {
+    const accountCounts = await db.all(`
+      SELECT a.user_id, COUNT(*)::int AS account_cnt
+      FROM ad_accounts a GROUP BY a.user_id
+    `);
+    for (const r of accountCounts) userStats[r.user_id] = { accounts: r.account_cnt, autobidKw: 0, shoppingBidKw: 0 };
+
+    const autobidCounts = await db.all(`
+      SELECT a.user_id, COUNT(*)::int AS kw_cnt
+      FROM auto_bid_keywords abk
+      JOIN ad_accounts a ON a.id = abk.account_id
+      WHERE abk.enabled = 1
+      GROUP BY a.user_id
+    `);
+    for (const r of autobidCounts) {
+      if (!userStats[r.user_id]) userStats[r.user_id] = { accounts: 0, autobidKw: 0, shoppingBidKw: 0 };
+      userStats[r.user_id].autobidKw = r.kw_cnt;
+    }
+
+    const shoppingBidCounts = await db.all(`
+      SELECT a.user_id, COUNT(*)::int AS kw_cnt
+      FROM shopping_bid_keywords sbk
+      JOIN ad_accounts a ON a.id = sbk.account_id
+      WHERE sbk.enabled = 1
+      GROUP BY a.user_id
+    `);
+    for (const r of shoppingBidCounts) {
+      if (!userStats[r.user_id]) userStats[r.user_id] = { accounts: 0, autobidKw: 0, shoppingBidKw: 0 };
+      userStats[r.user_id].shoppingBidKw = r.kw_cnt;
+    }
+  } catch (e) { console.log('직원 통계 조회 실패:', e.message); }
+
   const content = `
     ${msg === 'approved' ? '<div class="alert alert-ok">승인되었습니다.</div>' : ''}
     ${msg === 'rejected' ? '<div class="alert alert-err">거부되었습니다.</div>' : ''}
@@ -618,16 +688,21 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
         <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => u.approved).length}명</span>
       </div>
       <table>
-        <thead><tr><th>이름</th><th>아이디</th><th>권한</th><th>가입일</th></tr></thead>
+        <thead><tr><th>이름</th><th>아이디</th><th>권한</th><th>광고주</th><th>자동입찰</th><th>가입일</th></tr></thead>
         <tbody>
-          ${allUsers.filter(u => u.approved).map(u => `
+          ${allUsers.filter(u => u.approved).map(u => {
+            const st = userStats[u.id] || { accounts: 0, autobidKw: 0, shoppingBidKw: 0 };
+            const totalBid = st.autobidKw + st.shoppingBidKw;
+            return `
             <tr>
               <td><strong>${u.name}</strong></td>
               <td style="color:#64748b">${u.username}</td>
               <td>${u.is_admin ? '<span class="badge badge-blue">관리자</span>' : '<span class="badge badge-gray">직원</span>'}</td>
+              <td style="text-align:center">${st.accounts > 0 ? `<span class="badge badge-green">${st.accounts}개</span>` : '<span style="color:#cbd5e1">-</span>'}</td>
+              <td style="text-align:center">${totalBid > 0 ? `<span class="badge badge-blue">${totalBid}개</span>${st.shoppingBidKw > 0 ? `<span style="font-size:11px;color:#94a3b8;margin-left:4px">(쇼핑 ${st.shoppingBidKw})</span>` : ''}` : '<span style="color:#cbd5e1">-</span>'}</td>
               <td style="font-size:12px;color:#94a3b8">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
-            </tr>
-          `).join('')}
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>
@@ -690,7 +765,7 @@ router.get('/api-settings', requireLogin, async (req, res) => {
       <div class="card-body">
         <p style="color:#64748b;font-size:13px;margin-bottom:16px">
           네이버 검색광고 시스템의 API 키를 등록하면, 해당 계정에 연결된 모든 광고주에 접근할 수 있습니다.<br>
-          <a href="https://searchad.naver.com" target="_blank" style="color:#03c75a">검색광고 시스템</a> → 도구 → API 사용 관리에서 발급받으세요.
+          <a href="https://searchad.naver.com" target="_blank" style="color:#6366f1">검색광고 시스템</a> → 도구 → API 사용 관리에서 발급받으세요.
         </p>
         <form method="POST" action="/smart-sa/api-settings">
           <div class="form-group">
@@ -714,7 +789,7 @@ router.get('/api-settings', requireLogin, async (req, res) => {
       <div class="card-header"><span class="card-title">📖 설정 안내</span></div>
       <div class="card-body" style="font-size:13px;color:#64748b;line-height:1.8">
         <strong>1단계:</strong> 위에 API 계정 정보를 입력하고 저장합니다.<br>
-        <strong>2단계:</strong> <a href="/smart-sa/accounts" style="color:#03c75a">광고주 관리</a> 페이지에서 광고주 목록을 불러옵니다.<br>
+        <strong>2단계:</strong> <a href="/smart-sa/accounts" style="color:#6366f1">광고주 관리</a> 페이지에서 광고주 목록을 불러옵니다.<br>
         <strong>3단계:</strong> 솔루션을 적용할 광고주를 선택합니다.<br>
         <strong>4단계:</strong> 각 광고주별로 리포트, 자동입찰 등 활용 기능을 설정합니다.
       </div>
@@ -787,14 +862,14 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div style="flex:1;min-width:200px">
-            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">광고주명</label>
-            <input id="add-name" placeholder="예: egojin" style="width:100%">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">광고주명</label>
+            <input id="add-name" placeholder="예: egojin" style="width:100%;height:42px">
           </div>
           <div style="flex:1;min-width:150px">
-            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Customer ID</label>
-            <input id="add-cid" placeholder="검색광고 Key에서 확인한 숫자" style="width:100%">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">Customer ID</label>
+            <input id="add-cid" placeholder="검색광고 Key에서 확인한 숫자" style="width:100%;height:42px">
           </div>
-          <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()">🔍 확인 및 추가</button>
+          <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()" style="height:42px;white-space:nowrap">🔍 확인 및 추가</button>
         </div>
         <div id="add-result" style="margin-top:8px"></div>
       </div>
@@ -867,10 +942,10 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           </table>
           <p style="margin-top:10px;font-size:12px;color:#94a3b8">
             이 마케터 API로 권한이 부여된 광고주 계정에 접근할 수 있습니다.
-            <a href="/smart-sa/api-settings" style="color:#03c75a;margin-left:4px">설정 변경 →</a>
+            <a href="/smart-sa/api-settings" style="color:#6366f1;margin-left:4px">설정 변경 →</a>
           </p>
         ` : `
-          <p style="color:#ef4444">마케터 API가 연동되지 않았습니다. <a href="/smart-sa/api-settings" style="color:#03c75a;font-weight:600">API 설정</a>에서 먼저 등록해주세요.</p>
+          <p style="color:#ef4444">마케터 API가 연동되지 않았습니다. <a href="/smart-sa/api-settings" style="color:#6366f1;font-weight:600">API 설정</a>에서 먼저 등록해주세요.</p>
         `}
       </div>
     </div>
@@ -1147,7 +1222,7 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
     const id = await db.addSelectedAccount(req.session.userId, String(customerId), name || String(customerId));
     res.json({ ok: true, id });
 
-    // 백그라운드: 전일 성과 데이터 즉시 동기화
+    // 백그라운드: 60일 데이터 + 마스터 데이터 동기화
     (async () => {
       try {
         const creds = await db.getApiCredentials(req.session.userId);
@@ -1155,10 +1230,37 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
         const account = await db.getAccountById(id, req.session.userId);
         if (!account) return;
         const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+
+        // 1. 마스터 데이터 동기화 (캠페인/광고그룹/키워드 이름)
+        try {
+          const client = makeClient(creds, account.customer_id);
+          const campRows = await client.syncMaster('Campaign');
+          await db.upsertMasterCampaigns(id, campRows);
+          const agRows = await client.syncMaster('Adgroup');
+          await db.upsertMasterAdgroups(id, agRows);
+          const kwRows = await client.syncMaster('Keyword');
+          await db.upsertMasterKeywords(id, kwRows);
+          console.log(`📋 [${name}] 마스터 동기화 완료: 캠페인 ${campRows.length}, 광고그룹 ${agRows.length}, 키워드 ${kwRows.length}`);
+        } catch (e) {
+          console.log(`⚠️ [${name}] 마스터 동기화 실패:`, e.message);
+        }
+
+        // 2. 60일 데이터 백필
         const now = new Date();
-        const yesterday = new Date(now.getTime() + 9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        await syncAccountDate(enriched, yesterday);
-        console.log(`✅ [${name}] 신규 광고주 전일 데이터 즉시 동기화 완료`);
+        const DAYS = 60;
+        let synced = 0;
+        for (let i = 1; i <= DAYS; i++) {
+          try {
+            const d = new Date(now.getTime() + 9 * 60 * 60 * 1000 - i * 24 * 60 * 60 * 1000);
+            const dateStr = d.toISOString().slice(0, 10);
+            await syncAccountDate(enriched, dateStr);
+            synced++;
+            if (i % 10 === 0) console.log(`  📥 [${name}] ${synced}/${DAYS}일 동기화 완료...`);
+          } catch (e) {
+            console.log(`  ⚠️ [${name}] ${i}일전 동기화 실패:`, e.message);
+          }
+        }
+        console.log(`✅ [${name}] 신규 광고주 ${synced}일 데이터 동기화 완료`);
       } catch (e) {
         console.error(`⚠️ [${name}] 신규 광고주 즉시 동기화 실패:`, e.message);
       }
@@ -1195,6 +1297,14 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
           <div class="form-group">
             <label>리포트 수신 이메일 (쉼표로 구분)</label>
             <input name="report_emails" value="${v('report_emails')}" placeholder="a@a.com,b@b.com">
+          </div>
+          <div class="form-group">
+            <label>네이버 광고관리 쿠키 (성별/연령 데이터 조회용, 선택사항)</label>
+            <textarea name="naver_cookie" rows="3" placeholder="네이버 광고관리 시스템(ads.naver.com) 로그인 후 브라우저 개발자도구 > Application > Cookies에서 복사" style="font-size:11px;font-family:monospace">${v('naver_cookie')}</textarea>
+            <p style="font-size:11px;color:#94a3b8;margin-top:4px">
+              📋 설정방법: ads.naver.com 로그인 → F12 → Application → Cookies → 모든 쿠키값 복사 붙여넣기<br>
+              ⚠️ 쿠키는 주기적으로 만료됩니다. 성별/연령 데이터가 안 나오면 쿠키를 갱신해주세요.
+            </p>
           </div>
         </div>
       </div>
@@ -1281,6 +1391,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           <button class="period-btn active" data-period="yesterday">어제</button>
           <button class="period-btn" data-period="7days">최근 7일</button>
           <button class="period-btn" data-period="30days">최근 30일</button>
+          <button class="period-btn" data-period="lastMonth">전월</button>
           <button class="period-btn" data-period="custom" id="custom-period-btn">기간 선택</button>
         </div>
         <div id="custom-date-wrap" style="display:none;align-items:center;gap:6px">
@@ -1300,19 +1411,21 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <!-- 탭 메뉴 -->
-    <div style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:20px">
+    <div class="tab-bar">
       ${['summary','keywords','hourly','target','adgroups'].map((tab, i) => {
         const labels = ['요약','키워드별','시간대별','타겟별','그룹별'];
-        return `<button class="dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')"
-          style="padding:10px 20px;font-size:13px;font-weight:600;background:none;border:none;cursor:pointer;color:${i===0?'#03c75a':'#94a3b8'};border-bottom:2px solid ${i===0?'#03c75a':'transparent'};margin-bottom:-2px;transition:all .15s">${labels[i]}</button>`;
+        return `<button class="tab-btn dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')">${labels[i]}</button>`;
       }).join('')}
     </div>
 
     <!-- 요약 탭 -->
     <div id="tab-summary" class="tab-content">
       <div class="kpi-grid" id="kpi-grid">
-        ${['노출수','클릭수','CTR','총비용','구매완료전환매출','ROAS','평균순위','구매완료전환수'].map(l => `
-          <div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:#e2e8f0">—</div></div>
+        ${[
+          {l:'노출수',c:'kpi-blue'},{l:'클릭수',c:'kpi-cyan'},{l:'CTR',c:'kpi-green'},{l:'총비용',c:'kpi-red'},
+          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'평균순위',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
+        ].map(k => `
+          <div class="kpi-card ${k.c}"><div class="kpi-label">${k.l}</div><div class="kpi-value" style="color:#e5e7eb">—</div></div>
         `).join('')}
       </div>
       <div id="chart-wrap" class="card" style="margin-bottom:20px;display:none">
@@ -1398,10 +1511,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
       document.getElementById('tab-'+name).style.display = 'block';
       document.querySelectorAll('.dash-tab').forEach(b => {
-        const isActive = b.dataset.tab === name;
-        b.style.color = isActive ? '#03c75a' : '#94a3b8';
-        b.style.borderBottomColor = isActive ? '#03c75a' : 'transparent';
-        if (isActive) b.classList.add('active'); else b.classList.remove('active');
+        if (b.dataset.tab === name) b.classList.add('active'); else b.classList.remove('active');
       });
       loadCurrentTab();
     }
@@ -1426,8 +1536,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     async function loadSummary() {
       const grid = document.getElementById('kpi-grid');
       grid.innerHTML = ${JSON.stringify(
-        ['노출수','클릭수','CTR','총비용','구매완료전환매출','ROAS','평균순위','구매완료전환수'].map(l =>
-          `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value"><span class="spinner"></span></div></div>`
+        [
+          {l:'노출수',c:'kpi-blue'},{l:'클릭수',c:'kpi-cyan'},{l:'CTR',c:'kpi-green'},{l:'총비용',c:'kpi-red'},
+          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'평균순위',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
+        ].map(k =>
+          `<div class="kpi-card ${k.c}"><div class="kpi-label">${k.l}</div><div class="kpi-value"><span class="spinner"></span></div></div>`
         ).join('')
       )};
       try {
@@ -1441,17 +1554,17 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function renderKpi(s) {
       const roas = s?.roas || 0;
       const cards = [
-        {l:'노출수', v:num(s?.impCnt)},
-        {l:'클릭수', v:num(s?.clkCnt)},
-        {l:'CTR',    v:pct(s?.ctr)},
-        {l:'총비용', v:won(s?.salesAmt)},
-        {l:'구매완료전환매출',v:won(s?.purchaseAmt)},
-        {l:'ROAS',   v:roas+'%'},
-        {l:'평균순위',v:rnk(s?.avgRnk)},
-        {l:'구매완료전환수', v:num(s?.purchaseCnt)},
+        {l:'노출수', v:num(s?.impCnt), c:'kpi-blue'},
+        {l:'클릭수', v:num(s?.clkCnt), c:'kpi-cyan'},
+        {l:'CTR',    v:pct(s?.ctr), c:'kpi-green'},
+        {l:'총비용', v:won(s?.salesAmt), c:'kpi-red'},
+        {l:'구매완료전환매출',v:won(s?.purchaseAmt), c:'kpi-purple'},
+        {l:'ROAS',   v:roas+'%', c:'kpi-green'},
+        {l:'평균순위',v:rnk(s?.avgRnk), c:'kpi-orange'},
+        {l:'구매완료전환수', v:num(s?.purchaseCnt), c:'kpi-purple'},
       ];
       document.getElementById('kpi-grid').innerHTML = cards.map(c =>
-        '<div class="kpi-card"><div class="kpi-label">'+c.l+'</div><div class="kpi-value">'+c.v+'</div></div>'
+        '<div class="kpi-card '+c.c+'"><div class="kpi-label">'+c.l+'</div><div class="kpi-value">'+c.v+'</div></div>'
       ).join('');
       if (s?.campStats?.length) renderChart(s.campStats);
     }
@@ -1487,6 +1600,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     // ── 키워드별 탭 ──
     let kwShowAll = { powerlink: false, shopping: false };
     let kwData = null;
+    let kwFilterClk = true; // 기본: 클릭 1 미만 숨김
 
     async function loadKeywords(showAll) {
       const wrap = document.getElementById('kw-tab-content');
@@ -1507,21 +1621,102 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function renderKeywordTab(d) {
       const wrap = document.getElementById('kw-tab-content');
       let html = '';
+      // 필터 토글
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">';
+      html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none">';
+      html += '<input type="checkbox" id="kw-filter-clk" '+(kwFilterClk?'checked':'')+' style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb"> ';
+      html += '<span>클릭 1 미만 키워드 숨기기</span></label>';
+      var plF = kwFilterClk ? (d.powerlink||[]).filter(function(k){return k.clk>=1}) : (d.powerlink||[]);
+      var spF = kwFilterClk ? (d.shopping||[]).filter(function(k){return k.clk>=1}) : (d.shopping||[]);
+      var otF = kwFilterClk ? (d.other||[]).filter(function(k){return k.clk>=1}) : (d.other||[]);
+      var totalAll = (d.powerlinkTotal||0)+(d.shoppingTotal||0)+(d.otherTotal||0);
+      var shownAll = plF.length+spF.length+otF.length;
+      if (kwFilterClk) html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+shownAll+'개 / 전체: '+totalAll+'개</span>';
+      html += '</div>';
       // 파워링크
-      html += kwSection('파워링크', d.powerlink, d.powerlinkTotal, 'powerlink');
+      html += kwSection('파워링크', plF, d.powerlinkTotal, 'powerlink');
       // 쇼핑검색
-      html += kwSection('쇼핑검색', d.shopping, d.shoppingTotal, 'shopping');
-      if (d.other?.length) html += kwSection('기타', d.other, d.otherTotal, 'other');
+      html += kwSection('쇼핑검색', spF, d.shoppingTotal, 'shopping');
+      if (otF.length) html += kwSection('기타', otF, d.otherTotal, 'other');
       wrap.innerHTML = html;
     }
 
+    // 정렬 상태: { type: { field, dir } }
+    const kwSortState = {};
+    const kwColDefs = [
+      { key:'campaignName', label:'캠페인', tp:'s' },
+      { key:'adgroupName', label:'광고그룹', tp:'s' },
+      { key:'keyword', label:'키워드', tp:'s' },
+      { key:'imp', label:'노출', tp:'n' },
+      { key:'clk', label:'클릭', tp:'n' },
+      { key:'ctr', label:'CTR', tp:'n' },
+      { key:'cost', label:'총비용', tp:'n' },
+      { key:'cpc', label:'CPC', tp:'n' },
+      { key:'purchaseCnt', label:'구매전환수', tp:'n' },
+      { key:'purchaseAmt', label:'구매전환매출', tp:'n' },
+      { key:'roas', label:'ROAS', tp:'n' },
+    ];
+
+    function sortKwItems(items, type) {
+      const st = kwSortState[type];
+      if (!st) return items;
+      const sorted = items.slice();
+      const col = kwColDefs.find(function(c){ return c.key === st.field; });
+      if (!col) return items;
+      sorted.sort(function(a, b) {
+        var va, vb;
+        if (col.tp === 'n') { va = Number(a[st.field]) || 0; vb = Number(b[st.field]) || 0; }
+        else { va = String(a[st.field] || '').toLowerCase(); vb = String(b[st.field] || '').toLowerCase(); }
+        if (va < vb) return st.dir === 'asc' ? -1 : 1;
+        if (va > vb) return st.dir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      return sorted;
+    }
+
+    // 이벤트 위임: kw-tab-content 클릭 이벤트에서 정렬 + 필터 처리
+    document.getElementById('kw-tab-content').addEventListener('click', function(e) {
+      var th = e.target.closest('th[data-sort-key]');
+      if (!th) return;
+      var field = th.getAttribute('data-sort-key');
+      var type = th.getAttribute('data-sort-type');
+      if (!field || !type || !kwData) return;
+      var st = kwSortState[type];
+      if (st && st.field === field) {
+        st.dir = st.dir === 'desc' ? 'asc' : 'desc';
+      } else {
+        var col = kwColDefs.find(function(c){ return c.key === field; });
+        kwSortState[type] = { field: field, dir: col && col.tp === 's' ? 'asc' : 'desc' };
+      }
+      renderKeywordTab(kwData);
+    });
+    document.getElementById('kw-tab-content').addEventListener('change', function(e) {
+      if (e.target && e.target.id === 'kw-filter-clk') {
+        kwFilterClk = e.target.checked;
+        renderKeywordTab(kwData);
+      }
+    });
+
     function kwSection(title, items, total, type) {
-      if (!items?.length) return '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span></div><div class="card-body"><div class="empty">데이터 없음</div></div></div>';
-      let html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span><span style="font-size:12px;color:#94a3b8">총 '+total+'개 키워드</span></div><div class="card-body" style="overflow-x:auto">';
-      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="min-width:140px">키워드</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환수</th><th style="text-align:right">구매전환매출</th><th style="text-align:right">ROAS</th></tr></thead><tbody>';
-      items.forEach((kw,i) => {
+      if (!items || !items.length) return '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span></div><div class="card-body"><div class="empty">데이터 없음</div></div></div>';
+      var sorted = sortKwItems(items, type);
+      var st = kwSortState[type] || {};
+      var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span><span style="font-size:12px;color:#94a3b8">총 '+total+'개 키워드</span></div><div class="card-body" style="overflow-x:auto">';
+      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th>';
+      for (var ci = 0; ci < kwColDefs.length; ci++) {
+        var col = kwColDefs[ci];
+        var isRight = col.tp === 'n';
+        var cls = 'sortable';
+        if (st.field === col.key) cls += ' sort-' + st.dir;
+        html += '<th class="'+cls+'" data-sort-key="'+col.key+'" data-sort-type="'+type+'" style="'+(isRight?'text-align:right;':'')+'white-space:nowrap">' + col.label + '</th>';
+      }
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < sorted.length; i++) {
+        var kw = sorted[i];
         html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
-        html += '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong><br><span style="font-size:11px;color:#94a3b8">'+kw.campaignName+'</span></td>';
+        html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.campaignName||'-')+'</td>';
+        html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.adgroupName||'-')+'</td>';
+        html += '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong></td>';
         html += '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>';
@@ -1531,7 +1726,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         html += '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(kw.purchaseAmt)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(kw.roas>=100?'#16a34a':'#ef4444')+'">'+kw.roas+'%</td>';
         html += '</tr>';
-      });
+      }
       html += '</tbody></table>';
       if (items.length < total) {
         html += '<div style="text-align:center;padding:12px"><button class="btn btn-outline" onclick="loadAllKeywords(\\\''+type+'\\\')">더보기 (전체 '+total+'개)</button></div>';
@@ -1623,7 +1818,112 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         tabLoaded.target = true;
         renderDeviceTab(json);
+        // 성별/연령 데이터 비동기 로딩
+        loadDemographics();
       } catch(e) { wrap.innerHTML = '<div class="empty">타겟별 조회 실패: '+e.message+'</div>'; }
+    }
+
+    async function loadDemographics() {
+      const genderWrap = document.getElementById('demo-gender-content');
+      const ageWrap = document.getElementById('demo-age-content');
+      if (!genderWrap || !ageWrap) return;
+      genderWrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 성별 데이터 조회 중...</div>';
+      ageWrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 연령대 데이터 조회 중...</div>';
+      try {
+        const res = await fetch('/smart-sa/api/tab/demographics?'+periodParams());
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        renderGenderSection(json.gender || []);
+        renderAgeSection(json.age || []);
+      } catch(e) {
+        const msg = '<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px">'+e.message+'</div>';
+        genderWrap.innerHTML = msg;
+        ageWrap.innerHTML = msg;
+      }
+    }
+
+    function renderGenderSection(data) {
+      const wrap = document.getElementById('demo-gender-content');
+      if (!data.length) { wrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8">성별 데이터가 없습니다.</div>'; return; }
+      const genderOrder = ['남성','여성','알수없음'];
+      data.sort((a,b) => {
+        const ai = genderOrder.indexOf(a.label), bi = genderOrder.indexOf(b.label);
+        return (ai===-1?99:ai) - (bi===-1?99:bi);
+      });
+      const totalCost = data.reduce((s,d) => s+(d.cost||0), 0) || 1;
+      const totalClk = data.reduce((s,d) => s+(d.clk||0), 0) || 1;
+      const colors = {'남성':'#3b82f6','여성':'#ec4899','알수없음':'#94a3b8'};
+      const icons = {'남성':'♂️','여성':'♀️','알수없음':'❓'};
+      // 비율 바
+      let html = '<div style="display:flex;height:28px;border-radius:8px;overflow:hidden;margin-bottom:16px">';
+      data.forEach(d => {
+        const pct = (d.cost/totalCost*100).toFixed(0);
+        const color = colors[d.label] || '#64748b';
+        html += '<div style="width:'+pct+'%;background:'+color+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;min-width:40px">'+(icons[d.label]||'')+' '+d.label+' '+pct+'%</div>';
+      });
+      html += '</div>';
+      // 테이블
+      html += '<table style="table-layout:auto"><thead><tr><th>성별</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">비용비중</th><th style="text-align:right">전환수</th><th style="text-align:right">전환매출</th></tr></thead><tbody>';
+      data.forEach(d => {
+        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2) : '0.00';
+        const costPct = (d.cost/totalCost*100).toFixed(1);
+        html += '<tr><td style="font-weight:600;color:'+(colors[d.label]||'#333')+'">'+(icons[d.label]||'')+' '+d.label+'</td>'
+          +'<td style="text-align:right">'+num(d.imp)+'</td>'
+          +'<td style="text-align:right">'+num(d.clk)+'</td>'
+          +'<td style="text-align:right">'+ctr+'%</td>'
+          +'<td style="text-align:right">'+won(d.cost)+'</td>'
+          +'<td style="text-align:right">'+costPct+'%</td>'
+          +'<td style="text-align:right">'+num(d.convCnt)+'</td>'
+          +'<td style="text-align:right">'+won(d.convAmt)+'</td></tr>';
+      });
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    }
+
+    function renderAgeSection(data) {
+      const wrap = document.getElementById('demo-age-content');
+      if (!data.length) { wrap.innerHTML = '<div style="text-align:center;padding:16px;color:#94a3b8">연령대 데이터가 없습니다.</div>'; return; }
+      // 연령대 내림차순 정렬, 알수없음은 마지막
+      data.sort((a,b) => {
+        if (a.label === '알수없음') return 1;
+        if (b.label === '알수없음') return -1;
+        // 숫자 추출하여 내림차순
+        const na = parseInt(a.label) || 0, nb = parseInt(b.label) || 0;
+        return nb - na;
+      });
+      const totalCost = data.reduce((s,d) => s+(d.cost||0), 0) || 1;
+      const maxCost = Math.max(...data.map(d => d.cost||0), 1);
+      const ageColors = ['#8b5cf6','#7c3aed','#6d28d9','#5b21b6','#4c1d95','#3b0764','#94a3b8'];
+      // 바 차트
+      let html = '<div style="margin-bottom:16px">';
+      data.forEach((d,i) => {
+        const pct = (d.cost/totalCost*100).toFixed(1);
+        const barW = (d.cost/maxCost*100).toFixed(0);
+        const color = i < ageColors.length ? ageColors[i] : '#64748b';
+        html += '<div style="display:flex;align-items:center;margin-bottom:6px">'
+          +'<div style="width:80px;font-size:12px;font-weight:600;color:#374151">'+d.label+'</div>'
+          +'<div style="flex:1;height:20px;background:#f1f5f9;border-radius:4px;overflow:hidden">'
+          +'<div style="width:'+barW+'%;height:100%;background:'+color+';border-radius:4px;display:flex;align-items:center;justify-content:flex-end;padding-right:6px">'
+          +'<span style="color:#fff;font-size:10px;font-weight:600">'+pct+'%</span></div></div>'
+          +'<div style="width:100px;text-align:right;font-size:12px;color:#64748b">'+won(d.cost)+'</div></div>';
+      });
+      html += '</div>';
+      // 테이블
+      html += '<table style="table-layout:auto"><thead><tr><th>연령대</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">비용비중</th><th style="text-align:right">전환수</th><th style="text-align:right">전환매출</th></tr></thead><tbody>';
+      data.forEach(d => {
+        const ctr = d.imp > 0 ? (d.clk/d.imp*100).toFixed(2) : '0.00';
+        const costPct = (d.cost/totalCost*100).toFixed(1);
+        html += '<tr><td style="font-weight:600">'+d.label+'</td>'
+          +'<td style="text-align:right">'+num(d.imp)+'</td>'
+          +'<td style="text-align:right">'+num(d.clk)+'</td>'
+          +'<td style="text-align:right">'+ctr+'%</td>'
+          +'<td style="text-align:right">'+won(d.cost)+'</td>'
+          +'<td style="text-align:right">'+costPct+'%</td>'
+          +'<td style="text-align:right">'+num(d.convCnt)+'</td>'
+          +'<td style="text-align:right">'+won(d.convAmt)+'</td></tr>';
+      });
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
     }
 
     function renderDeviceTab(d) {
@@ -1665,7 +1965,12 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       });
       html += '</div></div>';
 
-      html += '<div class="card"><div class="card-body" style="text-align:center;padding:24px;color:#94a3b8;font-size:13px">연령대/성별 데이터는 네이버 검색광고 API에서 제공하지 않습니다.<br>네이버 광고 관리 시스템에서 직접 확인해주세요.</div></div>';
+      // 성별 섹션
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">👫 성별 성과</span></div><div class="card-body" id="demo-gender-content"><div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 로딩 대기 중...</div></div></div>';
+
+      // 연령대 섹션
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">📊 연령대별 성과</span></div><div class="card-body" id="demo-age-content"><div style="text-align:center;padding:16px;color:#94a3b8"><span class="spinner"></span> 로딩 대기 중...</div></div></div>';
+
       wrap.innerHTML = html;
     }
 
@@ -1686,12 +1991,12 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
       let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span></div><div class="card-body" style="overflow-x:auto">';
-      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="white-space:nowrap">광고그룹</th><th style="white-space:nowrap">캠페인</th><th style="text-align:right;white-space:nowrap">노출</th><th style="text-align:right;white-space:nowrap">클릭</th><th style="text-align:right;white-space:nowrap">CTR</th><th style="text-align:right;white-space:nowrap">총비용</th><th style="text-align:right;white-space:nowrap">CPC</th><th style="text-align:right;white-space:nowrap">구매전환</th><th style="text-align:right;white-space:nowrap">구매매출</th><th style="text-align:right;white-space:nowrap">ROAS</th></tr></thead><tbody>';
+      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="white-space:nowrap">캠페인</th><th style="white-space:nowrap">광고그룹</th><th style="text-align:right;white-space:nowrap">노출</th><th style="text-align:right;white-space:nowrap">클릭</th><th style="text-align:right;white-space:nowrap">CTR</th><th style="text-align:right;white-space:nowrap">총비용</th><th style="text-align:right;white-space:nowrap">CPC</th><th style="text-align:right;white-space:nowrap">구매전환</th><th style="text-align:right;white-space:nowrap">구매매출</th><th style="text-align:right;white-space:nowrap">ROAS</th></tr></thead><tbody>';
       adgroups.forEach((ag,i) => {
         const tpBadge = ag.campaignTp===2?'<span class="badge badge-blue" style="margin-left:4px;font-size:10px">쇼핑</span>':'';
         html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
-        html += '<td style="white-space:nowrap"><strong>'+ag.adgroupName+'</strong></td>';
         html += '<td style="white-space:nowrap">'+ag.campaignName+tpBadge+'</td>';
+        html += '<td style="white-space:nowrap"><strong>'+ag.adgroupName+'</strong></td>';
         html += '<td style="text-align:right;white-space:nowrap">'+num(ag.imp)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(ag.clk)+'</td>';
         html += '<td style="text-align:right;white-space:nowrap">'+pct(ag.ctr)+'</td>';
@@ -1819,7 +2124,10 @@ async function cachedStatReport(client, customerId, reportTp, dt) {
   const cached = statCache.get(key);
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.rows;
   const rows = await client.createAndDownloadStatReport(reportTp, dt);
-  statCache.set(key, { rows, ts: Date.now() });
+  // ⚠️ 빈 결과는 캐시하지 않음 (데이터 미생성 상태일 수 있음)
+  if (rows && rows.length > 0) {
+    statCache.set(key, { rows, ts: Date.now() });
+  }
   // LRU: 500개 초과 시 오래된 것 제거
   if (statCache.size > 500) {
     const oldest = [...statCache.entries()].sort((a,b) => a[1].ts - b[1].ts)[0];
@@ -1856,6 +2164,14 @@ function resolvePeriodDates(period, startDate, endDate) {
     const start = new Date(now); start.setDate(start.getDate() - 30);
     return { since: fmtKST(start), until: fmtKST(end) };
   }
+  if (period === 'lastMonth') {
+    // 전월 1일 ~ 말일 (KST 기준)
+    const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const y = kst.getFullYear(), m = kst.getMonth(); // 현재 월
+    const firstDay = new Date(y, m - 1, 1); // 전월 1일
+    const lastDay = new Date(y, m, 0); // 전월 마지막 날
+    return { since: firstDay.toISOString().slice(0, 10), until: lastDay.toISOString().slice(0, 10) };
+  }
   const d = new Date(now); d.setDate(d.getDate() - 1);
   return { since: fmtKST(d), until: fmtKST(d) };
 }
@@ -1881,7 +2197,9 @@ async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
 function normalizeCampaignTp(tp) {
   if (tp === 1 || tp === '1' || tp === 'WEB_SITE') return 1;
   if (tp === 2 || tp === '2' || tp === 'SHOPPING') return 2;
-  if (tp === 4 || tp === '4' || tp === 'BRAND') return 4;
+  if (tp === 3 || tp === '3' || tp === 'BRAND' || tp === 'BRAND_SEARCH') return 3;
+  if (tp === 4 || tp === '4') return 4;
+  if (tp === 5 || tp === '5' || tp === 'POWER_CONTENTS') return 5;
   return parseInt(tp) || 1;
 }
 
@@ -1889,48 +2207,57 @@ function normalizeCampaignTp(tp) {
 const nameMapCache = new Map();
 const NAME_MAP_TTL = 5 * 60 * 1000;
 
-async function buildNameMapsFromApi(client) {
+/**
+ * 마스터 리포트 API로 전체 캠페인/광고그룹/키워드를 한번에 다운로드
+ * - 개별 API 호출 대비 10배 이상 빠름 (3개 리포트 동시 다운로드)
+ * - DB에도 자동 저장하여 이후 요청은 DB에서 즉시 조회
+ */
+async function buildNameMapsFromMasterReport(client, accountId) {
   const campMap = {}, agMap = {}, kwMap = {};
   try {
-    const campaigns = await client.getCampaigns();
-    for (const c of (campaigns || [])) {
-      campMap[c.nccCampaignId] = { name: c.name, tp: normalizeCampaignTp(c.campaignTp) };
+    console.log(`📥 [account:${accountId}] 마스터 리포트 다운로드 시작...`);
+    const [campRows, agRows, kwRows] = await Promise.all([
+      client.syncMaster('Campaign').catch(e => { console.log('캠페인 마스터 실패:', e.message); return []; }),
+      client.syncMaster('Adgroup').catch(e => { console.log('광고그룹 마스터 실패:', e.message); return []; }),
+      client.syncMaster('Keyword').catch(e => { console.log('키워드 마스터 실패:', e.message); return []; }),
+    ]);
+
+    // TSV → Map 빌드 (캠페인: [0]customerId, [1]campaignId, [2]name, [3]tp)
+    for (const r of campRows) {
+      if (r.length < 3) continue;
+      campMap[r[1]] = { name: r[2], tp: normalizeCampaignTp(parseInt(r[3]) || 1) };
+    }
+    // 광고그룹: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName
+    for (const r of agRows) {
+      if (r.length < 4) continue;
+      agMap[r[1]] = { name: r[3], campaignId: r[2] || '' };
+    }
+    // 키워드: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트!)
+    for (const r of kwRows) {
+      if (r.length < 4) continue;
+      const ag = agMap[r[1]] || {};
+      const camp = campMap[ag.campaignId] || {};
+      kwMap[r[2]] = {
+        keyword: r[3] || '', adgroupId: r[1] || '',
+        adgroupName: ag.name || '', campaignId: ag.campaignId || '',
+        campaignName: camp.name || '', campaignTp: camp.tp || 1,
+      };
     }
 
-    // 모든 캠페인의 광고그룹을 병렬 조회
-    const agResults = await Promise.allSettled(
-      (campaigns || []).map(c => client.getAdGroups(c.nccCampaignId).then(ags => ({ campaignId: c.nccCampaignId, ags })))
-    );
-    const allAdgroups = [];
-    for (const r of agResults) {
-      if (r.status !== 'fulfilled') continue;
-      const { campaignId, ags } = r.value;
-      for (const ag of (ags || [])) {
-        agMap[ag.nccAdgroupId] = { name: ag.name, campaignId };
-        allAdgroups.push({ ag, campaignId });
-      }
-    }
+    console.log(`📋 마스터: 캠페인 ${campRows.length}, 그룹 ${agRows.length}, 키워드 ${kwRows.length}`);
 
-    // 모든 광고그룹의 키워드를 병렬 조회 (10개씩 배치)
-    for (let i = 0; i < allAdgroups.length; i += 10) {
-      const batch = allAdgroups.slice(i, i + 10);
-      const kwResults = await Promise.allSettled(
-        batch.map(({ ag, campaignId }) => client.getKeywords(ag.nccAdgroupId).then(kws => ({ ag, campaignId, kws })))
-      );
-      for (const r of kwResults) {
-        if (r.status !== 'fulfilled') continue;
-        const { ag, campaignId, kws } = r.value;
-        for (const kw of (kws || [])) {
-          kwMap[kw.nccKeywordId] = {
-            keyword: kw.keyword, adgroupId: ag.nccAdgroupId,
-            adgroupName: ag.name, campaignId,
-            campaignName: campMap[campaignId]?.name || '',
-            campaignTp: campMap[campaignId]?.tp || 1,
-          };
-        }
-      }
+    // DB에 자동 저장 (다음 요청부터 DB에서 즉시 조회)
+    if (accountId && (campRows.length > 0 || agRows.length > 0)) {
+      try {
+        if (campRows.length > 0) await db.upsertMasterCampaigns(accountId, campRows);
+        if (agRows.length > 0) await db.upsertMasterAdgroups(accountId, agRows);
+        if (kwRows.length > 0) await db.upsertMasterKeywords(accountId, kwRows);
+        console.log(`💾 [account:${accountId}] 마스터 DB 자동 저장 완료`);
+      } catch (e) { console.log('마스터 DB 저장 실패:', e.message); }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.log('마스터 리포트 전체 실패:', e.message);
+  }
   return { campMap, agMap, kwMap };
 }
 
@@ -1940,6 +2267,7 @@ async function getNameMaps(client, accountId) {
   const cached = nameMapCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < NAME_MAP_TTL) return cached.data;
 
+  // 1. DB 마스터 데이터 확인
   const master = await db.buildKeywordMaps(accountId);
   const hasMaster = Object.keys(master.kwMap).length > 0;
   if (hasMaster) {
@@ -1947,8 +2275,10 @@ async function getNameMaps(client, accountId) {
     nameMapCache.set(cacheKey, { data, ts: Date.now() });
     return data;
   }
-  const api = await buildNameMapsFromApi(client);
-  const data = { ...api, hasMaster: false };
+
+  // 2. DB에 없으면 마스터 리포트 API로 전체 다운로드 + DB 저장
+  const api = await buildNameMapsFromMasterReport(client, accountId);
+  const data = { ...api, hasMaster: Object.keys(api.kwMap).length > 0 };
   nameMapCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
@@ -1962,19 +2292,30 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
 
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
+    // ─── 마스터 데이터 보장: 없으면 먼저 동기화 ───
+    const creds = await db.getApiCredentials(req.session.userId);
+    const masterCheck = await db.get('SELECT COUNT(*)::int AS cnt FROM master_keywords WHERE account_id = $1', [account.id]);
+    if (masterCheck.cnt === 0 && creds) {
+      console.log(`📥 [${account.id}] 마스터 데이터 없음 → 자동 동기화 시작`);
+      try {
+        const client = makeClient(creds, account.customer_id);
+        await buildNameMapsFromMasterReport(client, account.id);
+        nameMapCache.delete(`nm:${account.id}`); // 캐시 초기화
+      } catch (e) { console.log('마스터 자동 동기화 실패:', e.message); }
+    }
+
     // DB 동기화 데이터 우선 조회
     const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
     if (synced) {
       const rows = await db.queryStatsKeywords(account.id, dateRange.since, dateRange.until);
-      // 쇼핑검색은 adgroupId 기준으로 재집계
       const byKw = {};
       for (const r of rows) {
         const campTp = normalizeCampaignTp(r.campaignTp);
-        const groupKey = (campTp === 2) ? `ag:${r.adgroup_id}` : `kw:${r.keyword_id}`;
+        const groupKey = `kw:${r.keyword_id}`;
         if (!byKw[groupKey]) {
           byKw[groupKey] = {
-            keywordId: campTp === 2 ? r.adgroup_id : r.keyword_id,
-            keyword: campTp === 2 ? r.adgroupName : r.keyword,
+            keywordId: r.keyword_id,
+            keyword: r.keyword,
             campaignTp: campTp,
             campaignName: r.campaignName,
             adgroupName: r.adgroupName,
@@ -1998,39 +2339,56 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       const powerlink = allKw.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
       const shopping = allKw.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
       const other = allKw.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
+
       const maxItems = lim === 'all' ? 99999 : 10;
       return res.json({
-        ok: true, hasMaster: true, source: 'db',
+        ok: true, hasMaster: masterCheck.cnt > 0, source: 'db',
         powerlink: powerlink.slice(0, maxItems), shopping: shopping.slice(0, maxItems), other: other.slice(0, maxItems),
         powerlinkTotal: powerlink.length, shoppingTotal: shopping.length, otherTotal: other.length,
       });
     }
 
     // Fallback: API 실시간 호출
-    const creds = await db.getApiCredentials(req.session.userId);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
 
     const { kwMap, agMap, campMap, hasMaster } = await getNameMaps(client, account.id);
 
-    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+    // 4개 리포트 병렬 다운로드 (속도 개선)
+    const [adRes, convRes, shopRes, shopConvRes] = await Promise.allSettled([
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'SHOPPINGKEYWORD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'SHOPPINGKEYWORD_CONVERSION_DETAIL', dateRange),
+    ]);
+    let adRows = adRes.status === 'fulfilled' ? adRes.value : [];
+    let convRows = convRes.status === 'fulfilled' ? convRes.value : [];
+    if (shopRes.status === 'fulfilled' && shopRes.value.length > 0) {
+      adRows = [...adRows.filter(r => r.cols[4] !== '-'), ...shopRes.value];
+    }
+    if (shopConvRes.status === 'fulfilled' && shopConvRes.value.length > 0) {
+      convRows = [...convRows.filter(r => r.cols[4] !== '-'), ...shopConvRes.value];
+    }
 
     const byKw = {};
     for (const { cols } of adRows) {
-      if (cols.length < 14) continue;
+      if (cols.length < 15) continue;
       const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
       const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
-      const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
+      // 쇼핑검색: SHOPPINGKEYWORD_DETAIL 사용 시 kwId가 검색어 텍스트
+      const groupKey = `kw:${kwId}`;
       if (!byKw[groupKey]) {
-        if (campTp === 2) {
-          const agInfo = agMap[agId] || {};
-          byKw[groupKey] = { keywordId: agId, keyword: agInfo.name || agId, campaignTp: 2, campaignName: campMap[campId]?.name || '', adgroupName: agInfo.name || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
-        } else {
-          const info = kwMap[kwId] || {};
-          byKw[groupKey] = { keywordId: kwId, keyword: info.keyword || kwId, campaignTp: campTp, campaignName: info.campaignName || campMap[campId]?.name || '', adgroupName: info.adgroupName || '', imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
-        }
+        const info = kwMap[kwId] || {};
+        const agInfo = agMap[agId] || {};
+        byKw[groupKey] = {
+          keywordId: kwId,
+          keyword: (campTp === 2) ? kwId : (info.keyword || kwId),
+          campaignTp: campTp,
+          campaignName: info.campaignName || campMap[campId]?.name || '',
+          adgroupName: info.adgroupName || agInfo.name || '',
+          imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
+        };
       }
       byKw[groupKey].imp += parseInt(cols[11]) || 0;
       byKw[groupKey].clk += parseInt(cols[12]) || 0;
@@ -2038,10 +2396,9 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     }
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
-      const campId = cols[2]; const agId = cols[3]; const kwId = cols[4]; const convType = cols[12];
+      const campId = cols[2]; const kwId = cols[4]; const convType = cols[12];
       if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
-      const campTp = normalizeCampaignTp(campMap[campId]?.tp || kwMap[kwId]?.campaignTp || 0);
-      const groupKey = (campTp === 2) ? `ag:${agId}` : `kw:${kwId}`;
+      const groupKey = `kw:${kwId}`;
       if (!byKw[groupKey]) continue;
       byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
       byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
@@ -2051,6 +2408,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     const powerlink = allKw.filter(k => k.campaignTp === 1).sort((a, b) => b.cost - a.cost);
     const shopping = allKw.filter(k => k.campaignTp === 2).sort((a, b) => b.cost - a.cost);
     const other = allKw.filter(k => k.campaignTp !== 1 && k.campaignTp !== 2).sort((a, b) => b.cost - a.cost);
+
     const maxItems = lim === 'all' ? 99999 : 10;
     res.json({ ok: true, hasMaster, source: 'api', powerlink: powerlink.slice(0, maxItems), shopping: shopping.slice(0, maxItems), other: other.slice(0, maxItems), powerlinkTotal: powerlink.length, shoppingTotal: shopping.length, otherTotal: other.length });
   } catch (err) {
@@ -2099,8 +2457,10 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
 
-    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+    const [adRows, convRows] = await Promise.all([
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+    ]);
 
     const byHour = {};
     for (let h = 0; h < 24; h++) byHour[h] = { hour: h, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
@@ -2166,8 +2526,10 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
 
-    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+    const [adRows, convRows] = await Promise.all([
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+    ]);
 
     const byDevice = { PC: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 }, MO: { imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 } };
     for (const { cols } of adRows) {
@@ -2192,6 +2554,48 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
   }
 });
 
+// ─── API: 탭 데이터 (성별/연령) ────────────────────────────────────
+router.get('/api/tab/demographics', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const cookie = account.naver_cookie;
+    if (!cookie) {
+      return res.json({ ok: false, error: '네이버 광고관리 쿠키가 설정되지 않았습니다.\\n광고주 설정에서 네이버 쿠키를 등록해주세요.' });
+    }
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const { fetchDemographicData } = require('../api/naverApi');
+
+    const [genderResult, ageResult] = await Promise.allSettled([
+      fetchDemographicData(account.customer_id, cookie, dateRange, 'gender'),
+      fetchDemographicData(account.customer_id, cookie, dateRange, 'age'),
+    ]);
+
+    const gender = genderResult.status === 'fulfilled' ? genderResult.value : [];
+    const age = ageResult.status === 'fulfilled' ? ageResult.value : [];
+
+    if (genderResult.status === 'rejected') {
+      console.log('성별 데이터 조회 실패:', genderResult.reason?.message);
+    }
+    if (ageResult.status === 'rejected') {
+      console.log('연령대 데이터 조회 실패:', ageResult.reason?.message);
+    }
+
+    // 성별/연령 데이터 모두 실패한 경우
+    if (!gender.length && !age.length) {
+      const errMsg = genderResult.status === 'rejected' ? genderResult.reason.message : '데이터가 없습니다.';
+      return res.json({ ok: false, error: errMsg });
+    }
+
+    res.json({ ok: true, gender, age });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── API: 탭 데이터 (그룹별) ────────────────────────────────────────
 router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
   try {
@@ -2206,6 +2610,17 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
       cpc: obj.clk > 0 ? Math.round(Number(obj.cost) / obj.clk) : 0,
       roas: Number(obj.cost) > 0 ? Math.round(Number(obj.purchaseAmt) / Number(obj.cost) * 100) : 0,
     });
+
+    // ─── 마스터 데이터 보장: 없으면 먼저 동기화 ───
+    const creds0 = await db.getApiCredentials(req.session.userId);
+    const masterCheckAg = await db.get('SELECT COUNT(*)::int AS cnt FROM master_adgroups WHERE account_id = $1', [account.id]);
+    if (masterCheckAg.cnt === 0 && creds0) {
+      try {
+        const client0 = makeClient(creds0, account.customer_id);
+        await buildNameMapsFromMasterReport(client0, account.id);
+        nameMapCache.delete(`nm:${account.id}`);
+      } catch (e) { console.log('광고그룹 탭 마스터 자동 동기화 실패:', e.message); }
+    }
 
     // DB 우선 조회
     const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
@@ -2228,8 +2643,10 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     const client = makeClient(creds, account.customer_id);
     const { agMap, campMap } = await getNameMaps(client, account.id);
 
-    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    const convRows = await fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange);
+    const [adRows, convRows] = await Promise.all([
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+    ]);
 
     const byAg = {};
     for (const { cols } of adRows) {
@@ -2555,7 +2972,7 @@ router.get('/autobid', requireLogin, requireApi, async (req, res) => {
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
-            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
+            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleEnable('+k.id+',this.checked)" style="accent-color:#6366f1"></label></td>'
             +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteKw('+k.id+')">삭제</button></td>'
             +'</tr>';
           }).join('')
@@ -2933,8 +3350,15 @@ router.post('/api/autobid/run', requireLogin, async (req, res) => {
         const adjust = abKw.adjust_amt || 30;
 
         if (realRank === 0) {
-          newBid = Math.min(currentBid + adjust, abKw.max_bid);
-          action = '순위밖→상향';
+          const lastRank = abKw.last_rank || 0;
+          if (lastRank > 0 && lastRank <= abKw.target_rank) {
+            action = '순위조회실패→유지(이전' + lastRank + '위)';
+          } else if (currentBid >= abKw.max_bid) {
+            action = '순위밖+최대입찰가→유지';
+          } else {
+            newBid = Math.min(currentBid + adjust, abKw.max_bid);
+            action = '순위밖→상향';
+          }
         } else if (realRank > abKw.target_rank) {
           newBid = Math.min(currentBid + adjust, abKw.max_bid);
           action = realRank + '위→상향';
@@ -3080,7 +3504,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         const desc  = {daily:'어제 하루 성과 (매일 09:00)',weekly:'최근 7일 성과 (월요일 09:00)',monthly:'최근 30일 성과 (매월 1일 09:00)'}[t];
         return `<div class="card">
           <div class="card-body" style="text-align:center">
-            <div style="font-size:32px;margin-bottom:12px">${{daily:'📅',weekly:'📆',monthly:'🗓'}[t]}</div>
+            <div style="font-size:32px;margin-bottom:12px">${{daily:'🗓',weekly:'📅',monthly:'📆'}[t]}</div>
             <h3 style="font-weight:600;margin-bottom:6px">${label} 리포트</h3>
             <p style="color:#64748b;font-size:12px;margin-bottom:16px">${desc}</p>
             <div style="display:flex;gap:6px">
@@ -3091,6 +3515,28 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         </div>`;
       }).join('')}
     </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <span class="card-title">📧 수신 이메일</span>
+        <button class="btn btn-outline btn-sm" id="btn-edit-emails" onclick="toggleEditEmails()">수정</button>
+      </div>
+      <div class="card-body">
+        <div id="emails-display">
+          <p style="font-size:13px;color:#374151" id="emails-text">${selAccount.report_emails ? selAccount.report_emails.split(',').map(e => e.trim()).filter(Boolean).map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+e+'</span>').join('') : '<span style="color:#94a3b8">수신 이메일이 설정되지 않았습니다.</span>'}</p>
+        </div>
+        <div id="emails-edit" style="display:none">
+          <div class="form-group" style="margin-bottom:12px">
+            <label>수신 이메일 (쉼표로 구분)</label>
+            <input type="text" id="emails-input" value="${selAccount.report_emails || ''}" placeholder="user1@example.com, user2@example.com">
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="saveEmails()">저장</button>
+            <button class="btn btn-outline btn-sm" onclick="toggleEditEmails()">취소</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-header"><span class="card-title">⏰ 자동 발송 스케줄</span></div>
       <div class="card-body">
@@ -3109,7 +3555,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
                 <td>${time}</td>
                 <td>
                   <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
-                    <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleReportFeat('${featKey}',this.checked)" style="width:16px;height:16px;accent-color:#03c75a">
+                    <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleReportFeat('${featKey}',this.checked)" style="width:16px;height:16px;accent-color:#6366f1">
                     <span style="font-size:13px;color:${isOn ? '#16a34a' : '#94a3b8'}" id="label-${featKey}">${isOn ? 'ON' : 'OFF'}</span>
                   </label>
                 </td>
@@ -3141,20 +3587,66 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
 
     async function triggerReport(type) {
       if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
+      // 로딩 오버레이 표시
+      let overlay = document.getElementById('report-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'report-loading-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center';
+        overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)"><div style="width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px"></div><div style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:8px">리포트 생성 중...</div><div style="font-size:13px;color:#94a3b8">엑셀 파일 생성 및 이메일 발송 중입니다.<br>최대 1~2분 소요될 수 있습니다.</div></div>';
+        document.body.appendChild(overlay);
+        if (!document.getElementById('spin-style')) {
+          const style = document.createElement('style');
+          style.id = 'spin-style';
+          style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+          document.head.appendChild(style);
+        }
+      }
+      overlay.style.display = 'flex';
       try {
         const res = await fetch('/smart-sa/api/report/trigger', {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({type, accountId: reportAccountId})
         });
         const json = await res.json();
+        overlay.style.display = 'none';
         if (!json.ok) throw new Error(json.error);
         toast(json.message || '리포트 발송 완료!');
-      } catch(e) { toast(e.message, true); }
+      } catch(e) { overlay.style.display = 'none'; toast(e.message, true); }
     }
 
     function previewReport(type) {
       if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
       window.open('/smart-sa/api/report/preview?type='+type+'&accountId='+reportAccountId, '_blank');
+    }
+
+    function toggleEditEmails() {
+      const disp = document.getElementById('emails-display');
+      const edit = document.getElementById('emails-edit');
+      const btn = document.getElementById('btn-edit-emails');
+      if (edit.style.display === 'none') {
+        edit.style.display = 'block'; disp.style.display = 'none'; btn.style.display = 'none';
+      } else {
+        edit.style.display = 'none'; disp.style.display = 'block'; btn.style.display = '';
+      }
+    }
+
+    async function saveEmails() {
+      const val = document.getElementById('emails-input').value.trim();
+      try {
+        const res = await fetch('/smart-sa/api/report/update-emails', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({accountId: reportAccountId, emails: val})
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        const emails = val.split(',').map(e => e.trim()).filter(Boolean);
+        document.getElementById('emails-text').innerHTML = emails.length
+          ? emails.map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+e+'</span>').join('')
+          : '<span style="color:#94a3b8">수신 이메일이 설정되지 않았습니다.</span>';
+        toggleEditEmails();
+        toast('수신 이메일이 저장되었습니다.');
+      } catch(e) { toast(e.message, true); }
     }
     </script>
   `;
@@ -3193,6 +3685,19 @@ router.post('/api/report/toggle-feat', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     await db.pool.query(`UPDATE ad_accounts SET ${feat} = $1 WHERE id = $2 AND user_id = $3`,
       [enabled ? 1 : 0, accountId, req.session.userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/api/report/update-emails', requireLogin, async (req, res) => {
+  try {
+    const { accountId, emails } = req.body;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    await db.pool.query('UPDATE ad_accounts SET report_emails = $1 WHERE id = $2 AND user_id = $3',
+      [emails || '', accountId, req.session.userId]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -3284,12 +3789,17 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 const { syncAccountDate, runDashboardSync, runBackfill } = require('../sync/dashboardSync');
 
 // 30분마다 실행: 어제+오늘 데이터 동기화
+// ?force=1 로 호출하면 sync_log 삭제 후 강제 재동기화
 router.get('/api/cron/sync-dashboard', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
+    if (req.query.force === '1') {
+      const del = await db.pool.query(`DELETE FROM sync_log WHERE sync_type = 'detail'`);
+      console.log(`🔄 강제 재동기화: sync_log ${del.rowCount}건 삭제`);
+    }
     const result = await runDashboardSync(50000);
     console.log(`✅ Cron [sync-dashboard]: ${result.totalSynced}건, ${result.elapsed}초`);
     res.json({ ok: true, ...result });
@@ -3299,14 +3809,19 @@ router.get('/api/cron/sync-dashboard', async (req, res) => {
   }
 });
 
-// 매일 새벽 1시(KST) 실행: 과거 30일 백필
+// 매일 백필: 과거 60일 데이터 보충 (전월 리포트 조회용)
+// ?force=1 로 호출하면 sync_log 삭제 후 강제 백필
 router.get('/api/cron/sync-backfill', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
-    const result = await runBackfill(50000, 30);
+    if (req.query.force === '1') {
+      const del = await db.pool.query(`DELETE FROM sync_log WHERE sync_type = 'detail'`);
+      console.log(`🔄 강제 백필: sync_log ${del.rowCount}건 삭제`);
+    }
+    const result = await runBackfill(50000, 60);
     console.log(`✅ Cron [sync-backfill]: ${result.totalSynced}건, ${result.elapsed}초`);
     res.json({ ok: true, ...result });
   } catch (err) {
@@ -3655,7 +4170,7 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
             +'<td style="text-align:right">₩'+Number(k.max_bid).toLocaleString()+'</td>'
             +'<td style="text-align:center"><span class="badge badge-gray">'+(k.bid_interval||10)+'분</span></td>'
             +'<td style="font-size:10px">'+scheduleHtml(k.schedule||'111111111111111111111111')+'</td>'
-            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleShoppingEnable('+k.id+',this.checked)" style="accent-color:#03c75a"></label></td>'
+            +'<td style="text-align:center"><label style="cursor:pointer"><input type="checkbox" '+(k.enabled?'checked':'')+' onchange="toggleShoppingEnable('+k.id+',this.checked)" style="accent-color:#6366f1"></label></td>'
             +'<td style="white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="openShoppingModal('+kData+')">수정</button> <button class="btn" style="padding:4px 8px;font-size:11px;color:#dc2626" onclick="deleteShoppingKw('+k.id+')">삭제</button></td>'
             +'</tr>';
           }).join('')
@@ -3697,6 +4212,23 @@ router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
     }
 
     loadShoppingList();
+
+    // 페이지 로드 후 현재입찰가 자동 조회
+    async function fetchCurrentBids() {
+      try {
+        const r = await fetch('/smart-sa/api/shopping-bid/fetch-bids', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ accountId })
+        });
+        const j = await r.json();
+        if (j.ok && j.bids) {
+          // 테이블 새로고침하여 DB에 저장된 최신 입찰가 반영
+          loadShoppingList();
+        }
+      } catch(e) {}
+    }
+    // 리스트 로드 완료 후 3초 뒤 입찰가 조회
+    setTimeout(fetchCurrentBids, 3000);
     </script>
   `;
   res.send(appLayout('쇼핑검색 자동입찰', content, user, 'shopping-bid', await getLayoutOpts(req)));
@@ -3822,11 +4354,36 @@ router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
     let checked = 0;
     const details = [];
 
+    // 현재입찰가도 함께 조회
+    const account = await db.getAccountById(accountId, req.session.userId);
+    let client = null;
+    if (account) {
+      const creds = await db.getApiCredentials(req.session.userId);
+      if (creds) client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+    }
+    const bidCache = {};
+
     for (const kw of keywords) {
       try {
         const result = await findShoppingRank(kw.keyword, kw.device, kw.product_url);
-        await db.updateShoppingBidKeywordStatus(kw.id, result.rank || 0, kw.last_bid || 0);
-        details.push({ keyword: kw.keyword, device: kw.device, rank: result.rank || 0, totalAds: result.totalAds, matched: result.matched });
+        // 현재입찰가 조회 (소재 ID 기반, adAttr.bidAmt 우선)
+        let currentBid = kw.last_bid || 0;
+        if (client && kw.product_url && !bidCache[kw.product_url]) {
+          try {
+            const adDetail = await client.getAdDetail(kw.product_url);
+            const adBid = adDetail?.adAttr?.bidAmt || adDetail?.bidAmt || 0;
+            if (adBid > 0) {
+              bidCache[kw.product_url] = adBid;
+            } else if (adDetail?.useGroupBidAmt && adDetail?.nccAdgroupId) {
+              const grp = await client.getAdGroupDetail(adDetail.nccAdgroupId);
+              bidCache[kw.product_url] = grp?.bidAmt || 0;
+            }
+          } catch (e) {}
+        }
+        if (bidCache[kw.product_url]) currentBid = bidCache[kw.product_url];
+
+        await db.updateShoppingBidKeywordStatus(kw.id, result.rank || 0, currentBid);
+        details.push({ keyword: kw.keyword, device: kw.device, rank: result.rank || 0, totalAds: result.totalAds, matched: result.matched, currentBid });
         checked++;
       } catch (e) {
         details.push({ keyword: kw.keyword, device: kw.device, error: e.message });
@@ -3835,6 +4392,67 @@ router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
     }
 
     res.json({ ok: true, checked, details });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 쇼핑검색 현재입찰가 일괄 조회
+router.post('/api/shopping-bid/fetch-bids', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.body;
+    if (!accountId) return res.json({ ok: false, error: '광고주를 선택해주세요.' });
+
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
+
+    const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+    const keywords = await db.getShoppingBidKeywords(accountId);
+    if (!keywords.length) return res.json({ ok: true, bids: {} });
+
+    const bids = {};
+    // nadId(product_url)별로 그룹핑하여 중복 조회 방지
+    const nadIds = [...new Set(keywords.filter(k => k.product_url).map(k => k.product_url))];
+
+    for (const nadId of nadIds) {
+      try {
+        const adDetail = await client.getAdDetail(nadId);
+        if (adDetail) {
+          // 쇼핑검색 소재는 adAttr.bidAmt에 입찰가 저장
+          const adBid = adDetail.adAttr?.bidAmt || adDetail.bidAmt || 0;
+          bids[nadId] = {
+            bidAmt: adBid,
+            useGroupBidAmt: adDetail.useGroupBidAmt || false,
+            adAttr: adDetail.adAttr || {},
+          };
+          // 소재 입찰가가 0이고 그룹 입찰가 사용 시
+          if ((!adBid || adDetail.useGroupBidAmt) && adDetail.nccAdgroupId) {
+            try {
+              const grp = await client.getAdGroupDetail(adDetail.nccAdgroupId);
+              if (grp?.bidAmt > 0) {
+                bids[nadId].bidAmt = grp.bidAmt;
+                bids[nadId].groupBidAmt = grp.bidAmt;
+              }
+            } catch (e) {}
+          }
+          console.log(`💰 [${nadId}] 입찰가: ₩${bids[nadId].bidAmt} (adAttr.bidAmt=${adDetail.adAttr?.bidAmt}, bidAmt=${adDetail.bidAmt}, useGroup=${adDetail.useGroupBidAmt})`);
+        }
+      } catch (e) {
+        console.log(`쇼핑 소재 입찰가 조회 실패 [${nadId}]:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    // DB에 현재입찰가 업데이트
+    for (const kw of keywords) {
+      if (kw.product_url && bids[kw.product_url]?.bidAmt > 0) {
+        await db.updateShoppingBidKeywordStatus(kw.id, kw.last_rank || 0, bids[kw.product_url].bidAmt);
+      }
+    }
+
+    res.json({ ok: true, bids });
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
@@ -3880,6 +4498,37 @@ router.get('/api/cron/autobid', async (req, res) => {
     res.json({ ok: true, accounts: accounts.length });
   } catch (err) {
     console.error('❌ Cron [autobid]:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── 쇼핑검색 자동입찰 Cron ──────────────────────────────────────────
+router.get('/api/cron/shopping-autobid', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  try {
+    const { runShoppingAutoBidForAccount } = require('../scheduler/shoppingAutoBid');
+    const accounts = await db.all(`
+      SELECT ad_accounts.*, users.api_key, users.secret_key
+      FROM ad_accounts
+      JOIN users ON users.id = ad_accounts.user_id
+      WHERE users.api_key != '' AND users.secret_key != ''
+      AND ad_accounts.shopping_auto_bidding = 1
+    `);
+
+    for (const account of accounts) {
+      try {
+        await runShoppingAutoBidForAccount(account);
+      } catch (e) {
+        console.error(`❌ 쇼핑 자동입찰 [${account.name}]:`, e.message);
+      }
+    }
+    console.log(`✅ Cron [shopping-autobid]: ${accounts.length}개 계정 처리`);
+    res.json({ ok: true, accounts: accounts.length });
+  } catch (err) {
+    console.error('❌ Cron [shopping-autobid]:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
