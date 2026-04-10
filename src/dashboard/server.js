@@ -1455,8 +1455,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           <div id="trend-sub" style="font-size:11px;color:#94a3b8;margin-bottom:8px"></div>
           <div style="position:relative;width:100%;height:240px" id="trend-canvas-wrap">
             <canvas id="trend-canvas" style="width:100%;height:100%"></canvas>
+            <div id="trend-tooltip" style="display:none;position:absolute;background:rgba(30,41,59,0.95);color:#fff;padding:8px 12px;border-radius:8px;font-size:11px;pointer-events:none;z-index:100;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)"></div>
           </div>
-          <div id="trend-tooltip" style="display:none;position:absolute;background:rgba(30,41,59,0.95);color:#fff;padding:8px 12px;border-radius:8px;font-size:11px;pointer-events:none;z-index:100;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.15)"></div>
         </div>
       </div>
 
