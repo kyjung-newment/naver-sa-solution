@@ -2794,26 +2794,26 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].cost += parseInt(cols[13]) || 0;
     }
     // 쇼핑 키워드 (SHOPPINGKEYWORD_DETAIL)
+    // 실제 TSV 형식 (16열): [0]date [1]custId [2]campId [3]agId [4]keyword(TEXT) [5]adId [6]bsnId [7]hour [8]code [9]queryGrpId [10]device [11]imp [12]clk [13]cost [14]rank [15]?
     for (const { cols } of shopKwRows) {
-      if (cols.length < 13) continue;
-      const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
-      if (!kwId || kwId === '-' || kwId === '') continue;
-      const groupKey = `kw:shop:${kwId}`;
+      if (cols.length < 14) continue;
+      const campId = cols[2]; const agId = cols[3]; const kwText = cols[4];
+      if (!kwText || kwText === '-' || kwText === '') continue;
+      const groupKey = `kw:shop:${campId}:${agId}:${kwText}`;
       if (!byKw[groupKey]) {
         const agInfo = agMap[agId] || {};
         byKw[groupKey] = {
-          keywordId: kwId,
-          keyword: kwId,
+          keywordId: kwText,
+          keyword: kwText,
           campaignTp: 2,
           campaignName: campMap[campId]?.name || '',
           adgroupName: agInfo.name || '',
           imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
         };
       }
-      // SHOPPINGKEYWORD_DETAIL: [0]date [1]custId [2]campId [3]agId [4]kwId [5]hour [6]code [7]queryGrpId [8]device [9]imp [10]clk [11]cost [12]rank
-      byKw[groupKey].imp += parseInt(cols[9]) || 0;
-      byKw[groupKey].clk += parseInt(cols[10]) || 0;
-      byKw[groupKey].cost += parseInt(cols[11]) || 0;
+      byKw[groupKey].imp += parseInt(cols[11]) || 0;
+      byKw[groupKey].clk += parseInt(cols[12]) || 0;
+      byKw[groupKey].cost += parseInt(cols[13]) || 0;
     }
     // 쇼핑 키워드 폴백: SHOPPINGKEYWORD_DETAIL 실패/빈경우 → AD_DETAIL에서 쇼핑캠페인 그룹별 집계
     if (shopKwRows.length === 0) {
@@ -2861,18 +2861,44 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
     }
     // 쇼핑 전환 (SHOPPINGKEYWORD_CONVERSION_DETAIL)
+    // 실제 TSV 형식 (15열): [0]date [1]custId [2]campId [3]agId [4]keyword(TEXT) [5]adId [6]bsnId [7]hour [8]code [9]queryGrpId [10]device [11]directFlag [12]convType [13]convCnt [14]convAmt
     for (const { cols } of shopConvRows) {
-      if (cols.length < 13) continue;
-      const kwId = cols[4]; const convType = cols[10];
-      if (!kwId || kwId === '-') continue;
+      if (cols.length < 15) continue;
+      const campId = cols[2]; const agId = cols[3]; const kwText = cols[4];
+      const convType = cols[12];
+      if (!kwText || kwText === '-') continue;
       if (!isPurchaseConv(convType)) continue;
-      const groupKey = `kw:shop:${kwId}`;
+      const groupKey = `kw:shop:${campId}:${agId}:${kwText}`;
       if (!byKw[groupKey]) continue;
-      byKw[groupKey].purchaseCnt += parseInt(cols[11]) || 0;
-      byKw[groupKey].purchaseAmt += parseInt(cols[12]) || 0;
+      byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
+      byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
     }
-    // 쇼핑 전환 폴백: AD_CONVERSION_DETAIL에서 쇼핑캠페인 전환 집계 (그룹별)
-    if (shopConvRows.length === 0 && shopKwRows.length === 0) {
+    // 쇼핑 전환 폴백: shopConvRows 없으면 AD_CONVERSION_DETAIL에서 쇼핑캠페인 전환 매칭
+    if (shopConvRows.length === 0 && shopKwRows.length > 0) {
+      // AD_CONVERSION_DETAIL에는 keyword_id가 '-'이므로 campId+agId로 매칭
+      const shopAgConv = {};
+      for (const { cols } of convRows) {
+        if (cols.length < 15) continue;
+        const campId = cols[2]; const agId = cols[3]; const convType = cols[12];
+        const campTp = normalizeCampaignTp(campMap[campId]?.tp || 0);
+        if (campTp !== 2) continue;
+        if (!isPurchaseConv(convType)) continue;
+        const agKey = `${campId}:${agId}`;
+        if (!shopAgConv[agKey]) shopAgConv[agKey] = { cnt: 0, amt: 0 };
+        shopAgConv[agKey].cnt += parseInt(cols[13]) || 0;
+        shopAgConv[agKey].amt += parseInt(cols[14]) || 0;
+      }
+      // 그룹별 전환을 해당 그룹의 키워드들에 균등 분배 (또는 첫 키워드에 할당)
+      for (const [agKey, conv] of Object.entries(shopAgConv)) {
+        const matching = Object.keys(byKw).filter(k => k.startsWith(`kw:shop:${agKey}:`));
+        if (matching.length > 0) {
+          byKw[matching[0]].purchaseCnt += conv.cnt;
+          byKw[matching[0]].purchaseAmt += conv.amt;
+        }
+      }
+    }
+    // 쇼핑 키워드 폴백: SHOPPINGKEYWORD_DETAIL 없으면 AD_DETAIL 그룹별 집계
+    if (shopKwRows.length === 0) {
       for (const { cols } of convRows) {
         if (cols.length < 15) continue;
         const campId = cols[2]; const agId = cols[3]; const convType = cols[12];
