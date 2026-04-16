@@ -744,18 +744,20 @@ async function queryStatsKeywords(accountId, since, until) {
     LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
     WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
       AND (mc.campaign_tp IS NULL OR mc.campaign_tp != 2)
+      AND d.keyword_id != '-' AND d.keyword_id != '' AND d.keyword_id != '0'
     GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, mk.keyword, mc.campaign_name, mc.campaign_tp, ma.adgroup_name, mk.qi_grade
     ORDER BY SUM(d.cost) DESC
   `, [accountId, since, until]);
 
   // 쇼핑검색: SHOPPINGKEYWORD_DETAIL 동기화 후 keyword_id에 검색어 텍스트가 저장됨
   // keyword_id로 그룹핑 → 검색어 텍스트 그대로 표시
-  const shopping = await all(`
+  let shopping = await all(`
     SELECT d.keyword_id, d.adgroup_id, d.campaign_id,
            d.keyword_id AS keyword,
            COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
            2 AS "campaignTp",
            COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+           0 AS "qiGrade",
            COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
            COALESCE(SUM(d.cost),0)::bigint AS cost,
            COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
@@ -765,9 +767,34 @@ async function queryStatsKeywords(accountId, since, until) {
     LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
     WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
       AND mc.campaign_tp = 2
+      AND d.keyword_id != '-' AND d.keyword_id != '' AND d.keyword_id != '0'
     GROUP BY d.keyword_id, d.adgroup_id, d.campaign_id, ma.adgroup_name, mc.campaign_name
     ORDER BY SUM(d.cost) DESC
   `, [accountId, since, until]);
+
+  // 폴백: 쇼핑 키워드 데이터가 없으면 그룹별 집계로 표시
+  if (shopping.length === 0) {
+    shopping = await all(`
+      SELECT d.adgroup_id AS keyword_id, d.adgroup_id, d.campaign_id,
+             COALESCE(ma.adgroup_name, d.adgroup_id) AS keyword,
+             COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
+             2 AS "campaignTp",
+             COALESCE(ma.adgroup_name, d.adgroup_id) AS "adgroupName",
+             0 AS "qiGrade",
+             COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
+             COALESCE(SUM(d.cost),0)::bigint AS cost,
+             COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
+             COALESCE(SUM(d.purchase_amt),0)::bigint AS "purchaseAmt"
+      FROM stat_daily_detail d
+      LEFT JOIN master_adgroups ma ON ma.account_id = d.account_id AND ma.adgroup_id = d.adgroup_id
+      LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
+      WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+        AND mc.campaign_tp = 2
+      GROUP BY d.adgroup_id, d.campaign_id, ma.adgroup_name, mc.campaign_name
+      HAVING SUM(d.imp) > 0 OR SUM(d.clk) > 0 OR SUM(d.cost) > 0
+      ORDER BY SUM(d.cost) DESC
+    `, [accountId, since, until]);
+  }
 
   return [...powerlink, ...shopping];
 }

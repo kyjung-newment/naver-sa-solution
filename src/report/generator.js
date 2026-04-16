@@ -220,11 +220,14 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
 
     convTypeSet.add(convType);
 
-    // 구매 전환 판별 (다양한 형식 대응)
+    // 구매 전환 판별 (영문 + 한국어 + 코드 대응)
     const convTypeLower = (convType || '').toLowerCase();
+    const convTypeRaw = (convType || '').trim();
     const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
-      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
-    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
+      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1'
+      || convTypeRaw === '구매완료';
+    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart'
+      || convTypeRaw === '장바구니 담기' || convTypeRaw === '장바구니';
 
     const convKwKey = (keywordId && keywordId !== '-') ? `kw:${keywordId}` : `ag:${adgroupId}`;
     const keys = [
@@ -257,9 +260,12 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     const cnt = parseInt(cols[13]) || 0;
     const amt = parseInt(cols[14]) || 0;
     const convTypeLower = (convType || '').toLowerCase();
+    const convTypeRaw2 = (convType || '').trim();
     const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
-      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
-    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
+      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1'
+      || convTypeRaw2 === '구매완료';
+    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart'
+      || convTypeRaw2 === '장바구니 담기' || convTypeRaw2 === '장바구니';
     const key = `kw:${keywordId}`;
     if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
     if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
@@ -412,6 +418,113 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
 }
 
 /**
+ * Stats API를 활용하여 AD_DETAIL TSV 집계 데이터를 네이버 SA 대시보드와 일치하도록 보정
+ * - Stats API는 네이버 검색광고 대시보드와 동일한 데이터 소스를 사용
+ * - AD_DETAIL TSV는 세부 분석(시간대/키워드/디바이스)에만 사용하고
+ *   총합·캠페인별 숫자는 Stats API로 교정
+ */
+async function calibrateWithStatsApi(data, client, dateRange) {
+  try {
+    const stats = await client.getStats({
+      startDate: dateRange.since,
+      endDate: dateRange.until,
+    });
+
+    if (!stats || !stats.campStats) {
+      console.log('  ⚠️ Stats API 보정 실패: 데이터 없음');
+      return data;
+    }
+
+    console.log(`  🔄 Stats API 보정 시작: TSV 총합 imp=${data.total.imp}, clk=${data.total.clk}, cost=${data.total.cost}`);
+    console.log(`  🔄 Stats API 실제값:      imp=${stats.impCnt}, clk=${stats.clkCnt}, cost=${stats.salesAmt}`);
+
+    // 1. 캠페인별 보정 (Stats API 캠페인 ID 매핑)
+    const statsByCamp = {};
+    for (const cs of stats.campStats) {
+      statsByCamp[cs.id] = cs;
+    }
+
+    for (const campId of Object.keys(data.byCampaign)) {
+      const cs = statsByCamp[campId];
+      if (!cs) continue;
+      const camp = data.byCampaign[campId];
+      camp.imp = cs.impCnt;
+      camp.clk = cs.clkCnt;
+      camp.cost = cs.salesAmt;
+      camp.cpc = cs.clkCnt > 0 ? Math.round(cs.salesAmt / cs.clkCnt) : 0;
+      camp.ctr = cs.impCnt > 0 ? (cs.clkCnt / cs.impCnt * 100) : 0;
+      if (cs.avgRnk > 0) {
+        camp.avgRank = cs.avgRnk;
+        camp.rankSum = cs.avgRnk;
+        camp.rankCount = 1;
+      }
+      // 총전환 데이터 보정 (Stats API ccnt/convAmt)
+      if (typeof cs.ccnt === 'number') camp.convCnt = cs.ccnt;
+      if (typeof cs.convAmt === 'number') camp.convAmt = cs.convAmt;
+      // 구매완료 전환 데이터 보정 (Stats API purchaseCcnt/purchaseConvAmt)
+      if (typeof cs.purchaseCcnt === 'number') camp.purchaseCnt = cs.purchaseCcnt;
+      if (typeof cs.purchaseConvAmt === 'number') camp.purchaseAmt = cs.purchaseConvAmt;
+      // ROAS 재계산 (보정된 purchaseAmt 기준)
+      camp.roas = camp.cost > 0 ? Math.round((camp.purchaseAmt || 0) / camp.cost * 100) : 0;
+    }
+
+    // 2. 총합 보정 (Stats API 합계 → 네이버 대시보드와 동일)
+    data.total.imp = stats.impCnt;
+    data.total.clk = stats.clkCnt;
+    data.total.cost = stats.salesAmt;
+    data.total.cpc = stats.clkCnt > 0 ? Math.round(stats.salesAmt / stats.clkCnt) : 0;
+    data.total.ctr = stats.impCnt > 0 ? (stats.clkCnt / stats.impCnt * 100) : 0;
+    if (stats.avgRnk > 0) data.total.avgRank = stats.avgRnk;
+    // 총전환 데이터 (Stats API ccnt/convAmt)
+    data.total.convCnt = stats.ccnt || 0;
+    data.total.convAmt = stats.convAmt || 0;
+    // 구매완료 전환 데이터 (Stats API purchaseCcnt/purchaseConvAmt → 대시보드와 일치)
+    data.total.purchaseCnt = stats.purchaseCcnt || 0;
+    data.total.purchaseAmt = stats.purchaseConvAmt || 0;
+    // ROAS 재계산 (보정된 purchaseAmt 기준)
+    data.total.roas = data.total.cost > 0 ? Math.round((data.total.purchaseAmt || 0) / data.total.cost * 100) : 0;
+
+    console.log(`  🔄 구매완료 보정: TSV purchaseCnt → Stats API purchaseCcnt=${stats.purchaseCcnt}, purchaseConvAmt=${stats.purchaseConvAmt}`);
+
+    // 3. 캠페인유형별 재집계 (보정된 byCampaign 기반)
+    const newByCampType = {};
+    for (const campId of Object.keys(data.byCampaign)) {
+      const camp = data.byCampaign[campId];
+      const ct = camp.campaignType || '기타';
+      if (!newByCampType[ct]) newByCampType[ct] = {
+        imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0,
+        purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0,
+      };
+      newByCampType[ct].imp += camp.imp;
+      newByCampType[ct].clk += camp.clk;
+      newByCampType[ct].cost += camp.cost;
+      if (camp.avgRank > 0) {
+        newByCampType[ct].rankSum += camp.avgRank;
+        newByCampType[ct].rankCount += 1;
+      }
+      newByCampType[ct].purchaseCnt += camp.purchaseCnt || 0;
+      newByCampType[ct].purchaseAmt += camp.purchaseAmt || 0;
+      newByCampType[ct].cartCnt += camp.cartCnt || 0;
+      newByCampType[ct].cartAmt += camp.cartAmt || 0;
+    }
+    for (const ct of Object.keys(newByCampType)) {
+      const d = newByCampType[ct];
+      d.cpc = d.clk > 0 ? Math.round(d.cost / d.clk) : 0;
+      d.ctr = d.imp > 0 ? (d.clk / d.imp * 100) : 0;
+      d.avgRank = d.rankCount > 0 ? (d.rankSum / d.rankCount) : 0;
+      d.roas = d.cost > 0 ? Math.round(d.purchaseAmt / d.cost * 100) : 0;
+    }
+    data.byCampaignType = newByCampType;
+
+    console.log(`  ✅ Stats API 보정 완료: imp=${data.total.imp}, clk=${data.total.clk}, cost=${data.total.cost}, 구매완료=${data.total.purchaseCnt}건/${data.total.purchaseAmt}원`);
+    return data;
+  } catch (e) {
+    console.log(`  ⚠️ Stats API 보정 실패:`, e.message);
+    return data;
+  }
+}
+
+/**
  * @param {object} account - DB의 ad_accounts + users JOIN 결과
  * @param {'daily'|'weekly'|'monthly'} type
  */
@@ -472,6 +585,9 @@ async function generateAndSend(account, type) {
     // 3. 다차원 집계
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
 
+    // 3-1. Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
+    await calibrateWithStatsApi(data, client, dateRange);
+
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     let prevData = null;
     const prevRange = getPrevDateRange(type, dateRange);
@@ -481,6 +597,8 @@ async function generateAndSend(account, type) {
       try {
         const prev = await collectDetailData(client, prevRange);
         prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail);
+        // 이전 기간도 Stats API 보정 적용
+        await calibrateWithStatsApi(prevData, client, prevRange);
         console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
       } catch (e) {
         console.log(`  ⚠️ ${prevLabel} 데이터 실패:`, e.message);
@@ -539,6 +657,9 @@ async function generatePreview(account, type) {
   const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
   const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
 
+  // Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
+  await calibrateWithStatsApi(data, client, dateRange);
+
   // 이전 기간 (일간/주간/월간 모두)
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
@@ -546,6 +667,7 @@ async function generatePreview(account, type) {
     try {
       const prev = await collectDetailData(client, prevRange);
       prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap);
+      await calibrateWithStatsApi(prevData, client, prevRange);
     } catch (e) {}
   }
 

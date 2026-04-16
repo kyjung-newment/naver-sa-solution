@@ -57,27 +57,38 @@ async function syncAccountDate(account, date) {
     return [...cols.slice(0, 5), '', '', ...cols.slice(5)];
   }
 
-  // AD_DETAIL에 이미 전체 성과 데이터(파워링크+쇼핑 포함)가 있으므로
-  // SHOPPINGKEYWORD_DETAIL은 총합에 병합하지 않음 (이전 버그: keywordId='-' 필터가 파워링크 데이터도 제거)
-  // SHOPPINGKEYWORD_DETAIL은 키워드별 분석용으로만 사용 (리포트 generator에서 처리)
-  if (shopKwRows.length > 0) {
-    console.log(`  📋 SHOPPINGKEYWORD_DETAIL ${shopKwRows.length}행 (키워드 분석 전용, 총합 미반영)`);
+  // SHOPPINGKEYWORD_DETAIL: 쇼핑 키워드별 성과 → stat_daily_detail에 별도 저장 (키워드 탭용)
+  // AD_DETAIL에는 쇼핑 캠페인이 keyword_id='-'로만 저장되어 개별 키워드 분석 불가
+  const remappedShopKw = shopKwRows.map(remapShoppingRow);
+  const remappedShopConv = shopConvRows.map(remapShoppingRow);
+  if (remappedShopKw.length > 0) {
+    console.log(`  📋 SHOPPINGKEYWORD_DETAIL ${remappedShopKw.length}행 → DB 저장 (키워드 분석용)`);
   }
 
-  // 3. 전환 데이터 lookup 맵 빌드
+  // 3. 전환 데이터 lookup 맵 빌드 (AD_CONVERSION_DETAIL + SHOPPINGKEYWORD_CONVERSION_DETAIL)
   // key: campaignId:adgroupId:keywordId:hour:device
   const convMap = {};
   const convTypeSet = new Set();
-  for (const cols of convRows) {
-    if (cols.length < 15) continue;
+  function isPurchaseType(ct) {
+    const lo = (ct || '').trim().toLowerCase();
+    const raw = (ct || '').trim();
+    return lo === 'purchase' || lo === 'purchase_complete' || lo === 'complete_purchase'
+      || lo === 'conversion' || lo === 'conv' || lo === '1'
+      || raw === '구매완료';
+  }
+  function isCartType(ct) {
+    const lo = (ct || '').trim().toLowerCase();
+    const raw = (ct || '').trim();
+    return lo === 'add_to_cart' || lo === 'cart' || lo === 'add_cart'
+      || raw === '장바구니 담기' || raw === '장바구니';
+  }
+  function addConvRow(cols) {
+    if (cols.length < 15) return;
     const convType = cols[12];
     convTypeSet.add(convType);
-    const convTypeLower = (convType || '').toLowerCase();
-    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
-      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1';
-    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart';
-    if (!isPurchase && !isCart) continue;
-
+    const isPurchase = isPurchaseType(convType);
+    const isCart = isCartType(convType);
+    if (!isPurchase && !isCart) return;
     const key = `${cols[2]}:${cols[3]}:${cols[4]}:${cols[7]}:${cols[10]}`;
     if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
     const cnt = parseInt(cols[13]) || 0;
@@ -85,7 +96,11 @@ async function syncAccountDate(account, date) {
     if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
     if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
   }
-  if (convTypeSet.size > 0) console.log(`  📊 [${account.name}] ${date} 전환 타입: ${[...convTypeSet].join(', ')} (${convRows.length}행)`);
+  // AD_CONVERSION_DETAIL (파워링크+쇼핑 전체 전환)
+  for (const cols of convRows) addConvRow(cols);
+  // SHOPPINGKEYWORD_CONVERSION_DETAIL (쇼핑 키워드별 전환 → 리매핑 후 동일 포맷)
+  for (const cols of remappedShopConv) addConvRow(cols);
+  if (convTypeSet.size > 0) console.log(`  📊 [${account.name}] ${date} 전환 타입: ${[...convTypeSet].join(', ')} (AD:${convRows.length}행 + SHOP:${remappedShopConv.length}행)`);
 
   // 4. AD_DETAIL 행 + 전환 데이터 병합 후 DB에 저장
   // 먼저 기존 데이터 삭제
@@ -134,6 +149,47 @@ async function syncAccountDate(account, date) {
     }
   }
 
+  // 4-1. SHOPPINGKEYWORD_DETAIL 행도 DB에 저장 (키워드 탭용, 리매핑된 포맷)
+  for (let i = 0; i < remappedShopKw.length; i += BATCH) {
+    const batch = remappedShopKw.slice(i, i + BATCH);
+    if (batch.length === 0) continue;
+
+    const values = [];
+    const params = [];
+    let paramIdx = 1;
+
+    for (const cols of batch) {
+      if (cols.length < 14) continue;
+      const campId = cols[2] || '';
+      const agId = cols[3] || '';
+      const kwId = cols[4] || '';
+      if (!kwId || kwId === '-' || kwId === '') continue; // 키워드 없는 행 스킵
+      const adId = '';
+      const hour = parseInt(cols[7]) || 0;
+      const device = cols[10] === 'P' ? 'PC' : 'MO';
+      const imp = parseInt(cols[11]) || 0;
+      const clk = parseInt(cols[12]) || 0;
+      const cost = parseInt(cols[13]) || 0;
+      const rank = parseFloat(cols[14]) || 0;
+
+      const convKey = `${campId}:${agId}:${kwId}:${cols[7]}:${cols[10]}`;
+      const conv = convMap[convKey] || { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
+
+      values.push(`($${paramIdx},$${paramIdx+1},$${paramIdx+2},$${paramIdx+3},$${paramIdx+4},$${paramIdx+5},$${paramIdx+6},$${paramIdx+7},$${paramIdx+8},$${paramIdx+9},$${paramIdx+10},$${paramIdx+11},$${paramIdx+12},$${paramIdx+13},$${paramIdx+14})`);
+      params.push(account.id, date, campId, agId, kwId, adId, hour, device, imp, clk, cost, rank, conv.purchaseCnt, conv.purchaseAmt, conv.cartCnt);
+      paramIdx += 15;
+    }
+
+    if (values.length > 0) {
+      await db.pool.query(
+        `INSERT INTO stat_daily_detail (account_id, stat_date, campaign_id, adgroup_id, keyword_id, ad_id, hour, device, imp, clk, cost, rank_val, purchase_cnt, purchase_amt, cart_cnt)
+         VALUES ${values.join(',')}`,
+        params
+      );
+    }
+  }
+  if (remappedShopKw.length > 0) console.log(`  ✅ SHOPPINGKEYWORD_DETAIL ${remappedShopKw.length}행 DB 저장 완료`);
+
   // 5. Stats API로 캠페인별 정확한 salesAmt 저장
   try {
     const campaigns = await client.getCampaigns();
@@ -174,8 +230,9 @@ async function syncAccountDate(account, date) {
       for (const cols of convRows) {
         if (cols.length < 15) continue;
         if (cols[2] !== camp.nccCampaignId) continue;
-        const ct = (cols[12] || '').toLowerCase();
-        if (ct === 'purchase' || ct === 'purchase_complete' || ct === 'complete_purchase' || ct === 'conversion' || ct === 'conv' || ct === '1') {
+        const ct = (cols[12] || '').trim().toLowerCase();
+        const ctRaw = (cols[12] || '').trim();
+        if (ct === 'purchase' || ct === 'purchase_complete' || ct === 'complete_purchase' || ct === 'conversion' || ct === 'conv' || ct === '1' || ctRaw === '구매완료') {
           purchaseCnt += parseInt(cols[13]) || 0;
           purchaseAmt += parseInt(cols[14]) || 0;
         }

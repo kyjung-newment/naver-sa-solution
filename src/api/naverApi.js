@@ -122,9 +122,10 @@ function createApiClient(creds) {
         //      hour, code, queryId, device, directFlag, convType, convCnt, convAmt
         for (const cols of rows) {
           if (cols.length < 15) continue;
-          const convType = (cols[12] || '').toLowerCase();
-          // 구매완료 타입만 필터 (purchase, purchase_complete 등)
-          if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase' || convType === 'conversion' || convType === 'conv' || convType === '1') {
+          const convTypeLower = (cols[12] || '').trim().toLowerCase();
+          const convTypeRaw = (cols[12] || '').trim();
+          // 구매완료 타입만 필터 (영문 + 한국어 + 코드)
+          if (convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase' || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1' || convTypeRaw === '구매완료') {
             const campaignId = cols[2];
             const cnt = parseInt(cols[13]) || 0;
             const amt = parseInt(cols[14]) || 0;
@@ -219,17 +220,17 @@ function createApiClient(creds) {
       const totals = {
         impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0,
         ccnt: 0, ctr: 0, avgRnk: 0, cpc: 0,
-        purchaseAmt: 0, purchaseCnt: 0,
+        purchaseCcnt: 0, purchaseConvAmt: 0,
       };
       let campCount = 0;
       const campStats = [];
 
-      // 모든 캠페인 Stats API 병렬 호출 (속도 향상)
+      // 모든 캠페인 Stats API 병렬 호출 (purchaseCcnt, purchaseConvAmt 포함)
       const statsResults = await Promise.allSettled(
         (campaigns || []).map(camp =>
           apiCall('GET', '/stats', {
             id: camp.nccCampaignId,
-            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto']),
+            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto','purchaseCcnt','purchaseConvAmt']),
             timeRange: JSON.stringify(dateRange),
           }).then(result => ({ camp, result }))
         )
@@ -239,7 +240,7 @@ function createApiClient(creds) {
         if (sr.status !== 'fulfilled') continue;
         const { camp, result } = sr.value;
         if (result?.data?.length > 0) {
-          const campTotal = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0 };
+          const campTotal = { impCnt: 0, clkCnt: 0, salesAmt: 0, convAmt: 0, ccnt: 0, avgRnk: 0, cpc: 0, purchaseCcnt: 0, purchaseConvAmt: 0 };
           let campRankCount = 0;
           for (const d of result.data) {
             campTotal.impCnt += d.impCnt || 0;
@@ -247,6 +248,8 @@ function createApiClient(creds) {
             campTotal.salesAmt += d.salesAmt || 0;
             campTotal.convAmt += d.convAmt || 0;
             campTotal.ccnt += d.ccnt || 0;
+            campTotal.purchaseCcnt += d.purchaseCcnt || 0;
+            campTotal.purchaseConvAmt += d.purchaseConvAmt || 0;
             if (d.avgRnk > 0) { campTotal.avgRnk += d.avgRnk; campRankCount++; }
           }
           if (campRankCount > 0) campTotal.avgRnk = campTotal.avgRnk / campRankCount;
@@ -257,6 +260,8 @@ function createApiClient(creds) {
           totals.salesAmt += campTotal.salesAmt;
           totals.convAmt += campTotal.convAmt;
           totals.ccnt += campTotal.ccnt;
+          totals.purchaseCcnt += campTotal.purchaseCcnt;
+          totals.purchaseConvAmt += campTotal.purchaseConvAmt;
           totals.avgRnk += campTotal.avgRnk;
           campCount++;
           campStats.push({ name: camp.name, id: camp.nccCampaignId, ...campTotal });
@@ -267,7 +272,6 @@ function createApiClient(creds) {
       totals.ctr = totals.impCnt > 0 ? (totals.clkCnt / totals.impCnt * 100) : 0;
       totals.cpc = totals.clkCnt > 0 ? Math.round(totals.salesAmt / totals.clkCnt) : 0;
 
-      // 구매완료 전환 데이터는 dashboard에서 별도 캐시+병렬로 처리
       totals.campStats = campStats;
       return totals;
     },

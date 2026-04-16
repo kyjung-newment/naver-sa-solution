@@ -1914,6 +1914,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       var totalAll = (d.powerlinkTotal||0)+(d.shoppingTotal||0)+(d.otherTotal||0);
       var shownAll = plF.length+spF.length+otF.length;
       if (kwFilterClk) html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+shownAll+'개 / 전체: '+totalAll+'개</span>';
+      html += '<button id="kw-col-settings-btn" class="btn btn-outline" style="'+(kwFilterClk?'':'margin-left:auto;')+'font-size:12px;padding:6px 12px;white-space:nowrap">⚙ 열 설정</button>';
       html += '</div>';
       // 파워링크
       html += kwSection('파워링크', plF, d.powerlinkTotal, 'powerlink');
@@ -1925,20 +1926,57 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
     // 정렬 상태: { type: { field, dir } }
     const kwSortState = {};
-    const kwColDefs = [
-      { key:'campaignName', label:'캠페인', tp:'s' },
-      { key:'adgroupName', label:'광고그룹', tp:'s' },
-      { key:'keyword', label:'키워드', tp:'s' },
-      { key:'qi', label:'Qi', tp:'n' },
-      { key:'imp', label:'노출', tp:'n' },
-      { key:'clk', label:'클릭', tp:'n' },
-      { key:'ctr', label:'CTR', tp:'n' },
-      { key:'cost', label:'총비용', tp:'n' },
-      { key:'cpc', label:'CPC', tp:'n' },
-      { key:'purchaseCnt', label:'구매전환수', tp:'n' },
-      { key:'purchaseAmt', label:'구매전환매출', tp:'n' },
-      { key:'roas', label:'ROAS', tp:'n' },
+    // 컬럼 정의 + 렌더러. visible/순서는 localStorage로 영구 저장.
+    const KW_COL_DEFAULTS = [
+      { key:'campaignName', label:'캠페인', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.campaignName||'-')+'</td>'; } },
+      { key:'adgroupName', label:'광고그룹', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.adgroupName||'-')+'</td>'; } },
+      { key:'keyword', label:'키워드', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong></td>'; } },
+      { key:'qi', label:'Qi', tp:'n', visible:true, render: function(kw){
+          var qiV = kw.qi||0;
+          var qiColor = qiV>=5?'#16a34a':qiV>=3?'#f59e0b':'#ef4444';
+          return '<td style="text-align:right;white-space:nowrap">'+(qiV>0?'<span style="display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;background:'+(qiV>=5?'#dcfce7':qiV>=3?'#fef3c7':'#fef2f2')+';color:'+qiColor+'">'+qiV+'</span>':'<span style="color:#cbd5e1;font-size:11px">-</span>')+'</td>';
+        } },
+      { key:'imp', label:'노출', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>'; } },
+      { key:'clk', label:'클릭', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>'; } },
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>'; } },
+      { key:'cost', label:'총비용', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+won(kw.cost)+'</td>'; } },
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+won(kw.cpc)+'</td>'; } },
+      { key:'purchaseCnt', label:'구매전환수', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(kw.purchaseCnt)+'</td>'; } },
+      { key:'purchaseAmt', label:'구매전환매출', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(kw.purchaseAmt)+'</td>'; } },
+      { key:'roas', label:'ROAS', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(kw.roas>=100?'#16a34a':'#ef4444')+'">'+kw.roas+'%</td>'; } },
     ];
+    // localStorage에서 순서/표시여부 복원
+    function loadKwColDefs() {
+      var defs = KW_COL_DEFAULTS.map(function(c){ return Object.assign({}, c); });
+      try {
+        var saved = JSON.parse(localStorage.getItem('smartSa.kwColOrder') || 'null');
+        if (Array.isArray(saved) && saved.length > 0) {
+          var byKey = {};
+          defs.forEach(function(d){ byKey[d.key] = d; });
+          var ordered = [];
+          var seen = {};
+          saved.forEach(function(s){
+            if (byKey[s.key]) {
+              var d = byKey[s.key];
+              if (typeof s.visible === 'boolean') d.visible = s.visible;
+              ordered.push(d);
+              seen[s.key] = true;
+            }
+          });
+          // 저장되지 않은 신규 컬럼은 뒤에 append
+          defs.forEach(function(d){ if (!seen[d.key]) ordered.push(d); });
+          return ordered;
+        }
+      } catch(e){}
+      return defs;
+    }
+    function saveKwColDefs() {
+      try {
+        var snap = kwColDefs.map(function(c){ return { key: c.key, visible: c.visible !== false }; });
+        localStorage.setItem('smartSa.kwColOrder', JSON.stringify(snap));
+      } catch(e){}
+    }
+    let kwColDefs = loadKwColDefs();
 
     function sortKwItems(items, type) {
       const st = kwSortState[type];
@@ -1979,15 +2017,125 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         renderKeywordTab(kwData);
       }
     });
+    document.getElementById('kw-tab-content').addEventListener('click', function(e){
+      if (e.target && e.target.id === 'kw-col-settings-btn') {
+        openKwColSettings();
+      }
+    });
+
+    // ── 열 설정 모달 (드래그 앤 드롭 순서 변경 + 표시/숨김) ──
+    function openKwColSettings() {
+      var existing = document.getElementById('kw-col-modal');
+      if (existing) existing.remove();
+      // 현재 순서/표시여부를 로컬 스냅샷으로 복제
+      var working = kwColDefs.map(function(c){ return { key: c.key, label: c.label, visible: c.visible !== false }; });
+      var modal = document.createElement('div');
+      modal.id = 'kw-col-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+      modal.innerHTML = '<div style="background:#fff;width:420px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e2e8f0">'
+        +   '<div><div style="font-size:16px;font-weight:700;color:#0f172a">열 맞춤 설정</div><div style="font-size:12px;color:#94a3b8;margin-top:2px">드래그하여 순서 변경, 체크박스로 표시/숨김</div></div>'
+        +   '<button id="kw-col-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b;padding:0;line-height:1">×</button>'
+        + '</div>'
+        + '<div id="kw-col-list" style="padding:12px 16px;overflow-y:auto;flex:1"></div>'
+        + '<div style="display:flex;gap:8px;justify-content:space-between;padding:14px 20px;border-top:1px solid #e2e8f0;background:#f8fafc">'
+        +   '<button id="kw-col-reset" class="btn btn-outline" style="font-size:13px;padding:8px 14px">기본값 복원</button>'
+        +   '<div style="display:flex;gap:8px">'
+        +     '<button id="kw-col-cancel" class="btn btn-outline" style="font-size:13px;padding:8px 14px">취소</button>'
+        +     '<button id="kw-col-save" class="btn btn-primary" style="font-size:13px;padding:8px 18px">적용</button>'
+        +   '</div>'
+        + '</div>'
+        + '</div>';
+      document.body.appendChild(modal);
+      var listEl = modal.querySelector('#kw-col-list');
+      function renderList() {
+        var html = '';
+        working.forEach(function(c, idx){
+          html += '<div class="kw-col-item" draggable="true" data-idx="'+idx+'" style="display:flex;align-items:center;gap:10px;padding:10px 12px;margin-bottom:6px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;cursor:grab;user-select:none">'
+            + '<span style="color:#94a3b8;font-size:16px;line-height:1">⋮⋮</span>'
+            + '<input type="checkbox" class="kw-col-chk" data-idx="'+idx+'" '+(c.visible?'checked':'')+' style="width:16px;height:16px;accent-color:#2563eb;cursor:pointer">'
+            + '<span style="flex:1;font-size:13px;color:#0f172a;font-weight:500">'+c.label+'</span>'
+            + '</div>';
+        });
+        listEl.innerHTML = html;
+      }
+      renderList();
+      // 체크박스 이벤트
+      listEl.addEventListener('change', function(e){
+        if (e.target && e.target.classList.contains('kw-col-chk')) {
+          var idx = parseInt(e.target.getAttribute('data-idx'));
+          working[idx].visible = e.target.checked;
+        }
+      });
+      // 드래그 앤 드롭
+      var draggingIdx = null;
+      listEl.addEventListener('dragstart', function(e){
+        var item = e.target.closest('.kw-col-item');
+        if (!item) return;
+        draggingIdx = parseInt(item.getAttribute('data-idx'));
+        item.style.opacity = '0.4';
+        if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try{e.dataTransfer.setData('text/plain','');}catch(_){} }
+      });
+      listEl.addEventListener('dragend', function(e){
+        var item = e.target.closest('.kw-col-item');
+        if (item) item.style.opacity = '';
+        draggingIdx = null;
+      });
+      listEl.addEventListener('dragover', function(e){
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        var target = e.target.closest('.kw-col-item');
+        if (!target || draggingIdx === null) return;
+        var targetIdx = parseInt(target.getAttribute('data-idx'));
+        if (targetIdx === draggingIdx) return;
+        var rect = target.getBoundingClientRect();
+        var after = (e.clientY - rect.top) > (rect.height / 2);
+        var insertIdx = after ? targetIdx + 1 : targetIdx;
+        var moved = working.splice(draggingIdx, 1)[0];
+        if (insertIdx > draggingIdx) insertIdx--;
+        working.splice(insertIdx, 0, moved);
+        draggingIdx = insertIdx;
+        renderList();
+        // 드래그 중인 item에 opacity 재적용
+        var newDragging = listEl.querySelector('.kw-col-item[data-idx="'+draggingIdx+'"]');
+        if (newDragging) newDragging.style.opacity = '0.4';
+      });
+      // 버튼 이벤트
+      modal.querySelector('#kw-col-close').onclick = function(){ modal.remove(); };
+      modal.querySelector('#kw-col-cancel').onclick = function(){ modal.remove(); };
+      modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+      modal.querySelector('#kw-col-reset').onclick = function(){
+        try { localStorage.removeItem('smartSa.kwColOrder'); } catch(_){}
+        working = KW_COL_DEFAULTS.map(function(c){ return { key: c.key, label: c.label, visible: true }; });
+        renderList();
+      };
+      modal.querySelector('#kw-col-save').onclick = function(){
+        // working 순서대로 kwColDefs 재정렬 + visible 반영
+        var byKey = {};
+        kwColDefs.forEach(function(c){ byKey[c.key] = c; });
+        var next = [];
+        working.forEach(function(w){
+          var c = byKey[w.key];
+          if (c) { c.visible = !!w.visible; next.push(c); }
+        });
+        // 누락된 컬럼이 있을 경우 뒤에 append (안전망)
+        kwColDefs.forEach(function(c){ if (next.indexOf(c) === -1) next.push(c); });
+        kwColDefs = next;
+        saveKwColDefs();
+        modal.remove();
+        if (kwData) renderKeywordTab(kwData);
+      };
+    }
 
     function kwSection(title, items, total, type) {
       if (!items || !items.length) return '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span></div><div class="card-body"><div class="empty">데이터 없음</div></div></div>';
       var sorted = sortKwItems(items, type);
       var st = kwSortState[type] || {};
+      var visibleCols = kwColDefs.filter(function(c){ return c.visible !== false; });
       var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">'+title+'</span><span style="font-size:12px;color:#94a3b8">총 '+total+'개 키워드</span></div><div class="card-body" style="overflow-x:auto">';
       html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th>';
-      for (var ci = 0; ci < kwColDefs.length; ci++) {
-        var col = kwColDefs[ci];
+      for (var ci = 0; ci < visibleCols.length; ci++) {
+        var col = visibleCols[ci];
         var isRight = col.tp === 'n';
         var cls = 'sortable';
         if (st.field === col.key) cls += ' sort-' + st.dir;
@@ -1997,20 +2145,9 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       for (var i = 0; i < sorted.length; i++) {
         var kw = sorted[i];
         html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
-        html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.campaignName||'-')+'</td>';
-        html += '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.adgroupName||'-')+'</td>';
-        html += '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong></td>';
-        var qiV = kw.qi||0;
-        var qiColor = qiV>=5?'#16a34a':qiV>=3?'#f59e0b':'#ef4444';
-        html += '<td style="text-align:right;white-space:nowrap">'+(qiV>0?'<span style="display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;background:'+(qiV>=5?'#dcfce7':qiV>=3?'#fef3c7':'#fef2f2')+';color:'+qiColor+'">'+qiV+'</span>':'<span style="color:#cbd5e1;font-size:11px">-</span>')+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+won(kw.cost)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+won(kw.cpc)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(kw.purchaseCnt)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(kw.purchaseAmt)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(kw.roas>=100?'#16a34a':'#ef4444')+'">'+kw.roas+'%</td>';
+        for (var cj = 0; cj < visibleCols.length; cj++) {
+          html += visibleCols[cj].render(kw);
+        }
         html += '</tr>';
       }
       html += '</tbody></table>';
@@ -2285,14 +2422,31 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     const stats = statsResult.status === 'fulfilled' ? statsResult.value
       : { impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 };
 
-    if (convResult.status === 'fulfilled') {
+    // 구매완료 전환 데이터: Stats API purchaseCcnt/purchaseConvAmt 우선 사용 (네이버 대시보드와 일치)
+    if (typeof stats.purchaseCcnt === 'number' && typeof stats.purchaseConvAmt === 'number') {
+      // Stats API에서 직접 받은 구매완료 데이터 → 대시보드와 100% 일치
+      stats.purchaseAmt = stats.purchaseConvAmt;
+      stats.purchaseCnt = stats.purchaseCcnt;
+      stats.roas = stats.salesAmt > 0 ? Math.round(stats.purchaseConvAmt / stats.salesAmt * 100) : 0;
+      if (stats.campStats) {
+        for (const cs of stats.campStats) {
+          cs.purchaseAmt = cs.purchaseConvAmt || 0;
+          cs.purchaseCnt = cs.purchaseCcnt || 0;
+        }
+      }
+    } else if (convResult.status === 'fulfilled') {
+      // Fallback: AD_CONVERSION_DETAIL TSV 파싱 (한국어 convType 포함)
       const convRows = convResult.value;
       let purchaseAmt = 0, purchaseCnt = 0;
       const byCampaign = {};
       for (const { cols } of convRows) {
         if (cols.length < 15) continue;
-        const convType = cols[12];
-        if (convType === 'purchase' || convType === 'purchase_complete' || convType === 'complete_purchase') {
+        const convType = (cols[12] || '').trim();
+        const convTypeLower = convType.toLowerCase();
+        const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
+          || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1'
+          || convType === '구매완료';
+        if (isPurchase) {
           const campaignId = cols[2];
           const cnt = parseInt(cols[13]) || 0;
           const amt = parseInt(cols[14]) || 0;
@@ -2538,8 +2692,11 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
 
     // DB 동기화 데이터 우선 조회
     const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    console.log(`🔍 [키워드탭] account=${account.id} period=${dateRange.since}~${dateRange.until} synced=${synced}`);
     if (synced) {
       const rows = await db.queryStatsKeywords(account.id, dateRange.since, dateRange.until);
+      const shopRowCount = rows.filter(r => normalizeCampaignTp(r.campaignTp) === 2).length;
+      console.log(`🔍 [키워드탭 DB] 전체 ${rows.length}행, 쇼핑 ${shopRowCount}행`);
       const byKw = {};
       for (const r of rows) {
         const campTp = normalizeCampaignTp(r.campaignTp);
@@ -2603,6 +2760,13 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     const shopKwRows = shopRes.status === 'fulfilled' ? shopRes.value : [];
     const shopConvRows = shopConvRes.status === 'fulfilled' ? shopConvRes.value : [];
 
+    // 디버그 로깅: 쇼핑 키워드 데이터 상태 추적
+    console.log(`🔍 [키워드탭] AD_DETAIL: ${adRows.length}행, AD_CONV: ${convRows.length}행, SHOP_KW: ${shopKwRows.length}행, SHOP_CONV: ${shopConvRows.length}행`);
+    if (shopRes.status === 'rejected') console.error(`❌ SHOPPINGKEYWORD_DETAIL 실패:`, shopRes.reason?.message || shopRes.reason);
+    if (shopConvRes.status === 'rejected') console.error(`❌ SHOPPINGKEYWORD_CONVERSION_DETAIL 실패:`, shopConvRes.reason?.message || shopConvRes.reason);
+    if (shopKwRows.length > 0) console.log(`  📋 쇼핑 키워드 샘플:`, JSON.stringify(shopKwRows[0]?.cols?.slice(0, 6)));
+    if (adRes.status === 'rejected') console.error(`❌ AD_DETAIL 실패:`, adRes.reason?.message || adRes.reason);
+
     const byKw = {};
     // 파워링크 키워드 (AD_DETAIL에서 keywordId가 실제 키워드인 행)
     for (const { cols } of adRows) {
@@ -2634,7 +2798,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       if (cols.length < 13) continue;
       const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
       if (!kwId || kwId === '-' || kwId === '') continue;
-      const groupKey = `kw:${kwId}`;
+      const groupKey = `kw:shop:${kwId}`;
       if (!byKw[groupKey]) {
         const agInfo = agMap[agId] || {};
         byKw[groupKey] = {
@@ -2651,14 +2815,46 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       byKw[groupKey].clk += parseInt(cols[10]) || 0;
       byKw[groupKey].cost += parseInt(cols[11]) || 0;
     }
+    // 쇼핑 키워드 폴백: SHOPPINGKEYWORD_DETAIL 실패/빈경우 → AD_DETAIL에서 쇼핑캠페인 그룹별 집계
+    if (shopKwRows.length === 0) {
+      console.log(`⚠️ SHOPPINGKEYWORD_DETAIL 데이터 없음 → AD_DETAIL 쇼핑 캠페인 폴백`);
+      for (const { cols } of adRows) {
+        if (cols.length < 15) continue;
+        const campId = cols[2]; const agId = cols[3]; const kwId = cols[4];
+        const campTp = normalizeCampaignTp(campMap[campId]?.tp || 0);
+        if (campTp !== 2) continue; // 쇼핑캠페인만
+        // AD_DETAIL에서 쇼핑캠페인은 keyword_id='-' → 그룹별로 집계
+        const groupKey = `kw:shop:ag:${agId}`;
+        if (!byKw[groupKey]) {
+          const agInfo = agMap[agId] || {};
+          byKw[groupKey] = {
+            keywordId: agId,
+            keyword: agInfo.name || `쇼핑그룹_${agId.slice(-6)}`,
+            campaignTp: 2,
+            campaignName: campMap[campId]?.name || '',
+            adgroupName: agInfo.name || '',
+            imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
+          };
+        }
+        byKw[groupKey].imp += parseInt(cols[11]) || 0;
+        byKw[groupKey].clk += parseInt(cols[12]) || 0;
+        byKw[groupKey].cost += parseInt(cols[13]) || 0;
+      }
+    }
+    // 구매완료 전환 판별 헬퍼 (영문 + 한국어 + 코드)
+    function isPurchaseConv(ct) {
+      var lo = (ct || '').trim().toLowerCase();
+      var raw = (ct || '').trim();
+      return lo === 'purchase' || lo === 'purchase_complete' || lo === 'complete_purchase'
+        || lo === 'conversion' || lo === 'conv' || lo === '1'
+        || raw === '구매완료';
+    }
     // 파워링크 전환 (AD_CONVERSION_DETAIL)
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const kwId = cols[4]; const convType = cols[12];
       if (!kwId || kwId === '-') continue;
-      const convTypeLower = (convType || '').toLowerCase();
-      if (convTypeLower !== 'purchase' && convTypeLower !== 'purchase_complete' && convTypeLower !== 'complete_purchase'
-        && convTypeLower !== 'conversion' && convTypeLower !== 'conv' && convTypeLower !== '1') continue;
+      if (!isPurchaseConv(convType)) continue;
       const groupKey = `kw:${kwId}`;
       if (!byKw[groupKey]) continue;
       byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
@@ -2669,13 +2865,25 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
       if (cols.length < 13) continue;
       const kwId = cols[4]; const convType = cols[10];
       if (!kwId || kwId === '-') continue;
-      const convTypeLower = (convType || '').toLowerCase();
-      if (convTypeLower !== 'purchase' && convTypeLower !== 'purchase_complete' && convTypeLower !== 'complete_purchase'
-        && convTypeLower !== 'conversion' && convTypeLower !== 'conv' && convTypeLower !== '1') continue;
-      const groupKey = `kw:${kwId}`;
+      if (!isPurchaseConv(convType)) continue;
+      const groupKey = `kw:shop:${kwId}`;
       if (!byKw[groupKey]) continue;
       byKw[groupKey].purchaseCnt += parseInt(cols[11]) || 0;
       byKw[groupKey].purchaseAmt += parseInt(cols[12]) || 0;
+    }
+    // 쇼핑 전환 폴백: AD_CONVERSION_DETAIL에서 쇼핑캠페인 전환 집계 (그룹별)
+    if (shopConvRows.length === 0 && shopKwRows.length === 0) {
+      for (const { cols } of convRows) {
+        if (cols.length < 15) continue;
+        const campId = cols[2]; const agId = cols[3]; const convType = cols[12];
+        const campTp = normalizeCampaignTp(campMap[campId]?.tp || 0);
+        if (campTp !== 2) continue;
+        if (!isPurchaseConv(convType)) continue;
+        const groupKey = `kw:shop:ag:${agId}`;
+        if (!byKw[groupKey]) continue;
+        byKw[groupKey].purchaseCnt += parseInt(cols[13]) || 0;
+        byKw[groupKey].purchaseAmt += parseInt(cols[14]) || 0;
+      }
     }
 
     const allKw = Object.values(byKw).map(kw => ({ ...kw, ctr: kw.imp > 0 ? (kw.clk / kw.imp * 100) : 0, cpc: kw.clk > 0 ? Math.round(kw.cost / kw.clk) : 0, roas: kw.cost > 0 ? Math.round(kw.purchaseAmt / kw.cost * 100) : 0 }));
@@ -4109,6 +4317,58 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
 
 // ─── 대시보드 데이터 동기화 Cron ──────────────────────────────────────
 const { syncAccountDate, runDashboardSync, runBackfill } = require('../sync/dashboardSync');
+
+// ─── 쇼핑 키워드 진단 엔드포인트 ──────────────────────────────────
+router.get('/api/debug/shopping-report', requireLogin, requireApi, async (req, res) => {
+  try {
+    const account = await db.getAccountById(req.query.accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const creds = req.apiCreds;
+    const client = makeClient(creds, account.customer_id);
+    const testDate = req.query.date || fmtKST((() => { const d = new Date(); d.setDate(d.getDate() - 1); return d; })());
+
+    const reportTypes = [
+      'SHOPPINGKEYWORD_DETAIL',
+      'SHOPPINGKEYWORD_CONVERSION_DETAIL',
+      'AD_DETAIL',
+      'AD_CONVERSION_DETAIL',
+    ];
+
+    const results = {};
+    for (const tp of reportTypes) {
+      try {
+        const rows = await client.createAndDownloadStatReport(tp, testDate);
+        results[tp] = { ok: true, rowCount: rows.length, sample: rows.slice(0, 2).map(r => r.join(' | ')) };
+      } catch (e) {
+        results[tp] = { ok: false, error: e.message, statusCode: e.statusCode };
+      }
+    }
+
+    // sync_log 상태 확인
+    const syncCheck = await db.pool.query(
+      `SELECT stat_date, status, synced_at FROM sync_log WHERE account_id = $1 AND sync_type = 'detail' ORDER BY stat_date DESC LIMIT 10`,
+      [account.id]
+    );
+
+    // stat_daily_detail에서 쇼핑 캠페인 키워드 확인
+    const shopKwCheck = await db.pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM stat_daily_detail d
+       JOIN master_campaigns mc ON d.campaign_id = mc.campaign_id AND d.account_id = mc.account_id
+       WHERE d.account_id = $1 AND mc.campaign_tp = 2 AND d.keyword_id != '-' AND d.keyword_id != ''`,
+      [account.id]
+    );
+
+    res.json({
+      ok: true,
+      testDate,
+      reportResults: results,
+      syncLogRecent: syncCheck.rows,
+      shoppingKwInDb: shopKwCheck.rows[0].cnt,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // 30분마다 실행: 어제+오늘 데이터 동기화
 // ?force=1 로 호출하면 sync_log 삭제 후 강제 재동기화
