@@ -64,13 +64,16 @@ function getDatesBetween(since, until) {
 }
 
 /**
- * SHOPPINGKEYWORD_DETAIL (13열) → AD_DETAIL (15열) 컬럼 리매핑
- * Shopping rows는 adId(5), channelId(6) 컬럼이 없음 → 빈 값 삽입
+ * SHOPPINGKEYWORD_DETAIL / SHOPPINGKEYWORD_CONVERSION_DETAIL 컬럼 리매핑
+ * 실제 TSV 형식 (16열/15열):
+ *   SHOPPINGKEYWORD_DETAIL (16열): date, custId, campId, agId, keyword(TEXT), adId, bsnId, hour, code, queryGrpId, device, imp, clk, cost, rank, ?
+ *   SHOPPINGKEYWORD_CONVERSION_DETAIL (15열): date, custId, campId, agId, keyword(TEXT), adId, bsnId, hour, code, queryGrpId, device, directFlag, convType, convCnt, convAmt
+ * AD_DETAIL과 동일한 컬럼 위치(11=imp, 12=clk, 13=cost, 14=rank / 12=convType, 13=convCnt, 14=convAmt)를 가지므로
+ * 15열 이상이면 리매핑 불필요
  */
 function remapShoppingRow(cols) {
-  if (cols.length >= 15) return cols; // 이미 15열 이상이면 그대로
-  // [0:date, 1:custId, 2:campId, 3:agId, 4:kwId, 5:hour, 6:code, 7:queryGrpId, 8:device, 9:imp, 10:clk, 11:cost, 12:rank]
-  // → [0:date, 1:custId, 2:campId, 3:agId, 4:kwId, '','', 5:hour, 6:code, 7:queryGrpId, 8:device, 9:imp, 10:clk, 11:cost, 12:rank]
+  if (cols.length >= 15) return cols; // 실제 형식은 15-16열이므로 그대로 반환
+  // 만약 13열 이하인 레거시 형식이 올 경우를 위한 안전장치
   return [...cols.slice(0, 5), '', '', ...cols.slice(5)];
 }
 

@@ -2168,7 +2168,156 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       } catch(e) { wrap.innerHTML = '<div class="empty">오류: '+e.message+'</div>'; }
     }
 
+    // ═══ 범용 열 설정 시스템 ═══
+    // tabId별 컬럼 기본 정의, 현재 상태, 데이터 캐시
+    const TAB_COL_DEFS = {};    // { tabId: [colDef, ...] }
+    const TAB_COL_STATE = {};   // { tabId: [colDef with visible state, ...] }
+    const TAB_DATA_CACHE = {};  // { tabId: data }
+
+    function registerTabCols(tabId, defaults) {
+      TAB_COL_DEFS[tabId] = defaults;
+      TAB_COL_STATE[tabId] = loadTabColState(tabId, defaults);
+    }
+    function loadTabColState(tabId, defaults) {
+      var defs = defaults.map(function(c){ return Object.assign({}, c); });
+      try {
+        var saved = JSON.parse(localStorage.getItem('smartSa.colOrder.'+tabId) || 'null');
+        if (Array.isArray(saved) && saved.length > 0) {
+          var byKey = {}; defs.forEach(function(d){ byKey[d.key] = d; });
+          var ordered = [], seen = {};
+          saved.forEach(function(s){ if (byKey[s.key]) { var d = byKey[s.key]; if (typeof s.visible === 'boolean') d.visible = s.visible; ordered.push(d); seen[s.key] = true; } });
+          defs.forEach(function(d){ if (!seen[d.key]) ordered.push(d); });
+          return ordered;
+        }
+      } catch(e){}
+      return defs;
+    }
+    function saveTabColState(tabId) {
+      try {
+        var snap = TAB_COL_STATE[tabId].map(function(c){ return { key: c.key, visible: c.visible !== false }; });
+        localStorage.setItem('smartSa.colOrder.'+tabId, JSON.stringify(snap));
+      } catch(e){}
+    }
+    function getVisibleCols(tabId) { return (TAB_COL_STATE[tabId] || []).filter(function(c){ return c.visible !== false; }); }
+
+    function openColSettings(tabId, onApply) {
+      var existing = document.getElementById('col-modal-'+tabId);
+      if (existing) existing.remove();
+      var colState = TAB_COL_STATE[tabId] || [];
+      var working = colState.map(function(c){ return { key: c.key, label: c.label, visible: c.visible !== false }; });
+      var modal = document.createElement('div');
+      modal.id = 'col-modal-'+tabId;
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+      modal.innerHTML = '<div style="background:#fff;width:420px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e2e8f0">'
+        +   '<div><div style="font-size:16px;font-weight:700;color:#0f172a">열 맞춤 설정</div><div style="font-size:12px;color:#94a3b8;margin-top:2px">드래그하여 순서 변경, 체크박스로 표시/숨김</div></div>'
+        +   '<button class="col-modal-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b;padding:0;line-height:1">×</button>'
+        + '</div>'
+        + '<div class="col-modal-list" style="padding:12px 16px;overflow-y:auto;flex:1"></div>'
+        + '<div style="display:flex;gap:8px;justify-content:space-between;padding:14px 20px;border-top:1px solid #e2e8f0;background:#f8fafc">'
+        +   '<button class="col-modal-reset btn btn-outline" style="font-size:13px;padding:8px 14px">기본값 복원</button>'
+        +   '<div style="display:flex;gap:8px">'
+        +     '<button class="col-modal-cancel btn btn-outline" style="font-size:13px;padding:8px 14px">취소</button>'
+        +     '<button class="col-modal-save btn btn-primary" style="font-size:13px;padding:8px 18px">적용</button>'
+        +   '</div>'
+        + '</div></div>';
+      document.body.appendChild(modal);
+      var listEl = modal.querySelector('.col-modal-list');
+      function renderList() {
+        var html = '';
+        working.forEach(function(c, idx){
+          html += '<div class="col-drag-item" draggable="true" data-idx="'+idx+'" style="display:flex;align-items:center;gap:10px;padding:10px 12px;margin-bottom:6px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;cursor:grab;user-select:none">'
+            + '<span style="color:#94a3b8;font-size:16px;line-height:1">⋮⋮</span>'
+            + '<input type="checkbox" class="col-drag-chk" data-idx="'+idx+'" '+(c.visible?'checked':'')+' style="width:16px;height:16px;accent-color:#2563eb;cursor:pointer">'
+            + '<span style="flex:1;font-size:13px;color:#0f172a;font-weight:500">'+c.label+'</span></div>';
+        });
+        listEl.innerHTML = html;
+      }
+      renderList();
+      listEl.addEventListener('change', function(e){ if (e.target && e.target.classList.contains('col-drag-chk')) { working[parseInt(e.target.getAttribute('data-idx'))].visible = e.target.checked; } });
+      var draggingIdx = null;
+      listEl.addEventListener('dragstart', function(e){ var item = e.target.closest('.col-drag-item'); if (!item) return; draggingIdx = parseInt(item.getAttribute('data-idx')); item.style.opacity = '0.4'; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try{e.dataTransfer.setData('text/plain','');}catch(_){} } });
+      listEl.addEventListener('dragend', function(e){ var item = e.target.closest('.col-drag-item'); if (item) item.style.opacity = ''; draggingIdx = null; });
+      listEl.addEventListener('dragover', function(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; var target = e.target.closest('.col-drag-item'); if (!target || draggingIdx === null) return; var targetIdx = parseInt(target.getAttribute('data-idx')); if (targetIdx === draggingIdx) return; var rect = target.getBoundingClientRect(); var after = (e.clientY - rect.top) > (rect.height / 2); var insertIdx = after ? targetIdx + 1 : targetIdx; var moved = working.splice(draggingIdx, 1)[0]; if (insertIdx > draggingIdx) insertIdx--; working.splice(insertIdx, 0, moved); draggingIdx = insertIdx; renderList(); var nd = listEl.querySelector('.col-drag-item[data-idx="'+draggingIdx+'"]'); if (nd) nd.style.opacity = '0.4'; });
+      modal.querySelector('.col-modal-close').onclick = function(){ modal.remove(); };
+      modal.querySelector('.col-modal-cancel').onclick = function(){ modal.remove(); };
+      modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+      modal.querySelector('.col-modal-reset').onclick = function(){ try { localStorage.removeItem('smartSa.colOrder.'+tabId); } catch(_){} working = TAB_COL_DEFS[tabId].map(function(c){ return { key: c.key, label: c.label, visible: true }; }); renderList(); };
+      modal.querySelector('.col-modal-save').onclick = function(){
+        var byKey = {}; TAB_COL_STATE[tabId].forEach(function(c){ byKey[c.key] = c; });
+        var next = [];
+        working.forEach(function(w){ var c = byKey[w.key]; if (c) { c.visible = !!w.visible; next.push(c); } });
+        TAB_COL_STATE[tabId].forEach(function(c){ if (next.indexOf(c) === -1) next.push(c); });
+        TAB_COL_STATE[tabId] = next;
+        saveTabColState(tabId);
+        modal.remove();
+        if (onApply) onApply();
+      };
+    }
+
+    function renderColTable(tabId, items, opts) {
+      opts = opts || {};
+      var cols = getVisibleCols(tabId);
+      var html = '<table style="table-layout:auto"><thead><tr>';
+      if (opts.showIndex !== false) html += '<th style="width:30px">#</th>';
+      for (var i = 0; i < cols.length; i++) {
+        var c = cols[i]; var isR = c.tp === 'n';
+        html += '<th style="'+(isR?'text-align:right;':'')+'white-space:nowrap">'+c.label+'</th>';
+      }
+      html += '</tr></thead><tbody>';
+      for (var j = 0; j < items.length; j++) {
+        var row = items[j];
+        html += '<tr>';
+        if (opts.showIndex !== false) html += '<td style="color:#94a3b8;text-align:center">'+(j+1)+'</td>';
+        for (var k = 0; k < cols.length; k++) html += cols[k].render(row);
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    // ═══ 시간대별 탭 컬럼 정의 ═══
+    var HOURLY_COLS = [
+      { key:'imp', label:'노출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+num(r.imp)+'</td>'; } },
+      { key:'clk', label:'클릭', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;color:#2563eb">'+num(r.clk)+'</td>'; } },
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+pct(r.ctr)+'</td>'; } },
+      { key:'cost', label:'총비용', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.cost)+'</td>'; } },
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.cpc)+'</td>'; } },
+      { key:'purchaseCnt', label:'구매전환', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;color:#7c3aed">'+num(r.purchaseCnt)+'</td>'; } },
+      { key:'purchaseAmt', label:'구매매출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;color:#16a34a">'+won(r.purchaseAmt)+'</td>'; } },
+      { key:'roas', label:'ROAS', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;font-weight:600;color:'+(r.roas>=100?'#16a34a':'#ef4444')+'">'+r.roas+'%</td>'; } },
+    ];
+    registerTabCols('hourly', HOURLY_COLS);
+
+    // ═══ 지역별 탭 컬럼 정의 ═══
+    var REGIONAL_COLS = [
+      { key:'name', label:'지역', tp:'s', visible:true, render: function(r){ return '<td style="font-weight:600">'+r.name+'</td>'; } },
+      { key:'impCnt', label:'노출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+num(r.impCnt)+'</td>'; } },
+      { key:'clkCnt', label:'클릭', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;color:#2563eb;font-weight:600">'+num(r.clkCnt)+'</td>'; } },
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+pct(r.ctr)+'</td>'; } },
+      { key:'salesAmt', label:'총비용', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.salesAmt)+'</td>'; } },
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.cpc)+'</td>'; } },
+      { key:'costPct', label:'비용비중', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;font-weight:600">'+(r._costPct||'0')+'%</td>'; } },
+    ];
+    registerTabCols('regional', REGIONAL_COLS);
+
+    // ═══ 그룹별 탭 컬럼 정의 ═══
+    var ADGROUP_COLS = [
+      { key:'campaignName', label:'캠페인', tp:'s', visible:true, render: function(r){ return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(r.campaignName||'-')+(r.campaignTp===2?'<span class="badge badge-blue" style="margin-left:4px;font-size:10px">쇼핑</span>':'')+'</td>'; } },
+      { key:'adgroupName', label:'광고그룹', tp:'s', visible:true, render: function(r){ return '<td style="white-space:nowrap"><strong>'+r.adgroupName+'</strong></td>'; } },
+      { key:'imp', label:'노출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+num(r.imp)+'</td>'; } },
+      { key:'clk', label:'클릭', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(r.clk)+'</td>'; } },
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+pct(r.ctr)+'</td>'; } },
+      { key:'cost', label:'총비용', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+won(r.cost)+'</td>'; } },
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+won(r.cpc)+'</td>'; } },
+      { key:'purchaseCnt', label:'구매전환', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(r.purchaseCnt)+'</td>'; } },
+      { key:'purchaseAmt', label:'구매매출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(r.purchaseAmt)+'</td>'; } },
+      { key:'roas', label:'ROAS', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(r.roas>=100?'#16a34a':'#ef4444')+'">'+r.roas+'%</td>'; } },
+    ];
+    registerTabCols('adgroups', ADGROUP_COLS);
+
     // ── 시간대별 탭 ──
+    var hourlyData = null;
     async function loadHourly() {
       const wrap = document.getElementById('hourly-tab-content');
       wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 시간대별 데이터 로딩 중... (10~30초 소요)</div>';
@@ -2177,6 +2326,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         tabLoaded.hourly = true;
+        hourlyData = json;
         renderHourlyTab(json);
       } catch(e) { wrap.innerHTML = '<div class="empty">시간대별 조회 실패: '+e.message+'</div>'; }
     }
@@ -2184,21 +2334,17 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function renderHourlyTab(d) {
       const wrap = document.getElementById('hourly-tab-content');
       let html = '';
-      // 시간대별 히트맵
-      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span></div><div class="card-body" style="overflow-x:auto">';
-      const maxCost = Math.max(...d.byHour.map(h => h.cost), 1);
-      html += '<table><thead><tr><th>시간</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th><th style="width:120px">비용비중</th></tr></thead><tbody>';
-      d.byHour.forEach(h => {
-        const barW = Math.max((h.cost/maxCost)*100, 1);
+      // 시간대별
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'hourly\\\', function(){ if(hourlyData) renderHourlyTab(hourlyData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div><div class="card-body" style="overflow-x:auto">';
+      var maxCost = Math.max.apply(null, d.byHour.map(function(h){return h.cost}).concat([1]));
+      var hCols = getVisibleCols('hourly');
+      html += '<table><thead><tr><th>시간</th>';
+      for (var i=0;i<hCols.length;i++) html += '<th style="'+(hCols[i].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i].label+'</th>';
+      html += '<th style="width:120px">비용비중</th></tr></thead><tbody>';
+      d.byHour.forEach(function(h) {
+        var barW = Math.max((h.cost/maxCost)*100, 1);
         html += '<tr><td style="font-weight:600">'+String(h.hour).padStart(2,'0')+':00</td>';
-        html += '<td style="text-align:right">'+num(h.imp)+'</td>';
-        html += '<td style="text-align:right;color:#2563eb">'+num(h.clk)+'</td>';
-        html += '<td style="text-align:right">'+pct(h.ctr)+'</td>';
-        html += '<td style="text-align:right">'+won(h.cost)+'</td>';
-        html += '<td style="text-align:right">'+won(h.cpc)+'</td>';
-        html += '<td style="text-align:right;color:#7c3aed">'+num(h.purchaseCnt)+'</td>';
-        html += '<td style="text-align:right;color:#16a34a">'+won(h.purchaseAmt)+'</td>';
-        html += '<td style="text-align:right;font-weight:600;color:'+(h.roas>=100?'#16a34a':'#ef4444')+'">'+h.roas+'%</td>';
+        for (var j=0;j<hCols.length;j++) html += hCols[j].render(h);
         html += '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden"><div style="width:'+barW+'%;background:#3b82f6;height:100%;border-radius:4px"></div></div></td>';
         html += '</tr>';
       });
@@ -2206,19 +2352,14 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
       // 요일별
       html += '<div class="card"><div class="card-header"><span class="card-title">요일별 성과</span></div><div class="card-body" style="overflow-x:auto">';
-      const maxDayCost = Math.max(...d.byDay.map(d2 => d2.cost), 1);
-      html += '<table><thead><tr><th>요일</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th><th style="text-align:right">ROAS</th><th style="width:120px">비용비중</th></tr></thead><tbody>';
-      d.byDay.forEach(day => {
-        const barW = Math.max((day.cost/maxDayCost)*100, 1);
+      var maxDayCost = Math.max.apply(null, d.byDay.map(function(d2){return d2.cost}).concat([1]));
+      html += '<table><thead><tr><th>요일</th>';
+      for (var i2=0;i2<hCols.length;i2++) html += '<th style="'+(hCols[i2].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i2].label+'</th>';
+      html += '<th style="width:120px">비용비중</th></tr></thead><tbody>';
+      d.byDay.forEach(function(day) {
+        var barW = Math.max((day.cost/maxDayCost)*100, 1);
         html += '<tr><td style="font-weight:600">'+day.day+'요일</td>';
-        html += '<td style="text-align:right">'+num(day.imp)+'</td>';
-        html += '<td style="text-align:right;color:#2563eb">'+num(day.clk)+'</td>';
-        html += '<td style="text-align:right">'+pct(day.ctr)+'</td>';
-        html += '<td style="text-align:right">'+won(day.cost)+'</td>';
-        html += '<td style="text-align:right">'+won(day.cpc)+'</td>';
-        html += '<td style="text-align:right;color:#7c3aed">'+num(day.purchaseCnt)+'</td>';
-        html += '<td style="text-align:right;color:#16a34a">'+won(day.purchaseAmt)+'</td>';
-        html += '<td style="text-align:right;font-weight:600;color:'+(day.roas>=100?'#16a34a':'#ef4444')+'">'+day.roas+'%</td>';
+        for (var j2=0;j2<hCols.length;j2++) html += hCols[j2].render(day);
         html += '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden"><div style="width:'+barW+'%;background:#f59e0b;height:100%;border-radius:4px"></div></div></td>';
         html += '</tr>';
       });
@@ -2294,46 +2435,35 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       } catch(e) { wrap.innerHTML = '<div class="empty">지역별 조회 실패: '+e.message+'</div>'; }
     }
 
+    var regionalData = null;
     function renderRegionalTab(regions) {
       const wrap = document.getElementById('regional-tab-content');
       if (!regions || !regions.length) { wrap.innerHTML = '<div class="empty">지역별 데이터가 없습니다.<br><span style="font-size:12px;color:#94a3b8">최근 7일 이내 기간에서만 조회 가능합니다.</span></div>'; return; }
+      regionalData = regions;
       var totalCost = regions.reduce(function(s,r){return s+r.salesAmt},0) || 1;
-      var totalClk = regions.reduce(function(s,r){return s+r.clkCnt},0) || 1;
+
+      // 비용비중 계산 추가
+      regions.forEach(function(r){ r._costPct = (r.salesAmt / totalCost * 100).toFixed(1); });
 
       // 비용 기준 상위 10개 지역 비율 차트
       var top10 = regions.slice(0, 10);
       var barColors = ['#3b82f6','#8b5cf6','#ef4444','#f59e0b','#10b981','#06b6d4','#ec4899','#f97316','#14b8a6','#6366f1'];
       var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">📍 지역별 비용 비율 (Top 10)</span></div><div class="card-body">';
       top10.forEach(function(r, i) {
-        var pct = (r.salesAmt / totalCost * 100).toFixed(1);
         html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
         html += '<div style="width:60px;font-size:13px;font-weight:600;text-align:right;flex-shrink:0">'+r.name+'</div>';
         html += '<div style="flex:1;height:24px;background:#f1f5f9;border-radius:6px;overflow:hidden">';
-        html += '<div style="width:'+pct+'%;height:100%;background:'+barColors[i%10]+';display:flex;align-items:center;padding-left:8px;min-width:40px">';
-        html += '<span style="font-size:11px;font-weight:600;color:#fff">'+pct+'%</span></div></div>';
+        html += '<div style="width:'+r._costPct+'%;height:100%;background:'+barColors[i%10]+';display:flex;align-items:center;padding-left:8px;min-width:40px">';
+        html += '<span style="font-size:11px;font-weight:600;color:#fff">'+r._costPct+'%</span></div></div>';
         html += '<div style="width:80px;font-size:12px;text-align:right;color:#64748b;flex-shrink:0">'+won(r.salesAmt)+'</div>';
         html += '</div>';
       });
       html += '</div></div>';
 
-      // 전체 지역 테이블
-      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span></div><div class="card-body" style="overflow-x:auto">';
-      html += '<table style="table-layout:auto"><thead><tr>';
-      html += '<th style="width:30px">#</th><th>지역</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th><th style="text-align:right">CTR</th><th style="text-align:right">총비용</th><th style="text-align:right">CPC</th><th style="text-align:right">비용비중</th>';
-      html += '</tr></thead><tbody>';
-      regions.forEach(function(r, i) {
-        var costPct = (r.salesAmt / totalCost * 100).toFixed(1);
-        html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
-        html += '<td style="font-weight:600">'+r.name+'</td>';
-        html += '<td style="text-align:right">'+num(r.impCnt)+'</td>';
-        html += '<td style="text-align:right;color:#2563eb;font-weight:600">'+num(r.clkCnt)+'</td>';
-        html += '<td style="text-align:right">'+pct(r.ctr)+'</td>';
-        html += '<td style="text-align:right">'+won(r.salesAmt)+'</td>';
-        html += '<td style="text-align:right">'+won(r.cpc)+'</td>';
-        html += '<td style="text-align:right;font-weight:600">'+costPct+'%</td>';
-        html += '</tr>';
-      });
-      html += '</tbody></table></div></div>';
+      // 전체 지역 테이블 (열 설정 적용)
+      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'regional\\\', function(){ if(regionalData) renderRegionalTab(regionalData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += renderColTable('regional', regions);
+      html += '</div></div>';
       wrap.innerHTML = html;
     }
 
@@ -2350,27 +2480,14 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       } catch(e) { wrap.innerHTML = '<div class="empty">광고그룹 조회 실패: '+e.message+'</div>'; }
     }
 
+    var adgroupData = null;
     function renderAdgroupTab(adgroups) {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
-      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span></div><div class="card-body" style="overflow-x:auto">';
-      html += '<table style="table-layout:auto"><thead><tr><th style="width:30px">#</th><th style="white-space:nowrap">캠페인</th><th style="white-space:nowrap">광고그룹</th><th style="text-align:right;white-space:nowrap">노출</th><th style="text-align:right;white-space:nowrap">클릭</th><th style="text-align:right;white-space:nowrap">CTR</th><th style="text-align:right;white-space:nowrap">총비용</th><th style="text-align:right;white-space:nowrap">CPC</th><th style="text-align:right;white-space:nowrap">구매전환</th><th style="text-align:right;white-space:nowrap">구매매출</th><th style="text-align:right;white-space:nowrap">ROAS</th></tr></thead><tbody>';
-      adgroups.forEach((ag,i) => {
-        const tpBadge = ag.campaignTp===2?'<span class="badge badge-blue" style="margin-left:4px;font-size:10px">쇼핑</span>':'';
-        html += '<tr><td style="color:#94a3b8;text-align:center">'+(i+1)+'</td>';
-        html += '<td style="white-space:nowrap">'+ag.campaignName+tpBadge+'</td>';
-        html += '<td style="white-space:nowrap"><strong>'+ag.adgroupName+'</strong></td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+num(ag.imp)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(ag.clk)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+pct(ag.ctr)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+won(ag.cost)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap">'+won(ag.cpc)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(ag.purchaseCnt)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(ag.purchaseAmt)+'</td>';
-        html += '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(ag.roas>=100?'#16a34a':'#ef4444')+'">'+ag.roas+'%</td>';
-        html += '</tr>';
-      });
-      html += '</tbody></table></div></div>';
+      adgroupData = adgroups;
+      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += renderColTable('adgroups', adgroups);
+      html += '</div></div>';
       wrap.innerHTML = html;
     }
 
