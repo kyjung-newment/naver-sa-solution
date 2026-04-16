@@ -4327,12 +4327,13 @@ router.get('/api/debug/shopping-report', async (req, res) => {
   try {
     // accountId 직접 조회 (CRON 모드에서도 작동)
     const accountRow = await db.pool.query(
-      'SELECT a.*, u.api_key, u.secret_key, u.manager_customer_id FROM ad_accounts a JOIN users u ON u.id = a.user_id WHERE a.id = $1',
+      `SELECT a.id, a.customer_id, a.name, u.api_key AS u_api_key, u.secret_key AS u_secret_key, u.manager_customer_id AS u_mgr_cust_id
+       FROM ad_accounts a JOIN users u ON u.id = a.user_id WHERE a.id = $1`,
       [req.query.accountId]
     );
     if (accountRow.rows.length === 0) return res.status(404).json({ ok: false, error: '광고주 없음' });
     const account = accountRow.rows[0];
-    const creds = { apiKey: account.api_key, secretKey: account.secret_key, customerId: account.manager_customer_id || account.customer_id };
+    const creds = { apiKey: account.u_api_key, secretKey: account.u_secret_key, customerId: account.u_mgr_cust_id || account.customer_id };
     const client = makeClient(creds, account.customer_id);
     const testDate = req.query.date || fmtKST((() => { const d = new Date(); d.setDate(d.getDate() - 1); return d; })());
 
