@@ -4333,7 +4333,7 @@ router.get('/api/debug/shopping-report', async (req, res) => {
     );
     if (accountRow.rows.length === 0) return res.status(404).json({ ok: false, error: '광고주 없음' });
     const account = accountRow.rows[0];
-    const creds = { apiKey: account.u_api_key, secretKey: account.u_secret_key, customerId: account.u_mgr_cust_id || account.customer_id };
+    const creds = { api_key: account.u_api_key, secret_key: account.u_secret_key, manager_customer_id: account.u_mgr_cust_id || account.customer_id };
     const client = makeClient(creds, account.customer_id);
     const testDate = req.query.date || fmtKST((() => { const d = new Date(); d.setDate(d.getDate() - 1); return d; })());
 
