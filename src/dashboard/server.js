@@ -4355,7 +4355,7 @@ router.get('/api/debug/shopping-report', async (req, res) => {
 
     // sync_log 상태 확인
     const syncCheck = await db.pool.query(
-      `SELECT stat_date, status, synced_at FROM sync_log WHERE account_id = $1 AND sync_type = 'detail' ORDER BY stat_date DESC LIMIT 10`,
+      `SELECT stat_date, status, created_at FROM sync_log WHERE account_id = $1 AND sync_type = 'detail' ORDER BY stat_date DESC LIMIT 10`,
       [account.id]
     );
 
