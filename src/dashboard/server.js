@@ -1931,11 +1931,6 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       { key:'campaignName', label:'캠페인', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.campaignName||'-')+'</td>'; } },
       { key:'adgroupName', label:'광고그룹', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(kw.adgroupName||'-')+'</td>'; } },
       { key:'keyword', label:'키워드', tp:'s', visible:true, render: function(kw){ return '<td style="white-space:nowrap"><strong>'+kw.keyword+'</strong></td>'; } },
-      { key:'qi', label:'Qi', tp:'n', visible:true, render: function(kw){
-          var qiV = kw.qi||0;
-          var qiColor = qiV>=5?'#16a34a':qiV>=3?'#f59e0b':'#ef4444';
-          return '<td style="text-align:right;white-space:nowrap">'+(qiV>0?'<span style="display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;background:'+(qiV>=5?'#dcfce7':qiV>=3?'#fef3c7':'#fef2f2')+';color:'+qiColor+'">'+qiV+'</span>':'<span style="color:#cbd5e1;font-size:11px">-</span>')+'</td>';
-        } },
       { key:'imp', label:'노출', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+num(kw.imp)+'</td>'; } },
       { key:'clk', label:'클릭', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(kw.clk)+'</td>'; } },
       { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(kw){ return '<td style="text-align:right;white-space:nowrap">'+pct(kw.ctr)+'</td>'; } },
@@ -2708,7 +2703,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
             campaignTp: campTp,
             campaignName: r.campaignName,
             adgroupName: r.adgroupName,
-            qi: r.qiGrade || 0,
+
             imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
           };
         }
@@ -2785,7 +2780,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
           campaignTp: campTp,
           campaignName: info.campaignName || campMap[campId]?.name || '',
           adgroupName: info.adgroupName || agInfo.name || '',
-          qi: info.qi || 0,
+
           imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0,
         };
       }
