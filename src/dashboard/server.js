@@ -27,7 +27,7 @@ router.use(express.urlencoded({ extended: true }));
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
   // 승인 대기 상태면 대기 페이지로
-  if (req.session.approved === 0 && req.path !== '/pending' && req.path !== '/logout') {
+  if ((req.session.approved === 0 || req.session.approved === -1) && req.path !== '/pending' && req.path !== '/logout') {
     return res.redirect('/smart-sa/pending');
   }
   next();
@@ -592,15 +592,16 @@ router.post('/reset-password', async (req, res) => {
 // ─── 승인 대기 페이지 ──────────────────────────────────────────────
 router.get('/pending', (req, res) => {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
-  res.send(layout('승인 대기', `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f9ff,#f0fdf4)">
+  const isRejected = req.session.approved === -1;
+  res.send(layout(isRejected ? '가입 거부' : '승인 대기', `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,${isRejected ? '#fef2f2,#fff1f2' : '#f0f9ff,#f0fdf4'})">
       <div style="width:100%;max-width:420px;padding:16px;text-align:center">
-        <div style="font-size:48px;margin-bottom:16px">⏳</div>
-        <h1 style="font-size:22px;font-weight:700;color:#111827;margin-bottom:8px">승인 대기 중</h1>
+        <div style="font-size:48px;margin-bottom:16px">${isRejected ? '🚫' : '⏳'}</div>
+        <h1 style="font-size:22px;font-weight:700;color:#111827;margin-bottom:8px">${isRejected ? '가입이 거부되었습니다' : '승인 대기 중'}</h1>
         <p style="color:#64748b;font-size:14px;line-height:1.7;margin-bottom:24px">
-          회원가입이 완료되었습니다.<br>
-          관리자가 승인하면 솔루션을 사용할 수 있습니다.<br>
-          승인 후 다시 로그인해주세요.
+          ${isRejected
+            ? '관리자가 가입을 거부하였습니다.<br>문의사항이 있으시면 관리자에게 연락해주세요.'
+            : '회원가입이 완료되었습니다.<br>관리자가 승인하면 솔루션을 사용할 수 있습니다.<br>승인 후 다시 로그인해주세요.'}
         </p>
         <a href="/smart-sa/logout" class="btn btn-outline" style="justify-content:center">로그아웃</a>
       </div>
@@ -651,18 +652,19 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
   const content = `
     ${msg === 'approved' ? '<div class="alert alert-ok">승인되었습니다.</div>' : ''}
     ${msg === 'rejected' ? '<div class="alert alert-err">거부되었습니다.</div>' : ''}
+    ${msg === 'reapproved' ? '<div class="alert alert-ok">재승인되었습니다.</div>' : ''}
 
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
         <span class="card-title">⏳ 승인 대기</span>
-        <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => !u.approved).length}명</span>
+        <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => u.approved === 0).length}명</span>
       </div>
-      ${allUsers.filter(u => !u.approved).length === 0
+      ${allUsers.filter(u => u.approved === 0).length === 0
         ? '<div class="card-body"><div class="empty" style="padding:20px">승인 대기 중인 직원이 없습니다.</div></div>'
         : `<table>
             <thead><tr><th>이름</th><th>아이디</th><th>가입일</th><th style="text-align:center">관리</th></tr></thead>
             <tbody>
-              ${allUsers.filter(u => !u.approved).map(u => `
+              ${allUsers.filter(u => u.approved === 0).map(u => `
                 <tr>
                   <td><strong>${u.name}</strong></td>
                   <td style="color:#64748b">${u.username}</td>
@@ -682,15 +684,42 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
       }
     </div>
 
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <span class="card-title">🚫 거부 목록</span>
+        <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => u.approved === -1).length}명</span>
+      </div>
+      ${allUsers.filter(u => u.approved === -1).length === 0
+        ? '<div class="card-body"><div class="empty" style="padding:20px">거부된 직원이 없습니다.</div></div>'
+        : `<table>
+            <thead><tr><th>이름</th><th>아이디</th><th>가입일</th><th style="text-align:center">관리</th></tr></thead>
+            <tbody>
+              ${allUsers.filter(u => u.approved === -1).map(u => `
+                <tr>
+                  <td><strong>${u.name}</strong></td>
+                  <td style="color:#64748b">${u.username}</td>
+                  <td style="font-size:12px;color:#94a3b8">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
+                  <td style="text-align:center">
+                    <form method="POST" action="/smart-sa/admin/users/${u.id}/approve" style="display:inline">
+                      <button class="btn btn-primary btn-sm">재승인</button>
+                    </form>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
+      }
+    </div>
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">👥 전체 직원</span>
-        <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => u.approved).length}명</span>
+        <span style="font-size:12px;color:#94a3b8">${allUsers.filter(u => u.approved === 1).length}명</span>
       </div>
       <table>
         <thead><tr><th>이름</th><th>아이디</th><th>권한</th><th>광고주</th><th>자동입찰</th><th>가입일</th></tr></thead>
         <tbody>
-          ${allUsers.filter(u => u.approved).map(u => {
+          ${allUsers.filter(u => u.approved === 1).map(u => {
             const st = userStats[u.id] || { accounts: 0, autobidKw: 0, shoppingBidKw: 0 };
             const totalBid = st.autobidKw + st.shoppingBidKw;
             return `
@@ -4217,7 +4246,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
               const featKey = 'feat_' + t + '_report';
               const isOn = !!selAccount[featKey];
               const col = 'last_' + t + '_report';
-              const lastDate = selAccount[col] ? (() => { const d = new Date(selAccount[col]); return d.toLocaleDateString('ko-KR') + ' ' + d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}); })() : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              const lastDate = selAccount[col] ? (() => { const d = new Date(new Date(selAccount[col]).getTime() + 9*60*60*1000); return d.getUTCFullYear() + '. ' + (d.getUTCMonth()+1) + '. ' + d.getUTCDate() + '. ' + (d.getUTCHours() >= 12 ? '오후' : '오전') + ' ' + String(d.getUTCHours() > 12 ? d.getUTCHours()-12 : d.getUTCHours() || 12).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0'); })() : '<span style="color:#94a3b8">발송 내역 없음</span>';
               return `<tr>
                 <td><strong>${label}</strong></td>
                 <td>${time}</td>

@@ -354,7 +354,7 @@ async function approveUser(userId) {
 }
 
 async function rejectUser(userId) {
-  return query('DELETE FROM users WHERE id = $1 AND is_admin = 0', [userId]);
+  return query('UPDATE users SET approved = -1 WHERE id = $1 AND is_admin = 0', [userId]);
 }
 
 // ─── SMTP 자격증명 (다우오피스 자동 연동) ──────────────────────────────
