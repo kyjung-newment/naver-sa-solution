@@ -1,5 +1,6 @@
 const { createApiClient } = require('../api/naverApi');
 const { sendReport } = require('../email/sender');
+const db = require('../db/database');
 
 const TIME_RANGE_MAP = { daily: 'yesterday', weekly: 'last7days', monthly: 'last30days' };
 
@@ -544,42 +545,69 @@ async function generateAndSend(account, type) {
     const dateRange = getDateRange(type);
     const period = getPeriodLabel(type, dateRange);
 
-    // 1. 마스터 리포트 API로 전체 캠페인/광고그룹/키워드 이름 매핑 (빠른 벌크 다운로드)
+    // 1. 이름 매핑: DB 마스터 데이터 우선 → 없으면 API 마스터 리포트 폴백
     const campNameMap = {};
     const campTypeMap = {};
     const agNameMap = {};
     const kwNameMap = {};
     const kwQiMap = {};
+
+    // 1-1. DB에서 마스터 데이터 로드 (빠르고 안정적)
     try {
-      const [campRows, agRows, kwRows, qiRows] = await Promise.all([
-        client.syncMaster('Campaign').catch(() => []),
-        client.syncMaster('Adgroup').catch(() => []),
-        client.syncMaster('Keyword').catch(() => []),
-        client.syncMaster('Qi').catch(() => []),
-      ]);
-      for (const r of campRows) {
-        if (r.length < 3) continue;
-        campNameMap[r[1]] = r[2];
-        campTypeMap[r[1]] = parseInt(r[3]) || 1;
+      const dbMaps = await db.buildKeywordMaps(account.id);
+      for (const [campId, info] of Object.entries(dbMaps.campMap || {})) {
+        campNameMap[campId] = info.name;
+        campTypeMap[campId] = info.tp || 1;
       }
-      // 광고그룹 TSV: [0]customerId, [1]adgroupId, [2]campaignId, [3]adgroupName
-      for (const r of agRows) {
-        if (r.length < 4) continue;
-        agNameMap[r[1]] = r[3];
+      for (const [agId, info] of Object.entries(dbMaps.agMap || {})) {
+        agNameMap[agId] = info.name;
       }
-      // 키워드 TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword(텍스트)
-      for (const r of kwRows) {
-        if (r.length < 4) continue;
-        kwNameMap[r[2]] = r[3];
+      for (const [kwId, info] of Object.entries(dbMaps.kwMap || {})) {
+        kwNameMap[kwId] = info.keyword;
+        if (info.qi) kwQiMap[kwId] = info.qi;
       }
-      // Qi TSV: [0]customerId, [1]keywordId, [2]qi(1~7)
-      for (const r of qiRows) {
-        if (r.length < 3) continue;
-        kwQiMap[r[1]] = parseInt(r[2]) || 0;
-      }
-      console.log(`  📋 마스터 리포트 매핑: 캠페인 ${campRows.length}, 그룹 ${agRows.length}, 키워드 ${kwRows.length}, Qi ${qiRows.length}`);
+      console.log(`  📋 DB 마스터 매핑: 캠페인 ${Object.keys(dbMaps.campMap).length}, 그룹 ${Object.keys(dbMaps.agMap).length}, 키워드 ${Object.keys(dbMaps.kwMap).length}`);
     } catch (e) {
-      console.log('  ⚠️ 마스터 리포트 매핑 실패:', e.message);
+      console.log('  ⚠️ DB 마스터 로드 실패:', e.message);
+    }
+
+    // 1-2. DB에 데이터 없으면 API 마스터 리포트로 폴백
+    if (Object.keys(campNameMap).length === 0) {
+      try {
+        const [campRows, agRows, kwRows, qiRows] = await Promise.all([
+          client.syncMaster('Campaign').catch(() => []),
+          client.syncMaster('Adgroup').catch(() => []),
+          client.syncMaster('Keyword').catch(() => []),
+          client.syncMaster('Qi').catch(() => []),
+        ]);
+        for (const r of campRows) {
+          if (r.length < 3) continue;
+          campNameMap[r[1]] = r[2];
+          campTypeMap[r[1]] = parseInt(r[3]) || 1;
+        }
+        for (const r of agRows) {
+          if (r.length < 4) continue;
+          agNameMap[r[1]] = r[3];
+        }
+        for (const r of kwRows) {
+          if (r.length < 4) continue;
+          kwNameMap[r[2]] = r[3];
+        }
+        for (const r of qiRows) {
+          if (r.length < 3) continue;
+          kwQiMap[r[1]] = parseInt(r[2]) || 0;
+        }
+        console.log(`  📋 API 마스터 매핑: 캠페인 ${campRows.length}, 그룹 ${agRows.length}, 키워드 ${kwRows.length}, Qi ${qiRows.length}`);
+
+        // DB에 저장 (다음번을 위해)
+        try {
+          if (campRows.length > 0) await db.upsertMasterCampaigns(account.id, campRows);
+          if (agRows.length > 0) await db.upsertMasterAdgroups(account.id, agRows);
+          if (kwRows.length > 0) await db.upsertMasterKeywords(account.id, kwRows);
+        } catch (_) {}
+      } catch (e) {
+        console.log('  ⚠️ API 마스터 리포트 매핑 실패:', e.message);
+      }
     }
 
     // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
@@ -644,18 +672,30 @@ async function generatePreview(account, type) {
   const agNameMap = {};
   const kwNameMap = {};
   const kwQiMap = {};
+
+  // DB 마스터 데이터 우선 로드
   try {
-    const [campRows, agRows, kwRows, qiRows] = await Promise.all([
-      client.syncMaster('Campaign').catch(() => []),
-      client.syncMaster('Adgroup').catch(() => []),
-      client.syncMaster('Keyword').catch(() => []),
-      client.syncMaster('Qi').catch(() => []),
-    ]);
-    for (const r of campRows) { if (r.length >= 3) { campNameMap[r[1]] = r[2]; campTypeMap[r[1]] = parseInt(r[3]) || 1; } }
-    for (const r of agRows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
-    for (const r of kwRows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
-    for (const r of qiRows) { if (r.length >= 3) kwQiMap[r[1]] = parseInt(r[2]) || 0; }
-  } catch (e) {}
+    const dbMaps = await db.buildKeywordMaps(account.id);
+    for (const [campId, info] of Object.entries(dbMaps.campMap || {})) { campNameMap[campId] = info.name; campTypeMap[campId] = info.tp || 1; }
+    for (const [agId, info] of Object.entries(dbMaps.agMap || {})) { agNameMap[agId] = info.name; }
+    for (const [kwId, info] of Object.entries(dbMaps.kwMap || {})) { kwNameMap[kwId] = info.keyword; if (info.qi) kwQiMap[kwId] = info.qi; }
+  } catch (_) {}
+
+  // DB에 없으면 API 폴백
+  if (Object.keys(campNameMap).length === 0) {
+    try {
+      const [campRows, agRows, kwRows, qiRows] = await Promise.all([
+        client.syncMaster('Campaign').catch(() => []),
+        client.syncMaster('Adgroup').catch(() => []),
+        client.syncMaster('Keyword').catch(() => []),
+        client.syncMaster('Qi').catch(() => []),
+      ]);
+      for (const r of campRows) { if (r.length >= 3) { campNameMap[r[1]] = r[2]; campTypeMap[r[1]] = parseInt(r[3]) || 1; } }
+      for (const r of agRows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
+      for (const r of kwRows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
+      for (const r of qiRows) { if (r.length >= 3) kwQiMap[r[1]] = parseInt(r[2]) || 0; }
+    } catch (e) {}
+  }
 
   const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
   const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
