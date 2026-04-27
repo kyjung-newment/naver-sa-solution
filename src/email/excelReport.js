@@ -273,7 +273,19 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
       r++;
       r = dataRow(cmp, r, data.total, { labels: ['전체', currLabel], bold: true });
       r = dataRow(cmp, r, prevData.total, { labels: ['전체', prevCmpLabel], stripe: true });
-      r = diffRow(cmp, r, cmpLabel, data.total, prevData.total);
+      {
+        const row = cmp.getRow(r); row.height = 23;
+        const lc1 = row.getCell(2); lc1.value = ''; lc1.border = border;
+        const lc2 = row.getCell(3); lc2.value = cmpLabel; lc2.font = { size: 10, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
+        const diffs = [data.total.cost-prevData.total.cost, data.total.imp-prevData.total.imp, (data.total.avgRank||0)-(prevData.total.avgRank||0), data.total.clk-prevData.total.clk, (data.total.cpc||0)-(prevData.total.cpc||0), (data.total.ctr||0)-(prevData.total.ctr||0), (data.total.purchaseCnt||0)-(prevData.total.purchaseCnt||0), (data.total.purchaseAmt||0)-(prevData.total.purchaseAmt||0), (data.total.roas||0)-(prevData.total.roas||0), (data.total.cartCnt||0)-(prevData.total.cartCnt||0), (data.total.cartAmt||0)-(prevData.total.cartAmt||0)];
+        diffs.forEach((v, i) => {
+          const c = row.getCell(4 + i); c.value = v; c.numFmt = mFmts[i];
+          const costLike = [0, 4].includes(i);
+          c.font = { size: 10, italic: true, color: { argb: v === 0 ? C.gray : ((v > 0) === costLike ? C.red : C.green) } };
+          c.alignment = cm; c.border = border;
+        });
+        r++;
+      }
     }
     r += 2;
 
