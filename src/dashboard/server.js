@@ -4305,7 +4305,12 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({type, accountId: reportAccountId})
         });
-        const json = await res.json();
+        const text = await res.text();
+        let json;
+        try { json = JSON.parse(text); } catch(_) {
+          overlay.style.display = 'none';
+          throw new Error('서버 응답 오류 (데이터가 너무 크거나 시간 초과). 잠시 후 다시 시도해주세요.');
+        }
         overlay.style.display = 'none';
         if (!json.ok) throw new Error(json.error);
         toast(json.message || '리포트 발송 완료!');
