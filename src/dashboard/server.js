@@ -1925,8 +1925,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     let kwShowAll = { powerlink: false, shopping: false };
     let kwData = null;
     let kwFilterClk = true; // 기본: 클릭 1 미만 숨김
-    let kwFilterCampaign = ''; // 캠페인 필터 ('' = 전체)
-    let kwFilterAdgroup = '';  // 광고그룹 필터 ('' = 전체)
+    let kwFilterCampNames = []; // 캠페인 필터 (다중) - 빈 배열 = 전체
+    let kwFilterAgNames = [];   // 광고그룹 필터 (다중) - 빈 배열 = 전체
 
     async function loadKeywords(showAll) {
       const wrap = document.getElementById('kw-tab-content');
@@ -1952,37 +1952,30 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       var allKws = [].concat(d.powerlink||[], d.shopping||[], d.other||[]);
       var campSet = {};
       allKws.forEach(function(k){ if(k.campaignName) campSet[k.campaignName] = true; });
-      var campOpts = Object.keys(campSet).sort();
+      var campOpts = Object.keys(campSet).sort().map(function(n){ return { id:n, name:n }; });
       var agSet = {};
       allKws.forEach(function(k){
-        if (kwFilterCampaign && k.campaignName !== kwFilterCampaign) return;
+        if (kwFilterCampNames.length && kwFilterCampNames.indexOf(k.campaignName) < 0) return;
         if (k.adgroupName) agSet[k.adgroupName] = true;
       });
-      var agOpts = Object.keys(agSet).sort();
-      // 선택한 광고그룹이 더 이상 옵션에 없으면 초기화
-      if (kwFilterAdgroup && agOpts.indexOf(kwFilterAdgroup) < 0) kwFilterAdgroup = '';
+      var agOpts = Object.keys(agSet).sort().map(function(n){ return { id:n, name:n }; });
+      // 선택한 광고그룹이 더 이상 옵션에 없으면 자동 정리
+      kwFilterAgNames = kwFilterAgNames.filter(function(n){ return !!agSet[n]; });
 
       // 필터 바
       html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
       html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none">';
       html += '<input type="checkbox" id="kw-filter-clk" '+(kwFilterClk?'checked':'')+' style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb"> ';
       html += '<span>클릭 1 미만 숨김</span></label>';
-      // 캠페인 드롭다운
-      html += '<select id="kw-filter-campaign" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:200px">';
-      html += '<option value="">전체 캠페인</option>';
-      campOpts.forEach(function(c){ html += '<option value="'+c.replace(/"/g,'&quot;')+'"'+(c===kwFilterCampaign?' selected':'')+'>'+c+'</option>'; });
-      html += '</select>';
-      // 광고그룹 드롭다운
-      html += '<select id="kw-filter-adgroup" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:200px">';
-      html += '<option value="">전체 광고그룹</option>';
-      agOpts.forEach(function(a){ html += '<option value="'+a.replace(/"/g,'&quot;')+'"'+(a===kwFilterAdgroup?' selected':'')+'>'+a+'</option>'; });
-      html += '</select>';
+      // 캠페인/광고그룹 다중 선택
+      html += renderMultiSelect({ id:'kw-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:kwFilterCampNames.slice() });
+      html += renderMultiSelect({ id:'kw-ag-filter', placeholder:'전체 광고그룹', items:agOpts, selected:kwFilterAgNames.slice() });
 
       function applyFilter(arr) {
         return (arr||[]).filter(function(k){
           if (kwFilterClk && !(k.clk >= 1)) return false;
-          if (kwFilterCampaign && k.campaignName !== kwFilterCampaign) return false;
-          if (kwFilterAdgroup && k.adgroupName !== kwFilterAdgroup) return false;
+          if (kwFilterCampNames.length && kwFilterCampNames.indexOf(k.campaignName) < 0) return false;
+          if (kwFilterAgNames.length && kwFilterAgNames.indexOf(k.adgroupName) < 0) return false;
           return true;
         });
       }
@@ -2000,6 +1993,16 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       html += kwSection('쇼핑검색', spF, d.shoppingTotal, 'shopping');
       if (otF.length) html += kwSection('기타', otF, d.otherTotal, 'other');
       wrap.innerHTML = html;
+
+      // 다중 선택 위젯 바인딩
+      bindMultiSelect('kw-camp-filter', function(selected){
+        kwFilterCampNames = selected;
+        renderKeywordTab(kwData);
+      });
+      bindMultiSelect('kw-ag-filter', function(selected){
+        kwFilterAgNames = selected;
+        renderKeywordTab(kwData);
+      });
     }
 
     // 정렬 상태: { type: { field, dir } }
@@ -2087,13 +2090,6 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     document.getElementById('kw-tab-content').addEventListener('change', function(e) {
       if (e.target && e.target.id === 'kw-filter-clk') {
         kwFilterClk = e.target.checked;
-        renderKeywordTab(kwData);
-      } else if (e.target && e.target.id === 'kw-filter-campaign') {
-        kwFilterCampaign = e.target.value;
-        kwFilterAdgroup = ''; // 캠페인 변경 시 광고그룹 필터 초기화
-        renderKeywordTab(kwData);
-      } else if (e.target && e.target.id === 'kw-filter-adgroup') {
-        kwFilterAdgroup = e.target.value;
         renderKeywordTab(kwData);
       }
     });
@@ -2572,11 +2568,12 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       var html = '<div class="ms-wrap" id="'+opts.id+'-wrap" style="position:relative;display:inline-block">';
       html += '<button type="button" id="'+opts.id+'-btn" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 12px;font-size:12px;background:#fff;cursor:pointer;min-width:160px;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:8px">';
       html += '<span>'+label+'</span><span style="color:#94a3b8;font-size:10px">▼</span></button>';
-      html += '<div id="'+opts.id+'-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;min-width:'+popMinWidth+'px;max-width:90vw;width:max-content">';
+      html += '<div id="'+opts.id+'-pop" class="ms-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;min-width:'+popMinWidth+'px;max-width:90vw;width:max-content">';
       html += '<div style="padding:8px;border-bottom:1px solid #e2e8f0;display:flex;gap:6px;align-items:center">';
       html += '<input type="text" id="'+opts.id+'-search" placeholder="검색..." style="flex:1;min-width:120px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">';
       html += '<button type="button" data-act="all" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">전체</button>';
       html += '<button type="button" data-act="none" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">해제</button>';
+      html += '<button type="button" data-act="close" title="닫기" style="padding:4px 8px;font-size:14px;line-height:1;background:#fff;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;color:#64748b">×</button>';
       html += '</div>';
       html += '<div id="'+opts.id+'-list" style="max-height:320px;overflow-y:auto;padding:4px 0">';
       opts.items.forEach(function(it){
@@ -2592,6 +2589,12 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       html += '</div></div>';
       return html;
     }
+    // 전역: 한번에 한 개의 다중 선택 팝업만 열기
+    function closeAllMultiSelectsExcept(exceptId) {
+      document.querySelectorAll('.ms-pop').forEach(function(p){
+        if (p.id !== exceptId+'-pop') p.style.display = 'none';
+      });
+    }
     function bindMultiSelect(id, onApply) {
       var wrap = document.getElementById(id+'-wrap');
       if (!wrap) return;
@@ -2599,11 +2602,19 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       var pop = document.getElementById(id+'-pop');
       var search = document.getElementById(id+'-search');
       var list = document.getElementById(id+'-list');
-      function show() { pop.style.display = 'block'; setTimeout(function(){ search && search.focus(); }, 50); }
+      function show() {
+        closeAllMultiSelectsExcept(id);
+        pop.style.display = 'block';
+        setTimeout(function(){ search && search.focus(); }, 50);
+      }
       function hide() { pop.style.display = 'none'; }
       btn.onclick = function(e){ e.stopPropagation(); pop.style.display==='block'?hide():show(); };
-      // 외부 클릭 시 닫기
-      var onDoc = function(e){ if (!wrap.contains(e.target)) hide(); };
+      // 외부 클릭 시 닫기 (다른 ms-wrap 클릭 시도 자기 자신은 hide되지 않게 처리)
+      var onDoc = function(e){
+        if (wrap.contains(e.target)) return;
+        // 다른 ms-wrap 안 클릭이면 자기 자신만 닫기 (해당 ms-wrap의 show가 closeAll 처리)
+        hide();
+      };
       document.addEventListener('click', onDoc);
       // 검색 필터
       if (search) search.oninput = function(){
@@ -2623,6 +2634,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
             });
           } else if (act === 'none') {
             list.querySelectorAll('input[type=checkbox]').forEach(function(c){ c.checked = false; });
+          } else if (act === 'close') {
+            hide();
           } else if (act === 'apply') {
             var sel = [];
             list.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){ sel.push(c.value); });
