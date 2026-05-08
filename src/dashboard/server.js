@@ -4532,7 +4532,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
             <h3 style="font-weight:600;margin-bottom:6px">${label} 리포트</h3>
             <p style="color:#64748b;font-size:12px;margin-bottom:16px">${desc}</p>
             <div style="display:flex;gap:6px">
-              <button class="btn btn-outline" style="flex:1;justify-content:center" onclick="previewReport('${t}')">미리보기</button>
+              <button class="btn btn-outline" style="flex:1;justify-content:center" onclick="downloadReportExcel('${t}')" id="excel-btn-${t}">📥 엑셀 다운로드</button>
               <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="triggerReport('${t}')">이메일 발송</button>
             </div>
           </div>
@@ -4650,9 +4650,52 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       } catch(e) { overlay.style.display = 'none'; toast(e.message, true); }
     }
 
-    function previewReport(type) {
+    async function downloadReportExcel(type) {
       if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
-      window.open('/smart-sa/api/report/preview?type='+type+'&accountId='+reportAccountId, '_blank');
+      const btn = document.getElementById('excel-btn-'+type);
+      const orig = btn ? btn.innerHTML : '';
+      const typeLabel = {daily:'일간', weekly:'주간', monthly:'월간'}[type] || type;
+      // 로딩 오버레이
+      let overlay = document.getElementById('report-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'report-loading-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center';
+        document.body.appendChild(overlay);
+        if (!document.getElementById('spin-style')) {
+          const style = document.createElement('style');
+          style.id = 'spin-style';
+          style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+          document.head.appendChild(style);
+        }
+      }
+      overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3);max-width:400px"><div style="width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px"></div><div style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:8px">'+typeLabel+' 엑셀 리포트 생성 중...</div><div style="font-size:13px;color:#94a3b8">데이터 수집 + 엑셀 생성<br>'+(type==='monthly'?'월간은 최대 4분':'최대 1~2분')+' 소요될 수 있습니다.</div></div>';
+      overlay.style.display = 'flex';
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 생성 중...'; }
+      try {
+        const res = await fetch('/smart-sa/api/report/download-excel?type='+type+'&accountId='+reportAccountId);
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(t || '서버 오류');
+        }
+        const blob = await res.blob();
+        // 파일명 추출 (Content-Disposition)
+        const cd = res.headers.get('Content-Disposition') || '';
+        let fname = typeLabel + '_리포트.xlsx';
+        var m = cd.match(/filename\\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/);
+        if (m) { try { fname = decodeURIComponent(m[1]); } catch(_){} }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click();
+        setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        toast(typeLabel + ' 엑셀 다운로드 시작: ' + fname);
+      } catch(e) {
+        toast(e.message || '엑셀 생성 실패', true);
+      } finally {
+        overlay.style.display = 'none';
+        if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+      }
     }
 
     function toggleEditEmails() {
@@ -4686,6 +4729,41 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     </script>
   `;
   res.send(appLayout('리포트', content, user, 'reports', await getLayoutOpts(req)));
+});
+
+// API: 리포트 엑셀 다운로드 (이메일 첨부와 동일한 파일)
+router.get('/api/report/download-excel', requireLogin, async (req, res) => {
+  const { type = 'daily', accountId } = req.query;
+  try {
+    if (!['daily', 'weekly', 'monthly'].includes(type)) return res.status(400).send('잘못된 타입');
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).send('API 계정 미등록');
+
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+    const { generateExcelBuffer } = require('../report/generator');
+    const { buffer } = await generateExcelBuffer(enriched, type);
+
+    const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = `${safeName}_${typeLabel}_리포트_${dateStr}.xlsx`;
+
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    // RFC 5987: UTF-8 한글 파일명 안전 인코딩
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error(`❌ 엑셀 다운로드 오류 [${type}]:`, err.message);
+    const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+    const isTimeout = /시간 초과|timeout/i.test(err.message);
+    const tip = isTimeout
+      ? `${typeLabel} 리포트는 데이터 양이 많아 생성에 시간이 오래 걸립니다. 잠시 후 다시 시도하시거나, "이메일 발송"으로 백그라운드 생성 후 받아보세요.`
+      : '잠시 후 다시 시도해주세요.';
+    res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send(`엑셀 생성 오류: ${err.message}\n\n${tip}`);
+  }
 });
 
 // API: 리포트 미리보기 (HTML 직접 반환)

@@ -657,11 +657,11 @@ async function generateAndSend(account, type) {
 }
 
 /**
- * 미리보기용 HTML 생성 (이메일 발송 없이)
- * - monthly의 경우 30일 + 전전월 30일 데이터를 모두 가져오면 5분을 초과할 수 있어
- *   타임아웃 가드와 prev 스킵 옵션으로 안정성 확보
+ * 리포트 데이터 수집 공통 헬퍼 (preview/excel 공용)
+ * - monthly의 경우 30일 + 전전월 30일을 모두 가져오면 5분 초과할 수 있어
+ *   타임아웃 가드와 prev 스킵으로 안정성 확보
  */
-async function generatePreview(account, type) {
+async function collectReportData(account, type) {
   const client = createApiClient({
     apiKey: account.api_key,
     secretKey: account.secret_key,
@@ -703,10 +703,10 @@ async function generatePreview(account, type) {
     } catch (e) {}
   }
 
-  // 전체 미리보기 타임아웃 가드: monthly는 240초, 그 외는 120초
+  // 전체 타임아웃 가드: monthly는 240초, 그 외는 120초
   const overallTimeout = type === 'monthly' ? 240000 : 120000;
   const timeoutPromise = new Promise((_, rej) =>
-    setTimeout(() => rej(new Error(`미리보기 시간 초과(${overallTimeout / 1000}s). 데이터가 너무 많거나 API 응답이 느립니다.`)), overallTimeout)
+    setTimeout(() => rej(new Error(`리포트 생성 시간 초과(${overallTimeout / 1000}s). 데이터가 너무 많거나 API 응답이 느립니다.`)), overallTimeout)
   );
 
   const collectMain = (async () => {
@@ -718,12 +718,11 @@ async function generatePreview(account, type) {
 
   const data = await Promise.race([collectMain, timeoutPromise]);
 
-  // 이전 기간 데이터: 미리보기에서는 가능한 만큼만, 실패해도 본 데이터로 진행
-  // monthly는 30일 추가 부담이 크므로 짧은 보조 타임아웃(60초) 적용
+  // 이전 기간 데이터: 가능한 만큼만, 실패해도 본 데이터로 진행
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
-    const prevTimeout = type === 'monthly' ? 60000 : 60000;
+    const prevTimeout = 60000;
     try {
       const prevPromise = (async () => {
         const prev = await collectDetailData(client, prevRange);
@@ -736,13 +735,30 @@ async function generatePreview(account, type) {
         new Promise((_, rej) => setTimeout(() => rej(new Error('prev timeout')), prevTimeout)),
       ]);
     } catch (e) {
-      console.log(`  ⚠️ 미리보기 이전기간 스킵: ${e.message}`);
+      console.log(`  ⚠️ 이전기간 스킵: ${e.message}`);
       prevData = null;
     }
   }
 
+  return { data, prevData, period };
+}
+
+/**
+ * 미리보기용 HTML 생성 (이메일 발송 없이)
+ */
+async function generatePreview(account, type) {
+  const { data, prevData, period } = await collectReportData(account, type);
   const { buildHtmlReport } = require('../email/sender');
   return buildHtmlReport({ type, period, accountName: account.name, data, prevData });
 }
 
-module.exports = { generateAndSend, generatePreview };
+/**
+ * Excel 버퍼 생성 (이메일 첨부와 동일한 파일을 다운로드용으로 반환)
+ */
+async function generateExcelBuffer(account, type) {
+  const { data, prevData, period } = await collectReportData(account, type);
+  const { buildExcelReport } = require('../email/excelReport');
+  return { buffer: await buildExcelReport({ type, period, accountName: account.name, data, prevData }), period };
+}
+
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer };
