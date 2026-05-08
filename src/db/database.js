@@ -14,7 +14,14 @@ module.exports.pool = pool;
 
 // ─── 스키마 초기화 ────────────────────────────────────────────────────
 async function initDb() {
-  await pool.query(`
+  const safeQuery = async (sql) => {
+    try { await pool.query(sql); } catch (e) {
+      if (e.message && e.message.includes('read-only')) return;
+      throw e;
+    }
+  };
+
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
@@ -29,7 +36,7 @@ async function initDb() {
     )
   `);
 
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS ad_accounts (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -54,7 +61,7 @@ async function initDb() {
   `);
 
   // 네이버 마스터 동기화 데이터
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS master_campaigns (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -70,7 +77,7 @@ async function initDb() {
     )
   `);
 
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS master_adgroups (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -85,7 +92,7 @@ async function initDb() {
     )
   `);
 
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS master_keywords (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -103,7 +110,7 @@ async function initDb() {
   `);
 
   // ─── 자동입찰 키워드별 설정 ────────────────────────────────────────
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS auto_bid_keywords (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -127,7 +134,7 @@ async function initDb() {
   `);
 
   // ─── 대시보드 데이터 동기화 테이블 ────────────────────────────────
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS stat_daily_detail (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -149,7 +156,7 @@ async function initDb() {
     )
   `);
 
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS stat_campaign_daily (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -166,7 +173,7 @@ async function initDb() {
     )
   `);
 
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS sync_log (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
@@ -182,82 +189,82 @@ async function initDb() {
 
   // 인덱스 생성 (이미 있으면 무시)
   try {
-    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_detail_acct_date ON stat_daily_detail (account_id, stat_date)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_detail_campaign ON stat_daily_detail (account_id, stat_date, campaign_id)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS ix_stat_camp_daily ON stat_campaign_daily (account_id, stat_date)`);
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uix_sync_log ON sync_log (account_id, sync_type, stat_date)`);
+    await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_detail_acct_date ON stat_daily_detail (account_id, stat_date)`);
+    await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_detail_campaign ON stat_daily_detail (account_id, stat_date, campaign_id)`);
+    await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_camp_daily ON stat_campaign_daily (account_id, stat_date)`);
+    await safeQuery(`CREATE UNIQUE INDEX IF NOT EXISTS uix_sync_log ON sync_log (account_id, sync_type, stat_date)`);
   } catch (e) { /* 이미 존재 */ }
 
   // ad_accounts에 동기화 상태 컬럼 추가
   try {
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_status TEXT DEFAULT 'none'`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMP`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS campaign_count INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS adgroup_count INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS keyword_count INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_daily_report TIMESTAMP`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_weekly_report TIMESTAMP`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_dashboard_sync TIMESTAMP`);
-    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS bid_interval INTEGER NOT NULL DEFAULT 10`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_status TEXT DEFAULT 'none'`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS synced_at TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS campaign_count INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS adgroup_count INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS keyword_count INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_daily_report TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_weekly_report TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_monthly_report TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_dashboard_sync TIMESTAMP`);
+    await safeQuery(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS bid_interval INTEGER NOT NULL DEFAULT 10`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // ad_accounts에 site_url 추가 (비즈채널 URL - 실시간 순위 매칭용)
   try {
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS site_url TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS site_url TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // auto_bid_keywords에 adgroup_id, last_real_rank 추가
   try {
-    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS adgroup_id TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS last_real_rank INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS adgroup_id TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS last_real_rank INTEGER DEFAULT 0`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // users에 다우오피스 연동 컬럼 추가
   try {
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS daou_email TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_host TEXT DEFAULT 'outbound.daouoffice.com'`);
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_pass TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS daou_email TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS smtp_host TEXT DEFAULT 'outbound.daouoffice.com'`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // ad_accounts에 네이버 광고관리 쿠키 컬럼 추가 (성별/연령 등 고급 리포트 API용)
   try {
-    await pool.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS naver_cookie TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS naver_cookie TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // master_keywords에 품질지수(Qi) 컬럼 추가
   try {
-    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS qi_grade INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS qi_grade INTEGER DEFAULT 0`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // master_campaigns에 확장 필드 추가 (ON/OFF, 예산, 기간)
   try {
-    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS daily_budget BIGINT DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS use_period INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_start TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_end TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS daily_budget BIGINT DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS use_period INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_start TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_campaigns ADD COLUMN IF NOT EXISTS period_end TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // master_adgroups에 확장 필드 추가 (입찰가, 키워드확장, ON/OFF, 상태)
   try {
-    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS bid_amt INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS use_keyword_plus INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS keyword_plus_weight INTEGER DEFAULT 100`);
-    await pool.query(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS status TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS bid_amt INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS use_keyword_plus INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS keyword_plus_weight INTEGER DEFAULT 100`);
+    await safeQuery(`ALTER TABLE master_adgroups ADD COLUMN IF NOT EXISTS status TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // master_keywords에 확장 필드 추가 (ON/OFF, 검수상태, 랜딩URL)
   try {
-    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
-    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS inspect_status TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS pc_landing_url TEXT DEFAULT ''`);
-    await pool.query(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS mo_landing_url TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS user_lock INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS inspect_status TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS pc_landing_url TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS mo_landing_url TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
-  await pool.query(`
+  await safeQuery(`
     CREATE TABLE IF NOT EXISTS shopping_bid_keywords (
       id SERIAL PRIMARY KEY,
       account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,

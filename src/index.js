@@ -24,8 +24,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime
 // ─── Vercel: app을 서버리스 함수로 내보내기 ────────────────────────
 // (initDb는 첫 요청 전에 완료됨)
 const ready = initDb().catch(err => {
-  console.error('❌ DB 초기화 실패:', err.message);
-  process.exit(1);
+  console.warn('⚠️ DB 스키마 초기화 실패 (기존 테이블로 계속 진행):', err.message);
 });
 
 module.exports = async (req, res) => {
