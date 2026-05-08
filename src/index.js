@@ -19,7 +19,21 @@ app.get('/', (req, res) => res.redirect('/smart-sa'));
 app.use('/smart-sa', dashboardRouter);
 
 // 헬스체크
-app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime(), env: IS_VERCEL ? 'vercel' : 'local' }));
+app.get('/health', async (req, res) => {
+  let dbRead = 'unknown', dbWrite = 'unknown';
+  try {
+    const { pool } = require('./db/database');
+    const r = await pool.query('SELECT COUNT(*)::int AS cnt FROM users');
+    dbRead = 'ok (users:' + r.rows[0].cnt + ')';
+    // 쓰기 테스트
+    await pool.query("CREATE TEMP TABLE _health_test (x int); DROP TABLE IF EXISTS _health_test;");
+    dbWrite = 'ok';
+  } catch (e) {
+    if (dbRead === 'unknown') dbRead = 'error: ' + e.message;
+    else dbWrite = 'FAIL: ' + e.message;
+  }
+  res.json({ status: 'ok', uptime: process.uptime(), env: IS_VERCEL ? 'vercel' : 'local', dbRead, dbWrite });
+});
 
 // ─── Vercel: app을 서버리스 함수로 내보내기 ────────────────────────
 // (initDb는 첫 요청 전에 완료됨)
