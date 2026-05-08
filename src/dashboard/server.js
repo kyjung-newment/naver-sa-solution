@@ -1458,11 +1458,14 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <!-- 탭 메뉴 -->
-    <div class="tab-bar">
+    <div class="tab-bar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;flex-wrap:wrap">
       ${['summary','keywords','hourly','target','regional','adgroups'].map((tab, i) => {
         const labels = ['요약','키워드별','시간대별','타겟별','지역별','그룹별'];
         return `<button class="tab-btn dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')">${labels[i]}</button>`;
       }).join('')}
+      </div>
+      <button id="csv-download-btn" class="btn btn-outline btn-sm" onclick="downloadCurrentTabCSV()" style="font-size:12px;padding:6px 12px;display:none" title="현재 탭의 표 데이터를 CSV로 다운로드 (Excel 호환)">📥 CSV 다운로드</button>
     </div>
 
     <!-- 요약 탭 -->
@@ -1938,6 +1941,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     let kwShowAll = { powerlink: false, shopping: false };
     let kwData = null;
     let kwFilterClk = true; // 기본: 클릭 1 미만 숨김
+    let kwFilterCampaign = ''; // 캠페인 필터 ('' = 전체)
+    let kwFilterAdgroup = '';  // 광고그룹 필터 ('' = 전체)
 
     async function loadKeywords(showAll) {
       const wrap = document.getElementById('kw-tab-content');
@@ -1958,18 +1963,52 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function renderKeywordTab(d) {
       const wrap = document.getElementById('kw-tab-content');
       let html = '';
-      // 필터 토글
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">';
+
+      // 캠페인/광고그룹 필터 옵션 추출 (전체 데이터 기준)
+      var allKws = [].concat(d.powerlink||[], d.shopping||[], d.other||[]);
+      var campSet = {};
+      allKws.forEach(function(k){ if(k.campaignName) campSet[k.campaignName] = true; });
+      var campOpts = Object.keys(campSet).sort();
+      var agSet = {};
+      allKws.forEach(function(k){
+        if (kwFilterCampaign && k.campaignName !== kwFilterCampaign) return;
+        if (k.adgroupName) agSet[k.adgroupName] = true;
+      });
+      var agOpts = Object.keys(agSet).sort();
+      // 선택한 광고그룹이 더 이상 옵션에 없으면 초기화
+      if (kwFilterAdgroup && agOpts.indexOf(kwFilterAdgroup) < 0) kwFilterAdgroup = '';
+
+      // 필터 바
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
       html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none">';
       html += '<input type="checkbox" id="kw-filter-clk" '+(kwFilterClk?'checked':'')+' style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb"> ';
-      html += '<span>클릭 1 미만 키워드 숨기기</span></label>';
-      var plF = kwFilterClk ? (d.powerlink||[]).filter(function(k){return k.clk>=1}) : (d.powerlink||[]);
-      var spF = kwFilterClk ? (d.shopping||[]).filter(function(k){return k.clk>=1}) : (d.shopping||[]);
-      var otF = kwFilterClk ? (d.other||[]).filter(function(k){return k.clk>=1}) : (d.other||[]);
+      html += '<span>클릭 1 미만 숨김</span></label>';
+      // 캠페인 드롭다운
+      html += '<select id="kw-filter-campaign" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:200px">';
+      html += '<option value="">전체 캠페인</option>';
+      campOpts.forEach(function(c){ html += '<option value="'+c.replace(/"/g,'&quot;')+'"'+(c===kwFilterCampaign?' selected':'')+'>'+c+'</option>'; });
+      html += '</select>';
+      // 광고그룹 드롭다운
+      html += '<select id="kw-filter-adgroup" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:200px">';
+      html += '<option value="">전체 광고그룹</option>';
+      agOpts.forEach(function(a){ html += '<option value="'+a.replace(/"/g,'&quot;')+'"'+(a===kwFilterAdgroup?' selected':'')+'>'+a+'</option>'; });
+      html += '</select>';
+
+      function applyFilter(arr) {
+        return (arr||[]).filter(function(k){
+          if (kwFilterClk && !(k.clk >= 1)) return false;
+          if (kwFilterCampaign && k.campaignName !== kwFilterCampaign) return false;
+          if (kwFilterAdgroup && k.adgroupName !== kwFilterAdgroup) return false;
+          return true;
+        });
+      }
+      var plF = applyFilter(d.powerlink);
+      var spF = applyFilter(d.shopping);
+      var otF = applyFilter(d.other);
       var totalAll = (d.powerlinkTotal||0)+(d.shoppingTotal||0)+(d.otherTotal||0);
       var shownAll = plF.length+spF.length+otF.length;
-      if (kwFilterClk) html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+shownAll+'개 / 전체: '+totalAll+'개</span>';
-      html += '<button id="kw-col-settings-btn" class="btn btn-outline" style="'+(kwFilterClk?'':'margin-left:auto;')+'font-size:12px;padding:6px 12px;white-space:nowrap">⚙ 열 설정</button>';
+      html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+shownAll+'개 / 전체: '+totalAll+'개</span>';
+      html += '<button id="kw-col-settings-btn" class="btn btn-outline" style="font-size:12px;padding:6px 12px;white-space:nowrap">⚙ 열 설정</button>';
       html += '</div>';
       // 파워링크
       html += kwSection('파워링크', plF, d.powerlinkTotal, 'powerlink');
@@ -2064,6 +2103,13 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     document.getElementById('kw-tab-content').addEventListener('change', function(e) {
       if (e.target && e.target.id === 'kw-filter-clk') {
         kwFilterClk = e.target.checked;
+        renderKeywordTab(kwData);
+      } else if (e.target && e.target.id === 'kw-filter-campaign') {
+        kwFilterCampaign = e.target.value;
+        kwFilterAdgroup = ''; // 캠페인 변경 시 광고그룹 필터 초기화
+        renderKeywordTab(kwData);
+      } else if (e.target && e.target.id === 'kw-filter-adgroup') {
+        kwFilterAdgroup = e.target.value;
         renderKeywordTab(kwData);
       }
     });
@@ -2536,14 +2582,35 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     }
 
     var adgroupData = null;
+    var agFilterCampaign = ''; // 그룹별 탭 캠페인 필터
     function renderAdgroupTab(adgroups) {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
       adgroupData = adgroups;
-      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
-      html += renderColTable('adgroups', adgroups);
+      // 캠페인 옵션 추출
+      var campSet = {};
+      adgroups.forEach(function(a){ if(a.campaignName) campSet[a.campaignName]=true; });
+      var campOpts = Object.keys(campSet).sort();
+      var filtered = agFilterCampaign ? adgroups.filter(function(a){return a.campaignName === agFilterCampaign;}) : adgroups;
+
+      let html = '';
+      // 필터 바
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
+      html += '<select id="ag-filter-campaign" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:240px">';
+      html += '<option value="">전체 캠페인</option>';
+      campOpts.forEach(function(c){ html += '<option value="'+c.replace(/"/g,'&quot;')+'"'+(c===agFilterCampaign?' selected':'')+'>'+c+'</option>'; });
+      html += '</select>';
+      html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+adgroups.length+'개</span>';
+      html += '</div>';
+
+      html += '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += renderColTable('adgroups', filtered);
       html += '</div></div>';
       wrap.innerHTML = html;
+
+      // 필터 변경 이벤트
+      var sel = document.getElementById('ag-filter-campaign');
+      if (sel) sel.addEventListener('change', function(e){ agFilterCampaign = e.target.value; renderAdgroupTab(adgroupData); });
     }
 
     // ── 공통 유틸 ──
@@ -2551,6 +2618,76 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function pct(v){return Number(v||0).toFixed(2)+'%'}
     function won(v){return '₩'+Number(v||0).toLocaleString('ko-KR')}
     function rnk(v){return v?Number(v).toFixed(1)+'위':'-'}
+
+    // ── CSV 다운로드 (현재 탭의 표 데이터 자동 추출) ──
+    function csvEscape(v) {
+      var s = String(v == null ? '' : v);
+      // ₩, 콤마, 퍼센트 기호 제거하여 숫자 셀로 인식되게 함
+      s = s.replace(/[₩￦]/g, '').trim();
+      // CSV 특수문자 처리
+      if (s.indexOf('"') >= 0 || s.indexOf(',') >= 0 || s.indexOf('\\n') >= 0) {
+        s = '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }
+    function tableToCsv(tbl) {
+      var lines = [];
+      var heads = [];
+      tbl.querySelectorAll('thead tr th').forEach(function(th){
+        heads.push(csvEscape(th.textContent.replace(/[▲▼]/g,'').trim()));
+      });
+      lines.push(heads.join(','));
+      tbl.querySelectorAll('tbody tr').forEach(function(tr){
+        var row = [];
+        tr.querySelectorAll('td').forEach(function(td){
+          // 비용비중 바 같은 그래픽만 들어있으면 빈 칸
+          var txt = (td.innerText || td.textContent || '').trim();
+          row.push(csvEscape(txt));
+        });
+        if (row.length) lines.push(row.join(','));
+      });
+      return lines.join('\\r\\n');
+    }
+    function downloadCurrentTabCSV() {
+      var tabId = 'tab-' + currentTab;
+      var pane = document.getElementById(tabId);
+      if (!pane) return toast('탭을 찾을 수 없습니다.', true);
+      var tables = pane.querySelectorAll('table');
+      if (!tables.length) return toast('다운로드할 표 데이터가 없습니다. 먼저 데이터를 조회해주세요.', true);
+
+      var labelMap = {summary:'요약', keywords:'키워드별', hourly:'시간대별', target:'타겟별', regional:'지역별', adgroups:'그룹별'};
+      var sectionTitles = pane.querySelectorAll('.card-title');
+      var parts = [];
+      tables.forEach(function(tbl, idx){
+        var title = sectionTitles[idx] ? sectionTitles[idx].textContent.trim() : ('표' + (idx+1));
+        parts.push('# ' + title);
+        parts.push(tableToCsv(tbl));
+        parts.push('');
+      });
+      var csv = parts.join('\\r\\n');
+      // UTF-8 BOM 추가 (Excel 한글 깨짐 방지)
+      var blob = new Blob(['\\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var ts = new Date();
+      var fname = (labelMap[currentTab] || currentTab) + '_' +
+                  ts.getFullYear() + ('0'+(ts.getMonth()+1)).slice(-2) + ('0'+ts.getDate()).slice(-2) +
+                  '_' + ('0'+ts.getHours()).slice(-2) + ('0'+ts.getMinutes()).slice(-2) + '.csv';
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+      toast('CSV 다운로드 시작: ' + fname);
+    }
+    function updateCsvBtnVisibility() {
+      var btn = document.getElementById('csv-download-btn');
+      if (!btn) return;
+      // 요약 탭에는 표가 없으니 숨김, 나머지는 표시
+      btn.style.display = (currentTab === 'summary') ? 'none' : 'inline-flex';
+    }
+    // 탭 전환 시 버튼 표시 갱신 (switchTab 후크)
+    var _origSwitchTab = switchTab;
+    switchTab = function(name){ _origSwitchTab(name); updateCsvBtnVisibility(); };
+    updateCsvBtnVisibility();
     </script>
   `;
 
@@ -4304,7 +4441,13 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         label.textContent = enabled ? 'ON' : 'OFF';
         label.style.color = enabled ? '#16a34a' : '#94a3b8';
-        toast(enabled ? '자동 발송 활성화' : '자동 발송 비활성화');
+        if (enabled && json.addedEmail) {
+          toast('자동 발송 활성화 (수신자 추가: ' + json.addedEmail + ')');
+          // 수신자 목록 UI도 즉시 갱신: 1초 후 페이지 새로고침으로 반영
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          toast(enabled ? '자동 발송 활성화' : '자동 발송 비활성화');
+        }
       } catch(e) { toast(e.message, true); }
     }
 
@@ -4383,8 +4526,8 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
 
 // API: 리포트 미리보기 (HTML 직접 반환)
 router.get('/api/report/preview', requireLogin, async (req, res) => {
+  const { type = 'daily', accountId } = req.query;
   try {
-    const { type = 'daily', accountId } = req.query;
     if (!['daily', 'weekly', 'monthly'].includes(type)) return res.status(400).send('잘못된 타입');
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).send('광고주 없음');
@@ -4399,7 +4542,22 @@ router.get('/api/report/preview', requireLogin, async (req, res) => {
     const html = await generatePreview(enriched, type);
     res.send(html);
   } catch (err) {
-    res.status(500).send(`<h2>리포트 생성 오류</h2><pre>${err.message}</pre>`);
+    console.error(`❌ 미리보기 오류 [${type}]:`, err.message);
+    const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+    const isTimeout = /시간 초과|timeout/i.test(err.message);
+    const tip = isTimeout
+      ? `<p style="color:#64748b;line-height:1.6">${typeLabel} 리포트는 데이터 양이 많아 생성에 시간이 오래 걸립니다.<br>잠시 후 다시 시도하시거나, <strong>"리포트 발송"</strong> 버튼으로 백그라운드 생성 후 이메일로 받아보세요.</p>`
+      : '<p style="color:#64748b">잠시 후 다시 시도해주세요.</p>';
+    res.status(500).send(`
+      <html><head><meta charset="utf-8"><title>리포트 오류</title></head>
+      <body style="font-family:system-ui;padding:40px;max-width:680px;margin:0 auto">
+        <h2 style="color:#dc2626">⚠️ ${typeLabel} 리포트 생성 오류</h2>
+        ${tip}
+        <details style="margin-top:24px"><summary style="cursor:pointer;color:#94a3b8;font-size:13px">상세 오류</summary>
+        <pre style="background:#f1f5f9;padding:12px;border-radius:8px;font-size:12px;white-space:pre-wrap">${err.message}</pre>
+        </details>
+      </body></html>
+    `);
   }
 });
 
@@ -4411,9 +4569,32 @@ router.post('/api/report/toggle-feat', requireLogin, async (req, res) => {
     if (!validFeats.includes(feat)) return res.status(400).json({ ok: false, error: '잘못된 기능' });
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    // 1) 기능 토글 업데이트
     await db.pool.query(`UPDATE ad_accounts SET ${feat} = $1 WHERE id = $2 AND user_id = $3`,
       [enabled ? 1 : 0, accountId, req.session.userId]);
-    res.json({ ok: true });
+
+    // 2) 기능을 켤 때: 광고담당자(현재 유저)의 다우오피스 이메일을 수신자에 자동 추가
+    let addedEmail = null;
+    if (enabled) {
+      try {
+        const smtp = await db.getSmtpCredentials(req.session.userId);
+        const daouEmail = (smtp?.daou_email || '').trim().toLowerCase();
+        if (daouEmail) {
+          const current = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
+          const currentLower = current.map(e => e.toLowerCase());
+          if (!currentLower.includes(daouEmail)) {
+            const merged = [...current, smtp.daou_email.trim()].join(',');
+            await db.pool.query('UPDATE ad_accounts SET report_emails = $1 WHERE id = $2 AND user_id = $3',
+              [merged, accountId, req.session.userId]);
+            addedEmail = smtp.daou_email.trim();
+          }
+        }
+      } catch (e) {
+        console.warn('자동 이메일 추가 실패:', e.message);
+      }
+    }
+    res.json({ ok: true, addedEmail });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

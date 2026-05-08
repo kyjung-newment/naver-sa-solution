@@ -658,6 +658,8 @@ async function generateAndSend(account, type) {
 
 /**
  * 미리보기용 HTML 생성 (이메일 발송 없이)
+ * - monthly의 경우 30일 + 전전월 30일 데이터를 모두 가져오면 5분을 초과할 수 있어
+ *   타임아웃 가드와 prev 스킵 옵션으로 안정성 확보
  */
 async function generatePreview(account, type) {
   const client = createApiClient({
@@ -701,21 +703,42 @@ async function generatePreview(account, type) {
     } catch (e) {}
   }
 
-  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
-  const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
+  // 전체 미리보기 타임아웃 가드: monthly는 240초, 그 외는 120초
+  const overallTimeout = type === 'monthly' ? 240000 : 120000;
+  const timeoutPromise = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error(`미리보기 시간 초과(${overallTimeout / 1000}s). 데이터가 너무 많거나 API 응답이 느립니다.`)), overallTimeout)
+  );
 
-  // Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
-  await calibrateWithStatsApi(data, client, dateRange);
+  const collectMain = (async () => {
+    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
+    await calibrateWithStatsApi(data, client, dateRange);
+    return data;
+  })();
 
-  // 이전 기간 (일간/주간/월간 모두)
+  const data = await Promise.race([collectMain, timeoutPromise]);
+
+  // 이전 기간 데이터: 미리보기에서는 가능한 만큼만, 실패해도 본 데이터로 진행
+  // monthly는 30일 추가 부담이 크므로 짧은 보조 타임아웃(60초) 적용
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
+    const prevTimeout = type === 'monthly' ? 60000 : 60000;
     try {
-      const prev = await collectDetailData(client, prevRange);
-      prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap);
-      await calibrateWithStatsApi(prevData, client, prevRange);
-    } catch (e) {}
+      const prevPromise = (async () => {
+        const prev = await collectDetailData(client, prevRange);
+        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap);
+        await calibrateWithStatsApi(pd, client, prevRange);
+        return pd;
+      })();
+      prevData = await Promise.race([
+        prevPromise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('prev timeout')), prevTimeout)),
+      ]);
+    } catch (e) {
+      console.log(`  ⚠️ 미리보기 이전기간 스킵: ${e.message}`);
+      prevData = null;
+    }
   }
 
   const { buildHtmlReport } = require('../email/sender');
