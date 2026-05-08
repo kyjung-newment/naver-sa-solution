@@ -159,7 +159,8 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const selectedAccountId = opts.selectedAccountId || '';
 
   const menuItems = [
-    { id: 'dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label: '성과 대시보드', href: '/smart-sa' },
+    { id: 'dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label: 'SA 성과 대시보드', href: '/smart-sa' },
+    { id: 'da-dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 13 10 9 13 12 17 7"/></svg>', label: 'DA 성과 대시보드', href: '/smart-sa/da-dashboard' },
     { id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' },
     { id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' },
     { id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: '자동리포트', href: '/smart-sa/reports' },
@@ -1409,7 +1410,36 @@ router.delete('/accounts/:id', requireLogin, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── 성과 대시보드 ──────────────────────────────────────────────────
+// ─── DA 성과 대시보드 (준비 중 placeholder) ─────────────────────────
+router.get('/da-dashboard', requireLogin, async (req, res) => {
+  const user = await getUser(req);
+  const content = `
+    <div style="display:flex;align-items:center;justify-content:center;min-height:60vh">
+      <div style="text-align:center;max-width:480px;padding:40px 24px">
+        <div style="font-size:64px;margin-bottom:16px">📺</div>
+        <h2 style="margin:0 0 12px 0;font-size:22px;color:#1e293b">DA 성과 대시보드</h2>
+        <div style="display:inline-block;background:#fef3c7;color:#92400e;font-size:12px;font-weight:600;padding:4px 12px;border-radius:9999px;margin-bottom:20px">준비 중</div>
+        <p style="color:#64748b;font-size:14px;line-height:1.7;margin:0 0 24px">
+          네이버 디스플레이 광고(DA) 성과 대시보드가<br>
+          곧 오픈됩니다. 같은 광고 계정 내 디스플레이 캠페인의<br>
+          노출/클릭/비용/전환 데이터를 한눈에 확인할 수 있습니다.
+        </p>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;text-align:left">
+          <div style="font-size:13px;font-weight:600;color:#475569;margin-bottom:8px">출시 예정 기능</div>
+          <ul style="margin:0;padding-left:20px;font-size:13px;color:#64748b;line-height:1.9">
+            <li>캠페인/광고그룹/소재별 성과</li>
+            <li>디바이스/지면별 분석</li>
+            <li>일/주/월간 자동 리포트 발송</li>
+            <li>CSV 다운로드 + 다중 필터</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+  res.send(appLayout('DA 성과 대시보드', content, user, 'da-dashboard', await getLayoutOpts(req)));
+});
+
+// ─── SA 성과 대시보드 ───────────────────────────────────────────────
 router.get('/', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
@@ -2793,7 +2823,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     </script>
   `;
 
-  res.send(appLayout('성과 대시보드', content, user, 'dashboard', await getLayoutOpts(req)));
+  res.send(appLayout('SA 성과 대시보드', content, user, 'dashboard', await getLayoutOpts(req)));
 });
 
 // ─── API: 통계 ──────────────────────────────────────────────────────
