@@ -4780,6 +4780,56 @@ router.get('/api/cron/sync-dashboard', async (req, res) => {
   }
 });
 
+// 매일 자동 정리: 60일 초과 stat_daily_detail 삭제 (디스크 절약)
+// 배치 5만 행 단위로 반복하여 락 최소화
+router.get('/api/cron/cleanup-old-data', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  const startedAt = Date.now();
+  const RETENTION_DAYS = parseInt(req.query.days) || 60;
+  const BATCH_SIZE = 50000;
+  const MAX_BATCHES = 20; // 안전장치: 단일 실행 최대 100만 행 (초과 시 다음날 cron이 마저 정리)
+  try {
+    let totalDeleted = 0;
+    let batches = 0;
+    while (batches < MAX_BATCHES) {
+      const r = await db.pool.query(`
+        DELETE FROM stat_daily_detail
+        WHERE id IN (
+          SELECT id FROM stat_daily_detail
+          WHERE stat_date < CURRENT_DATE - ($1 || ' days')::interval
+          LIMIT $2
+        )
+      `, [RETENTION_DAYS, BATCH_SIZE]);
+      const deleted = r.rowCount || 0;
+      totalDeleted += deleted;
+      batches++;
+      if (deleted < BATCH_SIZE) break;
+      // 함수 타임아웃 방지: 4분 경과 시 중단
+      if (Date.now() - startedAt > 240000) break;
+    }
+    // 동기화 로그도 보존 기간 적용
+    const logRes = await db.pool.query(`
+      DELETE FROM sync_log WHERE stat_date < CURRENT_DATE - ($1 || ' days')::interval
+    `, [RETENTION_DAYS]).catch(e => ({ rowCount: 0, error: e.message }));
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    console.log(`✅ Cron [cleanup-old-data]: stat_daily_detail ${totalDeleted}행 (${batches}배치), sync_log ${logRes.rowCount || 0}행, ${elapsed}초`);
+    res.json({
+      ok: true,
+      retentionDays: RETENTION_DAYS,
+      statDeleted: totalDeleted,
+      batches,
+      syncLogDeleted: logRes.rowCount || 0,
+      elapsed,
+    });
+  } catch (err) {
+    console.error('❌ Cron [cleanup-old-data]:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // 매일 백필: 과거 60일 데이터 보충 (전월 리포트 조회용)
 // ?force=1 로 호출하면 sync_log 삭제 후 강제 백필
 router.get('/api/cron/sync-backfill', async (req, res) => {

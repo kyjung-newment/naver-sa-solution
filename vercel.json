@@ -31,6 +31,10 @@
       "schedule": "30 23 * * *"
     },
     {
+      "path": "/smart-sa/api/cron/cleanup-old-data",
+      "schedule": "0 19 * * *"
+    },
+    {
       "path": "/smart-sa/api/cron/daily",
       "schedule": "0 0 * * *"
     },
