@@ -1078,11 +1078,30 @@ router.get('/api/customer-links', requireLogin, async (req, res) => {
   }
 });
 
+// 진단: 세션+DB 상태 확인
+router.get('/api/debug-session', requireLogin, async (req, res) => {
+  try {
+    const accounts = await db.getAccountsByUser(req.session.userId);
+    const selId = req.session.selectedAccountId;
+    let selAccount = null;
+    if (selId) selAccount = await db.getAccountById(selId, req.session.userId);
+    res.json({
+      ok: true,
+      session: { userId: req.session.userId, userName: req.session.userName, approved: req.session.approved, selectedAccountId: selId },
+      accounts: accounts.map(a => ({ id: a.id, name: a.name, customer_id: a.customer_id })),
+      selectedAccountFound: !!selAccount,
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
 // API: 광고주 선택 (세션에 저장)
 router.post('/api/select-account', requireLogin, (req, res) => {
   const { accountId } = req.body;
   req.session.selectedAccountId = accountId || '';
-  req.session.save(() => res.json({ ok: true }));
+  req.session.save((err) => {
+    if (err) return res.json({ ok: false, error: 'session save failed: ' + err.message });
+    res.json({ ok: true });
+  });
 });
 
 // API: 연동 광고주 자동 조회 (customer-links + 마스터 리포트 기반 스캔)
