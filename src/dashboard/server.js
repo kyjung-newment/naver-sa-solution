@@ -2566,21 +2566,24 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       // opts: { id, placeholder, items:[{id,name}], selected:[id,...] }
       var label = opts.placeholder;
       if (opts.selected.length > 0) label = opts.selected.length + '개 선택됨';
+      // 가장 긴 항목 길이로 팝업 너비 자동 계산 (대략 8px/문자, 최소 320px, 최대 viewport 80%)
+      var maxLen = Math.max.apply(null, opts.items.map(function(it){ return (it.name || it.id || '').length; }).concat([20]));
+      var popMinWidth = Math.min(Math.max(maxLen * 8 + 80, 320), Math.round((typeof window !== 'undefined' ? window.innerWidth : 1200) * 0.8));
       var html = '<div class="ms-wrap" id="'+opts.id+'-wrap" style="position:relative;display:inline-block">';
       html += '<button type="button" id="'+opts.id+'-btn" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 12px;font-size:12px;background:#fff;cursor:pointer;min-width:160px;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:8px">';
       html += '<span>'+label+'</span><span style="color:#94a3b8;font-size:10px">▼</span></button>';
-      html += '<div id="'+opts.id+'-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;min-width:280px;max-width:420px">';
-      html += '<div style="padding:8px;border-bottom:1px solid #e2e8f0;display:flex;gap:6px">';
-      html += '<input type="text" id="'+opts.id+'-search" placeholder="검색..." style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">';
-      html += '<button type="button" data-act="all" style="padding:4px 8px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer">전체</button>';
-      html += '<button type="button" data-act="none" style="padding:4px 8px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer">해제</button>';
+      html += '<div id="'+opts.id+'-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;min-width:'+popMinWidth+'px;max-width:90vw;width:max-content">';
+      html += '<div style="padding:8px;border-bottom:1px solid #e2e8f0;display:flex;gap:6px;align-items:center">';
+      html += '<input type="text" id="'+opts.id+'-search" placeholder="검색..." style="flex:1;min-width:120px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">';
+      html += '<button type="button" data-act="all" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">전체</button>';
+      html += '<button type="button" data-act="none" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">해제</button>';
       html += '</div>';
-      html += '<div id="'+opts.id+'-list" style="max-height:280px;overflow-y:auto;padding:4px 0">';
+      html += '<div id="'+opts.id+'-list" style="max-height:320px;overflow-y:auto;padding:4px 0">';
       opts.items.forEach(function(it){
         var checked = opts.selected.indexOf(it.id) >= 0;
-        html += '<label class="ms-item" data-name="'+(it.name||'').toLowerCase().replace(/"/g,'&quot;')+'" style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;cursor:pointer">';
-        html += '<input type="checkbox" value="'+it.id.replace(/"/g,'&quot;')+'" '+(checked?'checked':'')+' style="cursor:pointer;accent-color:#6366f1">';
-        html += '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(it.name||it.id)+'</span></label>';
+        html += '<label class="ms-item" data-name="'+(it.name||'').toLowerCase().replace(/"/g,'&quot;')+'" style="display:flex;align-items:center;gap:10px;padding:6px 14px;font-size:12px;cursor:pointer;white-space:nowrap">';
+        html += '<input type="checkbox" value="'+it.id.replace(/"/g,'&quot;')+'" '+(checked?'checked':'')+' style="cursor:pointer;accent-color:#6366f1;flex-shrink:0">';
+        html += '<span style="white-space:nowrap;text-align:left">'+(it.name||it.id)+'</span></label>';
       });
       html += '</div>';
       html += '<div style="padding:8px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:6px">';
