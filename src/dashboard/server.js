@@ -1444,8 +1444,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     <!-- 탭 메뉴 -->
     <div class="tab-bar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="display:flex;flex-wrap:wrap">
-      ${['summary','keywords','hourly','target','regional','adgroups'].map((tab, i) => {
-        const labels = ['요약','키워드별','시간대별','타겟별','지역별','그룹별'];
+      ${['summary','campaigns','adgroups','keywords','target','hourly'].map((tab, i) => {
+        const labels = ['요약','캠페인별','그룹별','키워드별','타겟별','시간대별'];
         return `<button class="tab-btn dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="switchTab('${tab}')">${labels[i]}</button>`;
       }).join('')}
       </div>
@@ -1534,14 +1534,19 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       </div>
     </div>
 
+    <!-- 캠페인별 탭 -->
+    <div id="tab-campaigns" class="tab-content" style="display:none">
+      <div id="campaigns-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
+    <!-- 그룹별 탭 -->
+    <div id="tab-adgroups" class="tab-content" style="display:none">
+      <div id="adgroups-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    </div>
+
     <!-- 키워드별 탭 -->
     <div id="tab-keywords" class="tab-content" style="display:none">
       <div id="kw-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
-    </div>
-
-    <!-- 시간대별 탭 -->
-    <div id="tab-hourly" class="tab-content" style="display:none">
-      <div id="hourly-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
     </div>
 
     <!-- 타겟별 탭 -->
@@ -1549,14 +1554,9 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       <div id="target-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
     </div>
 
-    <!-- 지역별 탭 -->
-    <div id="tab-regional" class="tab-content" style="display:none">
-      <div id="regional-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
-    </div>
-
-    <!-- 그룹별 탭 -->
-    <div id="tab-adgroups" class="tab-content" style="display:none">
-      <div id="adgroups-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
+    <!-- 시간대별 탭 -->
+    <div id="tab-hourly" class="tab-content" style="display:none">
+      <div id="hourly-tab-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div>
     </div>
 
     <script>
@@ -1624,11 +1624,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     function loadCurrentTab() {
       if (!getAccountId()) { toast('사이드바에서 광고주를 선택해주세요.', true); return; }
       if (currentTab === 'summary') loadSummary();
-      else if (currentTab === 'keywords' && !tabLoaded.keywords) loadKeywords();
-      else if (currentTab === 'hourly' && !tabLoaded.hourly) loadHourly();
-      else if (currentTab === 'target' && !tabLoaded.target) loadDevice();
-      else if (currentTab === 'regional' && !tabLoaded.regional) loadRegional();
+      else if (currentTab === 'campaigns' && !tabLoaded.campaigns) loadCampaigns();
       else if (currentTab === 'adgroups' && !tabLoaded.adgroups) loadAdgroups();
+      else if (currentTab === 'keywords' && !tabLoaded.keywords) loadKeywords();
+      else if (currentTab === 'target' && !tabLoaded.target) loadDevice();
+      else if (currentTab === 'hourly' && !tabLoaded.hourly) loadHourly();
     }
 
     // 페이지 로드 시 자동 조회 (광고주 선택된 경우만)
@@ -2374,17 +2374,25 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     ];
     registerTabCols('hourly', HOURLY_COLS);
 
-    // ═══ 지역별 탭 컬럼 정의 ═══
-    var REGIONAL_COLS = [
-      { key:'name', label:'지역', tp:'s', visible:true, render: function(r){ return '<td style="font-weight:600">'+r.name+'</td>'; } },
-      { key:'impCnt', label:'노출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+num(r.impCnt)+'</td>'; } },
-      { key:'clkCnt', label:'클릭', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;color:#2563eb;font-weight:600">'+num(r.clkCnt)+'</td>'; } },
-      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+pct(r.ctr)+'</td>'; } },
-      { key:'salesAmt', label:'총비용', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.salesAmt)+'</td>'; } },
-      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right">'+won(r.cpc)+'</td>'; } },
-      { key:'costPct', label:'비용비중', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;font-weight:600">'+(r._costPct||'0')+'%</td>'; } },
+    // ═══ 캠페인별 탭 컬럼 정의 ═══
+    var CAMPAIGN_COLS = [
+      { key:'campaignName', label:'캠페인', tp:'s', visible:true, render: function(r){
+        var typeLabel = '';
+        if (r.campaignTp === 1) typeLabel = '<span class="badge" style="background:#dbeafe;color:#1e40af;margin-left:6px;font-size:10px;padding:1px 6px">파워링크</span>';
+        else if (r.campaignTp === 2) typeLabel = '<span class="badge" style="background:#fef3c7;color:#92400e;margin-left:6px;font-size:10px;padding:1px 6px">쇼핑</span>';
+        else if (r.campaignTp === 4) typeLabel = '<span class="badge" style="background:#fce7f3;color:#9f1239;margin-left:6px;font-size:10px;padding:1px 6px">브랜드</span>';
+        return '<td style="white-space:nowrap"><strong>'+(r.campaignName||'-')+'</strong>'+typeLabel+'</td>';
+      } },
+      { key:'imp', label:'노출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+num(r.imp)+'</td>'; } },
+      { key:'clk', label:'클릭', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+num(r.clk)+'</td>'; } },
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+pct(r.ctr)+'</td>'; } },
+      { key:'cost', label:'총비용', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+won(r.cost)+'</td>'; } },
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap">'+won(r.cpc)+'</td>'; } },
+      { key:'purchaseCnt', label:'구매전환', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+num(r.purchaseCnt)+'</td>'; } },
+      { key:'purchaseAmt', label:'구매매출', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+won(r.purchaseAmt)+'</td>'; } },
+      { key:'roas', label:'ROAS', tp:'n', visible:true, render: function(r){ return '<td style="text-align:right;white-space:nowrap;font-weight:600;color:'+(r.roas>=100?'#16a34a':'#ef4444')+'">'+r.roas+'%</td>'; } },
     ];
-    registerTabCols('regional', REGIONAL_COLS);
+    registerTabCols('campaigns', CAMPAIGN_COLS);
 
     // ═══ 그룹별 탭 컬럼 정의 ═══
     var ADGROUP_COLS = [
@@ -2507,49 +2515,120 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       wrap.innerHTML = html;
     }
 
-    // ── 지역별 탭 ──
-    async function loadRegional() {
-      const wrap = document.getElementById('regional-tab-content');
-      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 지역별 데이터 로딩 중... (10~30초 소요)</div>';
+    // ── 캠페인별 탭 ──
+    var campaignData = null;
+    var campFilterIds = []; // 빈 배열 = 전체
+    async function loadCampaigns() {
+      const wrap = document.getElementById('campaigns-tab-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 캠페인별 데이터 로딩 중... (10~30초 소요)</div>';
       try {
-        const res = await fetch('/smart-sa/api/tab/regional?'+periodParams());
+        const res = await fetch('/smart-sa/api/tab/campaigns?'+periodParams());
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
-        tabLoaded.regional = true;
-        renderRegionalTab(json.regions);
-      } catch(e) { wrap.innerHTML = '<div class="empty">지역별 조회 실패: '+e.message+'</div>'; }
+        tabLoaded.campaigns = true;
+        renderCampaignTab(json.campaigns);
+      } catch(e) { wrap.innerHTML = '<div class="empty">캠페인별 조회 실패: '+e.message+'</div>'; }
     }
 
-    var regionalData = null;
-    function renderRegionalTab(regions) {
-      const wrap = document.getElementById('regional-tab-content');
-      if (!regions || !regions.length) { wrap.innerHTML = '<div class="empty">지역별 데이터가 없습니다.<br><span style="font-size:12px;color:#94a3b8">최근 7일 이내 기간에서만 조회 가능합니다.</span></div>'; return; }
-      regionalData = regions;
-      var totalCost = regions.reduce(function(s,r){return s+r.salesAmt},0) || 1;
+    function renderCampaignTab(campaigns) {
+      const wrap = document.getElementById('campaigns-tab-content');
+      if (!campaigns || !campaigns.length) { wrap.innerHTML = '<div class="empty">캠페인 데이터가 없습니다.</div>'; return; }
+      campaignData = campaigns;
 
-      // 비용비중 계산 추가
-      regions.forEach(function(r){ r._costPct = (r.salesAmt / totalCost * 100).toFixed(1); });
+      var filtered = (!campFilterIds.length) ? campaigns : campaigns.filter(function(c){ return campFilterIds.indexOf(String(c.campaignId)) >= 0; });
 
-      // 비용 기준 상위 10개 지역 비율 차트
-      var top10 = regions.slice(0, 10);
-      var barColors = ['#3b82f6','#8b5cf6','#ef4444','#f59e0b','#10b981','#06b6d4','#ec4899','#f97316','#14b8a6','#6366f1'];
-      var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">📍 지역별 비용 비율 (Top 10)</span></div><div class="card-body">';
-      top10.forEach(function(r, i) {
-        html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
-        html += '<div style="width:60px;font-size:13px;font-weight:600;text-align:right;flex-shrink:0">'+r.name+'</div>';
-        html += '<div style="flex:1;height:24px;background:#f1f5f9;border-radius:6px;overflow:hidden">';
-        html += '<div style="width:'+r._costPct+'%;height:100%;background:'+barColors[i%10]+';display:flex;align-items:center;padding-left:8px;min-width:40px">';
-        html += '<span style="font-size:11px;font-weight:600;color:#fff">'+r._costPct+'%</span></div></div>';
-        html += '<div style="width:80px;font-size:12px;text-align:right;color:#64748b;flex-shrink:0">'+won(r.salesAmt)+'</div>';
-        html += '</div>';
+      var html = '';
+      // 멀티셀렉트 필터 바
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
+      html += renderMultiSelect({
+        id: 'camp-filter',
+        placeholder: '전체 캠페인',
+        items: campaigns.map(function(c){ return { id: String(c.campaignId), name: c.campaignName }; }),
+        selected: campFilterIds.slice(),
       });
-      html += '</div></div>';
+      html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+campaigns.length+'개</span>';
+      html += '<button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'campaigns\\\', function(){ if(campaignData) renderCampaignTab(campaignData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button>';
+      html += '</div>';
 
-      // 전체 지역 테이블 (열 설정 적용)
-      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'regional\\\', function(){ if(regionalData) renderRegionalTab(regionalData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
-      html += renderColTable('regional', regions);
+      html += '<div class="card"><div class="card-header"><span class="card-title">캠페인별 성과</span></div><div class="card-body" style="overflow-x:auto">';
+      html += renderColTable('campaigns', filtered);
       html += '</div></div>';
       wrap.innerHTML = html;
+
+      bindMultiSelect('camp-filter', function(selectedIds){
+        campFilterIds = selectedIds;
+        renderCampaignTab(campaignData);
+      });
+    }
+
+    // ── 다중 선택 위젯 ──
+    function renderMultiSelect(opts) {
+      // opts: { id, placeholder, items:[{id,name}], selected:[id,...] }
+      var label = opts.placeholder;
+      if (opts.selected.length > 0) label = opts.selected.length + '개 선택됨';
+      var html = '<div class="ms-wrap" id="'+opts.id+'-wrap" style="position:relative;display:inline-block">';
+      html += '<button type="button" id="'+opts.id+'-btn" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 12px;font-size:12px;background:#fff;cursor:pointer;min-width:160px;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:8px">';
+      html += '<span>'+label+'</span><span style="color:#94a3b8;font-size:10px">▼</span></button>';
+      html += '<div id="'+opts.id+'-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;min-width:280px;max-width:420px">';
+      html += '<div style="padding:8px;border-bottom:1px solid #e2e8f0;display:flex;gap:6px">';
+      html += '<input type="text" id="'+opts.id+'-search" placeholder="검색..." style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">';
+      html += '<button type="button" data-act="all" style="padding:4px 8px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer">전체</button>';
+      html += '<button type="button" data-act="none" style="padding:4px 8px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer">해제</button>';
+      html += '</div>';
+      html += '<div id="'+opts.id+'-list" style="max-height:280px;overflow-y:auto;padding:4px 0">';
+      opts.items.forEach(function(it){
+        var checked = opts.selected.indexOf(it.id) >= 0;
+        html += '<label class="ms-item" data-name="'+(it.name||'').toLowerCase().replace(/"/g,'&quot;')+'" style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;cursor:pointer">';
+        html += '<input type="checkbox" value="'+it.id.replace(/"/g,'&quot;')+'" '+(checked?'checked':'')+' style="cursor:pointer;accent-color:#6366f1">';
+        html += '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(it.name||it.id)+'</span></label>';
+      });
+      html += '</div>';
+      html += '<div style="padding:8px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:6px">';
+      html += '<button type="button" data-act="apply" style="padding:5px 14px;font-size:12px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">적용</button>';
+      html += '</div>';
+      html += '</div></div>';
+      return html;
+    }
+    function bindMultiSelect(id, onApply) {
+      var wrap = document.getElementById(id+'-wrap');
+      if (!wrap) return;
+      var btn = document.getElementById(id+'-btn');
+      var pop = document.getElementById(id+'-pop');
+      var search = document.getElementById(id+'-search');
+      var list = document.getElementById(id+'-list');
+      function show() { pop.style.display = 'block'; setTimeout(function(){ search && search.focus(); }, 50); }
+      function hide() { pop.style.display = 'none'; }
+      btn.onclick = function(e){ e.stopPropagation(); pop.style.display==='block'?hide():show(); };
+      // 외부 클릭 시 닫기
+      var onDoc = function(e){ if (!wrap.contains(e.target)) hide(); };
+      document.addEventListener('click', onDoc);
+      // 검색 필터
+      if (search) search.oninput = function(){
+        var q = search.value.toLowerCase();
+        list.querySelectorAll('.ms-item').forEach(function(el){
+          el.style.display = (!q || (el.dataset.name||'').indexOf(q) >= 0) ? '' : 'none';
+        });
+      };
+      // 액션 버튼
+      pop.querySelectorAll('button[data-act]').forEach(function(b){
+        b.onclick = function(e){
+          e.stopPropagation();
+          var act = b.dataset.act;
+          if (act === 'all') {
+            list.querySelectorAll('input[type=checkbox]').forEach(function(c){
+              if (c.closest('.ms-item').style.display !== 'none') c.checked = true;
+            });
+          } else if (act === 'none') {
+            list.querySelectorAll('input[type=checkbox]').forEach(function(c){ c.checked = false; });
+          } else if (act === 'apply') {
+            var sel = [];
+            list.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){ sel.push(c.value); });
+            hide();
+            document.removeEventListener('click', onDoc);
+            onApply(sel);
+          }
+        };
+      });
     }
 
     // ── 그룹별 탭 ──
@@ -2566,35 +2645,56 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     }
 
     var adgroupData = null;
-    var agFilterCampaign = ''; // 그룹별 탭 캠페인 필터
+    var agFilterCampNames = []; // 빈 배열 = 전체 (다중 선택)
+    var agFilterAgIds = [];     // 빈 배열 = 전체 (광고그룹 다중 선택)
     function renderAdgroupTab(adgroups) {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
       adgroupData = adgroups;
-      // 캠페인 옵션 추출
-      var campSet = {};
-      adgroups.forEach(function(a){ if(a.campaignName) campSet[a.campaignName]=true; });
-      var campOpts = Object.keys(campSet).sort();
-      var filtered = agFilterCampaign ? adgroups.filter(function(a){return a.campaignName === agFilterCampaign;}) : adgroups;
+
+      // 캠페인 옵션
+      var campMap = {};
+      adgroups.forEach(function(a){ if(a.campaignName && !campMap[a.campaignName]) campMap[a.campaignName] = true; });
+      var campOpts = Object.keys(campMap).sort().map(function(n){ return { id:n, name:n }; });
+
+      // 캠페인 필터 적용 후 광고그룹 옵션 (선택된 캠페인 안의 그룹만 보여줌)
+      var afterCampFilter = (!agFilterCampNames.length) ? adgroups :
+        adgroups.filter(function(a){ return agFilterCampNames.indexOf(a.campaignName) >= 0; });
+      var agSet = {};
+      afterCampFilter.forEach(function(a){ if (a.adgroupId && !agSet[a.adgroupId]) agSet[a.adgroupId] = a.adgroupName || a.adgroupId; });
+      var agOpts = Object.entries(agSet).map(function(e){ return { id:String(e[0]), name:e[1] }; })
+        .sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
+      // 선택된 광고그룹이 옵션에 없으면 정리
+      agFilterAgIds = agFilterAgIds.filter(function(id){ return !!agSet[id]; });
+
+      var filtered = afterCampFilter.filter(function(a){
+        if (agFilterAgIds.length && agFilterAgIds.indexOf(String(a.adgroupId)) < 0) return false;
+        return true;
+      });
 
       let html = '';
-      // 필터 바
+      // 필터 바 (캠페인 + 광고그룹 다중 선택)
       html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
-      html += '<select id="ag-filter-campaign" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff;cursor:pointer;max-width:240px">';
-      html += '<option value="">전체 캠페인</option>';
-      campOpts.forEach(function(c){ html += '<option value="'+c.replace(/"/g,'&quot;')+'"'+(c===agFilterCampaign?' selected':'')+'>'+c+'</option>'; });
-      html += '</select>';
+      html += renderMultiSelect({ id:'ag-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:agFilterCampNames.slice() });
+      html += renderMultiSelect({ id:'ag-ag-filter', placeholder:'전체 광고그룹', items:agOpts, selected:agFilterAgIds.slice() });
       html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+adgroups.length+'개</span>';
+      html += '<button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button>';
       html += '</div>';
 
-      html += '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span></div><div class="card-body" style="overflow-x:auto">';
       html += renderColTable('adgroups', filtered);
       html += '</div></div>';
       wrap.innerHTML = html;
 
-      // 필터 변경 이벤트
-      var sel = document.getElementById('ag-filter-campaign');
-      if (sel) sel.addEventListener('change', function(e){ agFilterCampaign = e.target.value; renderAdgroupTab(adgroupData); });
+      bindMultiSelect('ag-camp-filter', function(selected){
+        agFilterCampNames = selected;
+        // 캠페인 필터 변경 시 광고그룹 필터는 유효한 것만 자동 정리
+        renderAdgroupTab(adgroupData);
+      });
+      bindMultiSelect('ag-ag-filter', function(selected){
+        agFilterAgIds = selected;
+        renderAdgroupTab(adgroupData);
+      });
     }
 
     // ── 공통 유틸 ──
@@ -2639,7 +2739,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       var tables = pane.querySelectorAll('table');
       if (!tables.length) return toast('다운로드할 표 데이터가 없습니다. 먼저 데이터를 조회해주세요.', true);
 
-      var labelMap = {summary:'요약', keywords:'키워드별', hourly:'시간대별', target:'타겟별', regional:'지역별', adgroups:'그룹별'};
+      var labelMap = {summary:'요약', campaigns:'캠페인별', adgroups:'그룹별', keywords:'키워드별', target:'타겟별', hourly:'시간대별'};
       var sectionTitles = pane.querySelectorAll('.card-title');
       var parts = [];
       tables.forEach(function(tbl, idx){
@@ -3519,6 +3619,86 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
       return cmp !== 0 ? cmp : (a.adgroupName || '').localeCompare(b.adgroupName || '');
     });
     res.json({ ok: true, source: 'api', adgroups });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── API: 탭 데이터 (캠페인별) ──────────────────────────────────────
+router.get('/api/tab/campaigns', requireLogin, async (req, res) => {
+  try {
+    const { period = 'yesterday', accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const enrich = obj => ({
+      ...obj, cost: Number(obj.cost || 0), purchaseAmt: Number(obj.purchaseAmt || 0),
+      ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
+      cpc: obj.clk > 0 ? Math.round(Number(obj.cost) / obj.clk) : 0,
+      roas: Number(obj.cost) > 0 ? Math.round(Number(obj.purchaseAmt) / Number(obj.cost) * 100) : 0,
+    });
+
+    // 마스터 데이터 보장
+    const creds0 = await db.getApiCredentials(req.session.userId);
+    const masterCheck = await db.get('SELECT COUNT(*)::int AS cnt FROM master_campaigns WHERE account_id = $1', [account.id]);
+    if (masterCheck.cnt === 0 && creds0) {
+      try {
+        const client0 = makeClient(creds0, account.customer_id);
+        await buildNameMapsFromMasterReport(client0, account.id);
+        nameMapCache.delete(`nm:${account.id}`);
+      } catch (e) { console.log('캠페인 탭 마스터 자동 동기화 실패:', e.message); }
+    }
+
+    // DB 우선 조회
+    const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
+    if (synced) {
+      const rows = await db.queryStatsCampaigns(account.id, dateRange.since, dateRange.until);
+      const campaigns = rows.map(r => enrich({
+        campaignId: r.campaign_id,
+        campaignName: r.campaignName,
+        campaignTp: r.campaignTp,
+        imp: r.imp, clk: r.clk, cost: r.cost,
+        purchaseCnt: r.purchaseCnt, purchaseAmt: r.purchaseAmt,
+      })).sort((a, b) => b.cost - a.cost);
+      return res.json({ ok: true, source: 'db', campaigns });
+    }
+
+    // Fallback: API
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
+    const client = makeClient(creds, account.customer_id);
+    const { campMap } = await getNameMaps(client, account.id);
+
+    const [adRows, convRows] = await Promise.all([
+      fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange),
+      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
+    ]);
+
+    const byCamp = {};
+    for (const { cols } of adRows) {
+      if (cols.length < 14) continue;
+      const campId = cols[2];
+      if (!byCamp[campId]) {
+        const camp = campMap[campId] || {};
+        byCamp[campId] = { campaignId: campId, campaignName: camp.name || campId, campaignTp: camp.tp || 0, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
+      }
+      byCamp[campId].imp += parseInt(cols[11]) || 0;
+      byCamp[campId].clk += parseInt(cols[12]) || 0;
+      byCamp[campId].cost += parseInt(cols[13]) || 0;
+    }
+    for (const { cols } of convRows) {
+      if (cols.length < 15) continue;
+      const convType = cols[12];
+      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      const campId = cols[2];
+      if (!byCamp[campId]) continue;
+      byCamp[campId].purchaseCnt += parseInt(cols[13]) || 0;
+      byCamp[campId].purchaseAmt += parseInt(cols[14]) || 0;
+    }
+
+    const campaigns = Object.values(byCamp).map(enrich).sort((a, b) => b.cost - a.cost);
+    res.json({ ok: true, source: 'api', campaigns });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

@@ -842,6 +842,24 @@ async function queryStatsDevice(accountId, since, until) {
   `, [accountId, since, until]);
 }
 
+/** 캠페인별 탭 */
+async function queryStatsCampaigns(accountId, since, until) {
+  return all(`
+    SELECT d.campaign_id,
+           COALESCE(mc.campaign_name, d.campaign_id) AS "campaignName",
+           COALESCE(mc.campaign_tp, 1) AS "campaignTp",
+           COALESCE(SUM(d.imp),0)::int AS imp, COALESCE(SUM(d.clk),0)::int AS clk,
+           COALESCE(SUM(d.cost),0)::bigint AS cost,
+           COALESCE(SUM(d.purchase_cnt),0)::int AS "purchaseCnt",
+           COALESCE(SUM(d.purchase_amt),0)::bigint AS "purchaseAmt"
+    FROM stat_daily_detail d
+    LEFT JOIN master_campaigns mc ON mc.account_id = d.account_id AND mc.campaign_id = d.campaign_id
+    WHERE d.account_id = $1 AND d.stat_date >= $2 AND d.stat_date <= $3
+    GROUP BY d.campaign_id, mc.campaign_name, mc.campaign_tp
+    ORDER BY SUM(d.cost) DESC
+  `, [accountId, since, until]);
+}
+
 /** 광고그룹별 탭 */
 async function queryStatsAdgroups(accountId, since, until) {
   return all(`
@@ -926,5 +944,5 @@ module.exports = Object.assign(module.exports, {
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
   getShoppingBidKeywords, upsertShoppingBidKeyword, deleteShoppingBidKeyword, updateShoppingBidKeywordStatus, getEnabledShoppingBidKeywords,
-  isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsAdgroups, queryStatsTrend,
+  isSynced, queryStatsSummary, queryStatsKeywords, queryStatsHourly, queryStatsDevice, queryStatsCampaigns, queryStatsAdgroups, queryStatsTrend,
 });
