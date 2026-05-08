@@ -760,9 +760,16 @@ async function getLayoutOpts(req) {
   if (!req.session.userId) return {};
   try {
     const accounts = await db.getAccountsByUser(req.session.userId);
+    // 세션에 저장된 selectedAccountId가 현재 사용자의 광고주 목록에 존재하는지 검증
+    let selId = req.session.selectedAccountId || '';
+    if (selId && !accounts.find(a => String(a.id) === String(selId))) {
+      // 유효하지 않은 광고주 ID → 무시 (세션 쓰기 실패해도 안전)
+      selId = '';
+      try { req.session.selectedAccountId = ''; req.session.save(() => {}); } catch(_){}
+    }
     return {
       accounts,
-      selectedAccountId: req.session.selectedAccountId || '',
+      selectedAccountId: selId,
     };
   } catch (e) { return {}; }
 }
