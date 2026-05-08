@@ -163,11 +163,10 @@ function getPrevDateRange(type, dateRange) {
     return { since: prevSince.toISOString().slice(0, 10), until: prevUntil.toISOString().slice(0, 10) };
   }
   if (type === 'monthly') {
-    // 전전월: 현재 리포트가 전월이므로 그 이전 달
-    const currStart = new Date(dateRange.since);
+    const currStart = new Date(dateRange.since + 'T00:00:00Z');
     const prevEnd = new Date(currStart);
-    prevEnd.setDate(prevEnd.getDate() - 1); // 전전월 마지막일
-    const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+    prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+    const prevStart = new Date(Date.UTC(prevEnd.getUTCFullYear(), prevEnd.getUTCMonth(), 1));
     return { since: prevStart.toISOString().slice(0, 10), until: prevEnd.toISOString().slice(0, 10) };
   }
   return null;
@@ -701,7 +700,12 @@ async function generatePreview(account, type) {
     } catch (e) {}
   }
 
-  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
+  // 전체 데이터 수집에 120초 타임아웃
+  const collectTimeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('데이터 수집 타임아웃')), ms));
+  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await Promise.race([
+    collectDetailData(client, dateRange),
+    collectTimeout(120000)
+  ]);
   const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
 
   // Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
@@ -712,10 +716,15 @@ async function generatePreview(account, type) {
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
     try {
-      const prev = await collectDetailData(client, prevRange);
+      const prev = await Promise.race([
+        collectDetailData(client, prevRange),
+        collectTimeout(60000)
+      ]);
       prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap);
       await calibrateWithStatsApi(prevData, client, prevRange);
-    } catch (e) {}
+    } catch (e) {
+      console.log('  ⚠️ 이전 기간 데이터 건너뜀:', e.message);
+    }
   }
 
   const { buildHtmlReport } = require('../email/sender');

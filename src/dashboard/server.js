@@ -1439,6 +1439,23 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       }).join('')}
     </div>
 
+    <!-- 캠페인/그룹 필터 -->
+    <div id="filter-bar" style="display:none;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-size:12px;color:#64748b;white-space:nowrap">캠페인</label>
+        <select id="filter-campaign" style="font-size:12px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;max-width:200px" onchange="applyFilters()">
+          <option value="">전체</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <label style="font-size:12px;color:#64748b;white-space:nowrap">광고그룹</label>
+        <select id="filter-adgroup" style="font-size:12px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;max-width:200px" onchange="applyFilters()">
+          <option value="">전체</option>
+        </select>
+      </div>
+      <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="clearFilters()">초기화</button>
+    </div>
+
     <!-- 요약 탭 -->
     <div id="tab-summary" class="tab-content">
       <!-- 성과지표 추이 차트 -->
@@ -1552,6 +1569,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     const tabLoaded = {};
     const selectedAccountId = '${req.session.selectedAccountId || ''}';
     // firstAccountId 제거 - 광고주 선택 필수
+    let filterCampaign = '';
+    let filterAdgroup = '';
 
     function getAccountId() { return selectedAccountId; }
     function periodParams() {
@@ -1595,11 +1614,146 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       loadCurrentTab();
     }
 
+    var deviceData = null;
+
+    function downloadCSV(filename, headers, rows) {
+      var bom = '﻿';
+      var csv = bom + headers.join(',') + '\\n';
+      rows.forEach(function(r) {
+        csv += r.map(function(v) {
+          var s = String(v == null ? '' : v);
+          if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\\n') >= 0) return '"' + s.replace(/"/g, '""') + '"';
+          return s;
+        }).join(',') + '\\n';
+      });
+      var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadKwCSV() {
+      if (!kwData) return toast('데이터를 먼저 로딩해주세요.', true);
+      var headers = kwColDefs.filter(function(c){ return c.visible !== false; }).map(function(c){ return c.label; });
+      var keys = kwColDefs.filter(function(c){ return c.visible !== false; }).map(function(c){ return c.key; });
+      var rows = [];
+      ['powerlink','shopping','other'].forEach(function(type) {
+        (kwData[type] || []).forEach(function(kw) {
+          rows.push(keys.map(function(k) { return kw[k] != null ? kw[k] : ''; }));
+        });
+      });
+      downloadCSV('키워드별_' + currentPeriod + '.csv', headers, rows);
+    }
+
+    function downloadHourlyCSV() {
+      if (!hourlyData) return toast('데이터를 먼저 로딩해주세요.', true);
+      var cols = getVisibleCols('hourly');
+      var headers = ['시간'].concat(cols.map(function(c){ return c.label; }));
+      var rows = (hourlyData.byHour || []).map(function(h) {
+        return [h.hour + '시'].concat(cols.map(function(c) { return h[c.key] != null ? h[c.key] : ''; }));
+      });
+      downloadCSV('시간대별_' + currentPeriod + '.csv', headers, rows);
+    }
+
+    function downloadRegionalCSV() {
+      if (!regionalData) return toast('데이터를 먼저 로딩해주세요.', true);
+      var cols = getVisibleCols('regional');
+      var headers = cols.map(function(c){ return c.label; });
+      var rows = regionalData.map(function(r) {
+        return cols.map(function(c) { return r[c.key] != null ? r[c.key] : ''; });
+      });
+      downloadCSV('지역별_' + currentPeriod + '.csv', headers, rows);
+    }
+
+    function downloadAdgroupCSV() {
+      if (!adgroupData) return toast('데이터를 먼저 로딩해주세요.', true);
+      var cols = getVisibleCols('adgroups');
+      var headers = cols.map(function(c){ return c.label; });
+      var rows = adgroupData.map(function(ag) {
+        return cols.map(function(c) { return ag[c.key] != null ? ag[c.key] : ''; });
+      });
+      downloadCSV('그룹별_' + currentPeriod + '.csv', headers, rows);
+    }
+
+    function downloadDeviceCSV() {
+      if (!deviceData) return toast('데이터를 먼저 로딩해주세요.', true);
+      var headers = ['기기','노출수','클릭수','CTR','총비용','CPC','구매전환수','구매전환매출','ROAS'];
+      var rows = [];
+      ['pc','mobile'].forEach(function(dev) {
+        var d = deviceData[dev];
+        if (d) rows.push([dev==='pc'?'PC':'모바일', d.imp||0, d.clk||0, d.ctr||0, d.cost||0, d.cpc||0, d.purchaseCnt||0, d.purchaseAmt||0, d.roas||0]);
+      });
+      downloadCSV('타겟별_' + currentPeriod + '.csv', headers, rows);
+    }
+
+    function updateFilterBar() {
+      var bar = document.getElementById('filter-bar');
+      var showFor = ['keywords','hourly','adgroups'];
+      if (showFor.indexOf(currentTab) >= 0) {
+        bar.style.display = 'flex';
+      } else {
+        bar.style.display = 'none';
+      }
+    }
+
+    function populateFilterOptions() {
+      var campaigns = new Set();
+      var adgroups = new Set();
+      if (kwData) {
+        ['powerlink','shopping','other'].forEach(function(t) {
+          (kwData[t] || []).forEach(function(k) {
+            if (k.campaignName) campaigns.add(k.campaignName);
+            if (k.adgroupName) adgroups.add(k.adgroupName);
+          });
+        });
+      }
+      if (adgroupData) {
+        adgroupData.forEach(function(ag) {
+          if (ag.campaignName) campaigns.add(ag.campaignName);
+          if (ag.adgroupName) adgroups.add(ag.adgroupName);
+        });
+      }
+      var campSel = document.getElementById('filter-campaign');
+      var agSel = document.getElementById('filter-adgroup');
+      var prevCamp = campSel.value;
+      var prevAg = agSel.value;
+      campSel.innerHTML = '<option value="">전체</option>' + Array.from(campaigns).sort().map(function(c) { return '<option value="'+c.replace(/"/g,'&quot;')+'"'+(c===prevCamp?' selected':'')+'>'+c+'</option>'; }).join('');
+      agSel.innerHTML = '<option value="">전체</option>' + Array.from(adgroups).sort().map(function(a) { return '<option value="'+a.replace(/"/g,'&quot;')+'"'+(a===prevAg?' selected':'')+'>'+a+'</option>'; }).join('');
+    }
+
+    function applyFilters() {
+      filterCampaign = document.getElementById('filter-campaign').value;
+      filterAdgroup = document.getElementById('filter-adgroup').value;
+      if (currentTab === 'keywords' && kwData) renderKeywordTab(kwData);
+      if (currentTab === 'adgroups' && adgroupData) renderAdgroupTab(adgroupData);
+      if (currentTab === 'hourly' && hourlyData) renderHourlyTab(hourlyData);
+    }
+
+    function clearFilters() {
+      document.getElementById('filter-campaign').value = '';
+      document.getElementById('filter-adgroup').value = '';
+      filterCampaign = '';
+      filterAdgroup = '';
+      applyFilters();
+    }
+
+    function filterItems(items) {
+      return items.filter(function(item) {
+        if (filterCampaign && item.campaignName !== filterCampaign) return false;
+        if (filterAdgroup && item.adgroupName !== filterAdgroup) return false;
+        return true;
+      });
+    }
+
     function resetTabs() { for (const k in tabLoaded) tabLoaded[k] = false; }
 
     let currentTab = 'summary';
     function switchTab(name) {
       currentTab = name;
+      updateFilterBar();
       document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
       document.getElementById('tab-'+name).style.display = 'block';
       document.querySelectorAll('.dash-tab').forEach(b => {
@@ -1924,6 +2078,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           if (!json.ok) throw new Error(json.error);
           kwData = json;
           tabLoaded.keywords = true;
+          populateFilterOptions();
         } catch(e) { wrap.innerHTML = '<div class="empty">키워드 조회 실패: '+e.message+'</div>'; return; }
       }
       renderKeywordTab(kwData);
@@ -1937,13 +2092,14 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none">';
       html += '<input type="checkbox" id="kw-filter-clk" '+(kwFilterClk?'checked':'')+' style="cursor:pointer;width:16px;height:16px;accent-color:#2563eb"> ';
       html += '<span>클릭 1 미만 키워드 숨기기</span></label>';
-      var plF = kwFilterClk ? (d.powerlink||[]).filter(function(k){return k.clk>=1}) : (d.powerlink||[]);
-      var spF = kwFilterClk ? (d.shopping||[]).filter(function(k){return k.clk>=1}) : (d.shopping||[]);
-      var otF = kwFilterClk ? (d.other||[]).filter(function(k){return k.clk>=1}) : (d.other||[]);
+      var plF = filterItems(kwFilterClk ? (d.powerlink||[]).filter(function(k){return k.clk>=1}) : (d.powerlink||[]));
+      var spF = filterItems(kwFilterClk ? (d.shopping||[]).filter(function(k){return k.clk>=1}) : (d.shopping||[]));
+      var otF = filterItems(kwFilterClk ? (d.other||[]).filter(function(k){return k.clk>=1}) : (d.other||[]));
       var totalAll = (d.powerlinkTotal||0)+(d.shoppingTotal||0)+(d.otherTotal||0);
       var shownAll = plF.length+spF.length+otF.length;
       if (kwFilterClk) html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+shownAll+'개 / 전체: '+totalAll+'개</span>';
       html += '<button id="kw-col-settings-btn" class="btn btn-outline" style="'+(kwFilterClk?'':'margin-left:auto;')+'font-size:12px;padding:6px 12px;white-space:nowrap">⚙ 열 설정</button>';
+      html += '<button class="btn btn-outline" style="font-size:12px;padding:6px 12px;white-space:nowrap" onclick="downloadKwCSV()">📥 다운로드</button>';
       html += '</div>';
       // 파워링크
       html += kwSection('파워링크', plF, d.powerlinkTotal, 'powerlink');
@@ -2364,7 +2520,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('hourly-tab-content');
       let html = '';
       // 시간대별
-      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'hourly\\\', function(){ if(hourlyData) renderHourlyTab(hourlyData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div><div class="card-body" style="overflow-x:auto">';
+      html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span><div style="display:flex;align-items:center;gap:8px"><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'hourly\\\', function(){ if(hourlyData) renderHourlyTab(hourlyData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button><button class="btn btn-outline btn-sm" onclick="downloadHourlyCSV()" style="font-size:11px;padding:5px 10px">📥 다운로드</button></div></div><div class="card-body" style="overflow-x:auto">';
       var maxCost = Math.max.apply(null, d.byHour.map(function(h){return h.cost}).concat([1]));
       var hCols = getVisibleCols('hourly');
       html += '<table><thead><tr><th>시간</th>';
@@ -2405,6 +2561,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         tabLoaded.target = true;
+        deviceData = json;
         renderDeviceTab(json);
       } catch(e) { wrap.innerHTML = '<div class="empty">타겟별 조회 실패: '+e.message+'</div>'; }
     }
@@ -2427,7 +2584,8 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           +'<div><div style="font-size:11px;color:#94a3b8">ROAS</div><div style="font-size:18px;font-weight:700;color:'+(data.roas>=100?'#16a34a':'#ef4444')+'">'+data.roas+'%</div></div>'
           +'</div></div></div>';
       }
-      let html = '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">';
+      let html = '<div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:8px"><button class="btn btn-outline btn-sm" onclick="downloadDeviceCSV()" style="font-size:11px;padding:5px 10px">📥 다운로드</button></div>';
+      html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">';
       html += devCard('PC', '🖥', d.pc, '#3b82f6');
       html += devCard('모바일', '📱', d.mobile, '#f59e0b');
       html += '</div>';
@@ -2490,7 +2648,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       html += '</div></div>';
 
       // 전체 지역 테이블 (열 설정 적용)
-      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'regional\\\', function(){ if(regionalData) renderRegionalTab(regionalData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += '<div class="card"><div class="card-header"><span class="card-title">전체 지역 상세</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+regions.length+'개 지역</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'regional\\\', function(){ if(regionalData) renderRegionalTab(regionalData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button><button class="btn btn-outline btn-sm" onclick="downloadRegionalCSV()" style="font-size:11px;padding:5px 10px">📥 다운로드</button></div></div><div class="card-body" style="overflow-x:auto">';
       html += renderColTable('regional', regions);
       html += '</div></div>';
       wrap.innerHTML = html;
@@ -2505,6 +2663,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         tabLoaded.adgroups = true;
+        populateFilterOptions();
         renderAdgroupTab(json.adgroups);
       } catch(e) { wrap.innerHTML = '<div class="empty">광고그룹 조회 실패: '+e.message+'</div>'; }
     }
@@ -2514,8 +2673,9 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
       adgroupData = adgroups;
-      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+adgroups.length+'개 그룹</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div></div><div class="card-body" style="overflow-x:auto">';
-      html += renderColTable('adgroups', adgroups);
+      var filtered = filterItems(adgroups);
+      let html = '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span><div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#94a3b8">'+filtered.length+'개 그룹</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'adgroups\\\', function(){ if(adgroupData) renderAdgroupTab(adgroupData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button><button class="btn btn-outline btn-sm" onclick="downloadAdgroupCSV()" style="font-size:11px;padding:5px 10px">📥 다운로드</button></div></div><div class="card-body" style="overflow-x:auto">';
+      html += renderColTable('adgroups', filtered);
       html += '</div></div>';
       wrap.innerHTML = html;
     }
@@ -4278,7 +4438,17 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         label.textContent = enabled ? 'ON' : 'OFF';
         label.style.color = enabled ? '#16a34a' : '#94a3b8';
-        toast(enabled ? '자동 발송 활성화' : '자동 발송 비활성화');
+        if (json.updatedEmails) {
+          var emailsText = document.getElementById('emails-text');
+          if (emailsText) {
+            emailsText.innerHTML = json.updatedEmails.split(',').map(function(e) { return '<span class="badge badge-blue">' + e.trim() + '</span>'; }).join('');
+          }
+          var emailsInput = document.getElementById('emails-input');
+          if (emailsInput) emailsInput.value = json.updatedEmails;
+          toast((enabled ? '자동 발송 활성화' : '자동 발송 비활성화') + ' (수신 이메일 자동 추가)');
+        } else {
+          toast(enabled ? '자동 발송 활성화' : '자동 발송 비활성화');
+        }
       } catch(e) { toast(e.message, true); }
     }
 
@@ -4387,7 +4557,25 @@ router.post('/api/report/toggle-feat', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     await db.pool.query(`UPDATE ad_accounts SET ${feat} = $1 WHERE id = $2 AND user_id = $3`,
       [enabled ? 1 : 0, accountId, req.session.userId]);
-    res.json({ ok: true });
+
+    // 활성화 시 담당자 다우오피스 이메일 자동 추가
+    let updatedEmails = null;
+    if (enabled) {
+      try {
+        const smtp = await db.getSmtpCredentials(req.session.userId);
+        if (smtp && smtp.daou_email) {
+          const existing = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
+          if (!existing.includes(smtp.daou_email)) {
+            existing.push(smtp.daou_email);
+            updatedEmails = existing.join(', ');
+            await db.pool.query('UPDATE ad_accounts SET report_emails = $1 WHERE id = $2 AND user_id = $3',
+              [updatedEmails, accountId, req.session.userId]);
+          }
+        }
+      } catch (_) {}
+    }
+
+    res.json({ ok: true, updatedEmails });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
