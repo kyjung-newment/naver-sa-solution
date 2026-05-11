@@ -14,11 +14,13 @@ const BASE_PATH = '/apis/stats/v1/adAccounts';
 
 /**
  * 단일 페이지 호출 (저수준)
+ * endpoint: 'reportPerformance' (페이지네이션) | 'reportPerformanceDetail' (브레이크다운, 단일 응답)
  */
-function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath) {
+function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, endpoint) {
   return new Promise((resolve, reject) => {
     const search = new URLSearchParams(params).toString();
-    const path = `${BASE_PATH}/${adAccountNo}/stats/reportPerformance?${search}`;
+    const ep = endpoint || 'reportPerformance';
+    const path = `${BASE_PATH}/${adAccountNo}/stats/${ep}?${search}`;
     const referer = refererPath || `https://${BASE_HOST}/manage/ad-accounts/${adAccountNo}/da/report/performance`;
 
     const opts = {
@@ -117,14 +119,11 @@ async function fetchReportPerformance(args) {
     const params = {
       startDate, endDate,
       reportAdUnit,
-      audience,
-      placeUnit,
-      dateUnit,
       reportFilterListString: '[]',
       pageNumber: String(pageNumber),
       pageSize: String(pageSize),
     };
-    const json = await fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath);
+    const json = await fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, 'reportPerformance');
     const list = json.reportPerformanceDetailResponseList || [];
     allRows.push(...list);
     totalPage = json.totalPage || 1;
@@ -133,6 +132,52 @@ async function fetchReportPerformance(args) {
   } while (pageNumber <= totalPage);
 
   return allRows;
+}
+
+/**
+ * 브레이크다운 (성별/연령/매체) 호출 — reportPerformanceDetail 엔드포인트
+ *
+ * @param {object} args
+ *   adAccountNo, cookie
+ *   startDate, endDate
+ *   reportDimension: 'TOTAL'|'AGE'|'GENDER'|'AGE_AND_GENDER'|'DEVICE'|'DEVICE_AND_OS'
+ *   placeUnit: 'TOTAL'|'PLACEMENT_GROUP'|'PLACEMENT'  (생략 가능)
+ *   reportAdUnit: 보통 'AD_ACCOUNT'
+ */
+async function fetchReportPerformanceDetail(args) {
+  const {
+    adAccountNo, cookie,
+    startDate, endDate,
+    reportAdUnit = 'AD_ACCOUNT',
+    reportDimension = 'TOTAL',
+    placeUnit,
+    reportDateUnit = 'TOTAL',
+    refererPath,
+  } = args;
+
+  if (!cookie) throw new Error('DA 쿠키가 등록되지 않았습니다.');
+  if (!adAccountNo) throw new Error('DA 광고계정 번호 누락');
+
+  const xsrfToken = args.xsrfToken || extractXsrfFromCookie(cookie);
+  if (!xsrfToken) throw new Error('쿠키에 XSRF-TOKEN이 포함되지 않았습니다.');
+
+  const params = {
+    adUnitNo: String(adAccountNo),
+    startDate, endDate,
+    reportAdUnit,
+    reportDateUnit,
+    reportDimension,
+  };
+  if (placeUnit) params.placeUnit = placeUnit;
+
+  const json = await fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, 'reportPerformanceDetail');
+  // 응답 구조는 reportPerformance와 동일하다고 가정 (rsponseList)
+  // 만약 다르면 가능한 키 후보 모두 시도
+  return json.reportPerformanceDetailResponseList
+       || json.reportPerformanceResponseList
+       || json.reportList
+       || json.list
+       || (Array.isArray(json) ? json : []);
 }
 
 /**
@@ -190,6 +235,7 @@ function normalizeRow(r) {
 
 module.exports = {
   fetchReportPerformance,
+  fetchReportPerformanceDetail,
   normalizeRow,
   extractXsrfFromCookie,
 };

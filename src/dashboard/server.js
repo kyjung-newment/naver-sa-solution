@@ -1936,25 +1936,28 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
     if (!account.naver_cookie) return res.status(400).json({ ok: false, error: 'DA 쿠키 미등록' });
 
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
-    const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
-
-    // 탭별 파라미터 매핑
-    const paramMap = {
-      campaigns:  { reportAdUnit: 'CAMPAIGN', audience: 'TOTAL', placeUnit: 'TOTAL' },
-      adgroups:   { reportAdUnit: 'AD_SET',   audience: 'TOTAL', placeUnit: 'TOTAL' },
-      gender:     { reportAdUnit: 'AD_ACCOUNT', audience: 'GENDER', placeUnit: 'TOTAL' },
-      age:        { reportAdUnit: 'AD_ACCOUNT', audience: 'AGE',    placeUnit: 'TOTAL' },
-      placement:  { reportAdUnit: 'AD_ACCOUNT', audience: 'TOTAL', placeUnit: 'MEDIA_GROUP_AND_PLACE' },
-    };
-    if (!paramMap[tab]) return res.status(400).json({ ok: false, error: '알 수 없는 탭' });
-
+    const { fetchReportPerformance, fetchReportPerformanceDetail, normalizeRow } = require('../api/naverDaApi');
     const adAccountNo = account.da_account_no || account.customer_id;
-    const rows = await fetchReportPerformance({
+    const baseArgs = {
       adAccountNo,
       cookie: account.naver_cookie,
       startDate: dr.since, endDate: dr.until,
-      ...paramMap[tab],
-    });
+    };
+
+    let rows;
+    if (tab === 'campaigns') {
+      rows = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'CAMPAIGN' });
+    } else if (tab === 'adgroups') {
+      rows = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_SET' });
+    } else if (tab === 'gender') {
+      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'GENDER' });
+    } else if (tab === 'age') {
+      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'AGE' });
+    } else if (tab === 'placement') {
+      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'TOTAL', placeUnit: 'PLACEMENT_GROUP' });
+    } else {
+      return res.status(400).json({ ok: false, error: '알 수 없는 탭' });
+    }
     res.json({ ok: true, rows: rows.map(normalizeRow) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
