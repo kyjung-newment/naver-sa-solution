@@ -1547,12 +1547,201 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     var daCurrentTab = 'summary';
     var daTabLoaded = {};
     var daRawData = {}; // 탭별 원본 데이터 캐시 (CSV용)
-    var daCampFilter = []; // 그룹별 탭 캠페인 필터
 
     function daNum(v){return Number(v||0).toLocaleString('ko-KR')}
     function daWon(v){return '₩'+Number(v||0).toLocaleString('ko-KR')}
     function daPct(v){return Number(v||0).toFixed(2)+'%'}
     function daRoas(v){var n=Number(v||0);return '<span style="color:'+(n>=100?'#16a34a':'#ef4444')+';font-weight:600">'+n.toFixed(2)+'%</span>';}
+
+    // ─── DA 컬럼/정렬 프레임워크 (SA와 분리) ───
+    var DA_COL_DEFS = {};
+    var DA_COL_STATE = {};
+    var DA_SORT_STATE = {};
+    var DA_RERENDER = {};
+    function daRegisterCols(tabId, defaults){
+      DA_COL_DEFS[tabId] = defaults;
+      var defs = defaults.map(function(c){return Object.assign({}, c);});
+      try {
+        var saved = JSON.parse(localStorage.getItem('smartDa.colOrder.'+tabId)||'null');
+        if (Array.isArray(saved) && saved.length>0){
+          var byKey={}; defs.forEach(function(d){byKey[d.key]=d;});
+          var ordered=[], seen={};
+          saved.forEach(function(s){ if(byKey[s.key]){ var d=byKey[s.key]; if(typeof s.visible==='boolean') d.visible=s.visible; ordered.push(d); seen[s.key]=true; }});
+          defs.forEach(function(d){if(!seen[d.key]) ordered.push(d);});
+          defs = ordered;
+        }
+      } catch(e){}
+      DA_COL_STATE[tabId] = defs;
+    }
+    function daSaveCols(tabId){
+      try {
+        var snap = DA_COL_STATE[tabId].map(function(c){return {key:c.key, visible:c.visible!==false};});
+        localStorage.setItem('smartDa.colOrder.'+tabId, JSON.stringify(snap));
+      } catch(e){}
+    }
+    function daGetVisibleCols(tabId){ return (DA_COL_STATE[tabId]||[]).filter(function(c){return c.visible!==false;}); }
+    function daApplySort(tabId, items){
+      var st = DA_SORT_STATE[tabId];
+      if (!st || !st.field) return items;
+      var col = (DA_COL_DEFS[tabId]||[]).find(function(c){return c.key===st.field;});
+      var isStr = col && col.tp==='s';
+      var dir = st.dir==='asc'?1:-1;
+      return items.slice().sort(function(a,b){
+        var va=a[st.field], vb=b[st.field];
+        if (isStr) return ((va||'').toString().localeCompare((vb||'').toString())) * dir;
+        return ((Number(va)||0)-(Number(vb)||0)) * dir;
+      });
+    }
+    function daRenderColTable(tabId, items){
+      var cols = daGetVisibleCols(tabId);
+      var sorted = daApplySort(tabId, items);
+      var st = DA_SORT_STATE[tabId]||{};
+      var html = '<table style="table-layout:auto"><thead><tr>';
+      for (var i=0;i<cols.length;i++){
+        var c=cols[i]; var isR=c.tp==='n';
+        var arr = (st.field===c.key)?(st.dir==='asc'?' ▲':' ▼'):'';
+        html += '<th data-da-sort="'+tabId+'" data-sort-field="'+c.key+'" style="cursor:pointer;user-select:none;'+(isR?'text-align:right;':'')+'white-space:nowrap">'+c.label+arr+'</th>';
+      }
+      html += '</tr></thead><tbody>';
+      for (var j=0;j<sorted.length;j++){
+        var row=sorted[j];
+        html += '<tr>';
+        for (var k=0;k<cols.length;k++) html += cols[k].render(row);
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+    if (!window.__daSortBound){
+      window.__daSortBound = true;
+      document.addEventListener('click', function(e){
+        var th = e.target && (e.target.tagName==='TH' ? e.target : (e.target.closest && e.target.closest('th[data-da-sort]')));
+        if (!th || !th.dataset || !th.dataset.daSort) return;
+        var tabId=th.dataset.daSort; var field=th.dataset.sortField;
+        var st=DA_SORT_STATE[tabId];
+        if (st && st.field===field) st.dir = st.dir==='desc'?'asc':'desc';
+        else {
+          var col=(DA_COL_DEFS[tabId]||[]).find(function(c){return c.key===field;});
+          DA_SORT_STATE[tabId] = { field:field, dir: col && col.tp==='s' ? 'asc' : 'desc' };
+        }
+        var rer = DA_RERENDER[tabId]; if (typeof rer==='function') rer();
+      });
+    }
+    function daOpenColSettings(tabId, onApply){
+      var existing = document.getElementById('da-col-modal-'+tabId);
+      if (existing) existing.remove();
+      var working = (DA_COL_STATE[tabId]||[]).map(function(c){return {key:c.key, label:c.label, visible:c.visible!==false};});
+      var modal = document.createElement('div');
+      modal.id = 'da-col-modal-'+tabId;
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+      modal.innerHTML = '<div style="background:#fff;width:420px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e2e8f0">'
+        +   '<div><div style="font-size:16px;font-weight:700;color:#0f172a">열 맞춤 설정</div><div style="font-size:12px;color:#94a3b8;margin-top:2px">드래그 순서 변경, 체크 표시/숨김</div></div>'
+        +   '<button class="da-modal-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b;padding:0">×</button></div>'
+        + '<div class="da-modal-list" style="padding:12px 16px;overflow-y:auto;flex:1"></div>'
+        + '<div style="display:flex;gap:8px;justify-content:space-between;padding:14px 20px;border-top:1px solid #e2e8f0;background:#f8fafc">'
+        +   '<button class="da-modal-reset btn btn-outline" style="font-size:13px;padding:8px 14px">기본값 복원</button>'
+        +   '<div style="display:flex;gap:8px"><button class="da-modal-cancel btn btn-outline" style="font-size:13px;padding:8px 14px">취소</button>'
+        +   '<button class="da-modal-save btn btn-primary" style="font-size:13px;padding:8px 18px">적용</button></div>'
+        + '</div></div>';
+      document.body.appendChild(modal);
+      var listEl = modal.querySelector('.da-modal-list');
+      function renderList(){
+        listEl.innerHTML = working.map(function(c, idx){
+          return '<div class="da-col-row" draggable="true" data-idx="'+idx+'" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;background:#fff;cursor:move">'
+            + '<span style="color:#94a3b8;font-size:12px">⋮⋮</span>'
+            + '<input type="checkbox" '+(c.visible?'checked':'')+' data-vis-idx="'+idx+'" style="cursor:pointer;accent-color:#6366f1">'
+            + '<span style="flex:1;font-size:13px">'+c.label+'</span></div>';
+        }).join('');
+      }
+      renderList();
+      // 드래그 정렬
+      var dragIdx = null;
+      listEl.addEventListener('dragstart', function(e){ var r=e.target.closest('.da-col-row'); if(r){ dragIdx=parseInt(r.dataset.idx); e.dataTransfer.effectAllowed='move'; }});
+      listEl.addEventListener('dragover', function(e){ e.preventDefault(); });
+      listEl.addEventListener('drop', function(e){
+        e.preventDefault();
+        var r=e.target.closest('.da-col-row'); if(!r||dragIdx===null) return;
+        var dropIdx = parseInt(r.dataset.idx);
+        if (dragIdx===dropIdx) return;
+        var moved = working.splice(dragIdx,1)[0];
+        working.splice(dropIdx,0,moved);
+        dragIdx = null; renderList();
+      });
+      listEl.addEventListener('change', function(e){
+        if (e.target.matches('input[type=checkbox]')){ var i=parseInt(e.target.dataset.visIdx); if(working[i]) working[i].visible=e.target.checked; }
+      });
+      modal.querySelector('.da-modal-close').onclick = function(){ modal.remove(); };
+      modal.querySelector('.da-modal-cancel').onclick = function(){ modal.remove(); };
+      modal.querySelector('.da-modal-reset').onclick = function(){
+        working = (DA_COL_DEFS[tabId]||[]).map(function(c){return {key:c.key, label:c.label, visible:true};});
+        renderList();
+      };
+      modal.querySelector('.da-modal-save').onclick = function(){
+        var byKey = {}; (DA_COL_STATE[tabId]||[]).forEach(function(c){byKey[c.key]=c;});
+        var newDefs = working.map(function(w){ var d=byKey[w.key]; if(d){ d.visible=w.visible; return d;} return null; }).filter(Boolean);
+        DA_COL_STATE[tabId] = newDefs;
+        daSaveCols(tabId);
+        modal.remove();
+        if (typeof onApply==='function') onApply();
+      };
+    }
+
+    // ─── DA 컬럼 정의 ───
+    var DA_CAMPAIGN_COLS = [
+      { key:'campaignName', label:'캠페인', tp:'s', visible:true, render:function(r){
+        var b=''; if(r.campaignObjective){
+          var map={PMAX:['#dbeafe','#1e40af','PMAX'],CATALOG:['#fef3c7','#92400e','카탈로그'],CONVERSION:['#dcfce7','#166534','전환'],TRAFFIC:['#e0e7ff','#3730a3','트래픽'],REACH:['#fce7f3','#9f1239','도달'],VIDEO_VIEWS:['#ffedd5','#9a3412','동영상']};
+          var m=map[r.campaignObjective]||['#f1f5f9','#475569',r.campaignObjective];
+          b=' <span class="badge" style="background:'+m[0]+';color:'+m[1]+';font-size:10px;padding:1px 6px">'+m[2]+'</span>';
+        }
+        return '<td style="white-space:nowrap"><strong>'+(r.campaignName||'-')+'</strong>'+b+'</td>';
+      }},
+      { key:'imp', label:'노출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daNum(r.imp)+'</td>';}},
+      { key:'clk', label:'클릭', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>';}},
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daPct(r.ctr)+'</td>';}},
+      { key:'cost', label:'총비용', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daWon(r.cost)+'</td>';}},
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daWon(r.cpc)+'</td>';}},
+      { key:'convCount', label:'전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daNum(r.convCount)+'</td>';}},
+      { key:'purchaseConvCount', label:'구매전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>';}},
+      { key:'purchaseConvSales', label:'구매매출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>';}},
+      { key:'purchaseRoas', label:'구매ROAS', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daRoas(r.purchaseRoas)+'</td>';}},
+      { key:'resultCount', label:'결과', tp:'n', visible:false, render:function(r){return '<td style="text-align:right;white-space:nowrap;font-size:11px;color:#64748b">'+daNum(r.resultCount)+' '+(r.resultString||'')+'</td>';}},
+    ];
+    daRegisterCols('campaigns', DA_CAMPAIGN_COLS);
+
+    var DA_ADGROUP_COLS = [
+      { key:'campaignName', label:'캠페인', tp:'s', visible:true, render:function(r){return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(r.campaignName||'-')+'</td>';}},
+      { key:'adSetName', label:'광고그룹', tp:'s', visible:true, render:function(r){return '<td style="white-space:nowrap"><strong>'+(r.adSetName||r.assetGroupName||'-')+'</strong></td>';}},
+      { key:'imp', label:'노출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daNum(r.imp)+'</td>';}},
+      { key:'clk', label:'클릭', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>';}},
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daPct(r.ctr)+'</td>';}},
+      { key:'cost', label:'총비용', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daWon(r.cost)+'</td>';}},
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daWon(r.cpc)+'</td>';}},
+      { key:'convCount', label:'전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daNum(r.convCount)+'</td>';}},
+      { key:'purchaseConvCount', label:'구매전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>';}},
+      { key:'purchaseConvSales', label:'구매매출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>';}},
+      { key:'purchaseRoas', label:'구매ROAS', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;white-space:nowrap">'+daRoas(r.purchaseRoas)+'</td>';}},
+    ];
+    daRegisterCols('adgroups', DA_ADGROUP_COLS);
+
+    var DA_BREAKDOWN_COLS = [
+      { key:'_label', label:'구분', tp:'s', visible:true, render:function(r){return '<td><strong>'+(r._label||r._key||'-')+'</strong></td>';}},
+      { key:'imp', label:'노출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daNum(r.imp)+'</td>';}},
+      { key:'clk', label:'클릭', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>';}},
+      { key:'ctr', label:'CTR', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daPct(r.ctr)+'</td>';}},
+      { key:'cost', label:'총비용', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daWon(r.cost)+'</td>';}},
+      { key:'cpc', label:'CPC', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daWon(r.cpc)+'</td>';}},
+      { key:'convCount', label:'전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daNum(r.convCount)+'</td>';}},
+      { key:'purchaseConvCount', label:'구매전환', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>';}},
+      { key:'purchaseConvSales', label:'구매매출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>';}},
+      { key:'purchaseRoas', label:'구매ROAS', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>';}},
+      { key:'_costPct', label:'비용비중', tp:'n', visible:true, render:function(r){
+        var pct = r._costPct||0;
+        return '<td style="white-space:nowrap"><div style="display:flex;align-items:center;gap:6px"><div style="background:#e2e8f0;border-radius:4px;height:12px;width:80px;overflow:hidden"><div style="width:'+pct+'%;background:#3b82f6;height:100%"></div></div><span style="font-size:11px;color:#64748b">'+pct.toFixed(1)+'%</span></div></td>';
+      }},
+    ];
+    ['gender','age','placement'].forEach(function(t){ daRegisterCols(t, DA_BREAKDOWN_COLS); });
 
     // ── DA 다중 선택 위젯 ──
     function renderMultiSelect(opts){
@@ -1712,95 +1901,66 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         daRawData[tab] = json.rows;
         if (tab==='campaigns') daRenderCampaigns(json.rows);
         else if (tab==='adgroups') daRenderAdgroups(json.rows);
-        else if (tab==='gender') daRenderBreakdown(wrap, json.rows, 'gender', '성별', daGenderLabel);
-        else if (tab==='age') daRenderBreakdown(wrap, json.rows, 'ageGroup', '연령대', daAgeLabel, daAgeSortKey);
-        else if (tab==='placement') daRenderBreakdown(wrap, json.rows, 'publisherGroupCode', '매체/지면', function(v){return v||'알수없음';});
+        else if (tab==='gender') daRenderBreakdown(wrap, json.rows, 'gender', '성별', daGenderLabel, null, 'gender');
+        else if (tab==='age') daRenderBreakdown(wrap, json.rows, 'ageGroup', '연령대', daAgeLabel, daAgeSortKey, 'age');
+        else if (tab==='placement') daRenderBreakdown(wrap, json.rows, 'publisherGroupCode', '매체/지면', function(v){return v||'알수없음';}, null, 'placement');
       } catch(e){
         wrap.innerHTML = '<div class="empty" style="color:#ef4444">조회 실패: '+e.message+'</div>';
       }
     }
 
-    function daObjectiveBadge(o){
-      var map = {
-        PMAX: ['#dbeafe','#1e40af','PMAX'],
-        CATALOG: ['#fef3c7','#92400e','카탈로그'],
-        CONVERSION: ['#dcfce7','#166534','전환'],
-        TRAFFIC: ['#e0e7ff','#3730a3','트래픽'],
-        REACH: ['#fce7f3','#9f1239','도달'],
-        VIDEO_VIEWS: ['#ffedd5','#9a3412','동영상'],
-      };
-      var m = map[o] || ['#f1f5f9','#475569', o||''];
-      return '<span class="badge" style="background:'+m[0]+';color:'+m[1]+';margin-left:6px;font-size:10px;padding:1px 6px">'+m[2]+'</span>';
-    }
-
+    var daCampaignsFilter = []; // 캠페인별 탭 필터 (캠페인명 다중)
     function daRenderCampaigns(rows){
       var wrap = document.getElementById('da-campaigns-content');
       if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">캠페인 데이터가 없습니다.</div>'; return; }
-      var html = '<div class="card"><div class="card-header"><span class="card-title">캠페인별 성과 ('+rows.length+'개)</span></div>'+
-        '<div class="card-body" style="overflow-x:auto"><table><thead><tr>'+
-        '<th>캠페인</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
-        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
-        '<th style="text-align:right">CPC</th><th style="text-align:right">전환</th>'+
-        '<th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th>'+
-        '<th style="text-align:right">구매ROAS</th><th style="text-align:right">결과</th>'+
-        '</tr></thead><tbody>';
-      rows.forEach(function(r){
-        html += '<tr>'+
-          '<td><strong>'+(r.campaignName||'-')+'</strong>'+daObjectiveBadge(r.campaignObjective)+'</td>'+
-          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
-          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
-          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
-          '<td style="text-align:right">'+daNum(r.convCount)+'</td>'+
-          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
-          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
-          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
-          '<td style="text-align:right;font-size:11px;color:#64748b">'+daNum(r.resultCount)+' '+(r.resultString||'')+'</td>'+
-          '</tr>';
-      });
-      html += '</tbody></table></div></div>';
+      DA_RERENDER['campaigns'] = function(){ if (daRawData.campaigns) daRenderCampaigns(daRawData.campaigns); };
+      var campOpts = rows.map(function(r){return {id:r.campaignName, name:r.campaignName};});
+      var filtered = (!daCampaignsFilter.length) ? rows : rows.filter(function(r){return daCampaignsFilter.indexOf(r.campaignName)>=0;});
+      var html = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
+      html += renderMultiSelect({ id:'da-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:daCampaignsFilter.slice() });
+      html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+rows.length+'개</span>';
+      html += '<button class="btn btn-outline btn-sm" onclick="daOpenColSettings(\\\'campaigns\\\', function(){ if(daRawData.campaigns) daRenderCampaigns(daRawData.campaigns); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button>';
+      html += '</div>';
+      html += '<div class="card"><div class="card-header"><span class="card-title">캠페인별 성과 ('+filtered.length+'개)</span></div><div class="card-body" style="overflow-x:auto">';
+      html += daRenderColTable('campaigns', filtered);
+      html += '</div></div>';
       wrap.innerHTML = html;
+      bindMultiSelect('da-camp-filter', function(sel){ daCampaignsFilter=sel; daRenderCampaigns(daRawData.campaigns); });
     }
 
+    var daAgCampFilter = []; // 그룹별 탭 - 캠페인 필터
+    var daAgFilter = [];     // 그룹별 탭 - 광고그룹 필터
     function daRenderAdgroups(rows){
       var wrap = document.getElementById('da-adgroups-content');
       if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
-      // 캠페인 필터 옵션
-      var campSet = {};
-      rows.forEach(function(r){ if(r.campaignName) campSet[r.campaignName]=true; });
-      var campOpts = Object.keys(campSet).sort().map(function(n){return {id:n, name:n};});
-      var filtered = (!daCampFilter.length) ? rows : rows.filter(function(r){return daCampFilter.indexOf(r.campaignName)>=0;});
+      DA_RERENDER['adgroups'] = function(){ if (daRawData.adgroups) daRenderAdgroups(daRawData.adgroups); };
+      // 캠페인 옵션
+      var campMap = {};
+      rows.forEach(function(r){ if(r.campaignName && !campMap[r.campaignName]) campMap[r.campaignName]=true; });
+      var campOpts = Object.keys(campMap).sort().map(function(n){return {id:n,name:n};});
+      // 캠페인 필터 적용 후 그룹 옵션
+      var afterCamp = (!daAgCampFilter.length) ? rows : rows.filter(function(r){return daAgCampFilter.indexOf(r.campaignName)>=0;});
+      var agSet = {};
+      afterCamp.forEach(function(r){ var n=r.adSetName||r.assetGroupName; if(n && !agSet[n]) agSet[n]=true; });
+      var agOpts = Object.keys(agSet).sort().map(function(n){return {id:n,name:n};});
+      daAgFilter = daAgFilter.filter(function(n){return !!agSet[n];});
+      var filtered = afterCamp.filter(function(r){
+        if (daAgFilter.length) { var n=r.adSetName||r.assetGroupName; if(daAgFilter.indexOf(n)<0) return false; }
+        return true;
+      });
+
       var html = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
-      html += renderMultiSelect({ id:'da-ag-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:daCampFilter.slice() });
+      html += renderMultiSelect({ id:'da-ag-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:daAgCampFilter.slice() });
+      html += renderMultiSelect({ id:'da-ag-ag-filter', placeholder:'전체 광고그룹', items:agOpts, selected:daAgFilter.slice() });
       html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+rows.length+'개</span>';
+      html += '<button class="btn btn-outline btn-sm" onclick="daOpenColSettings(\\\'adgroups\\\', function(){ if(daRawData.adgroups) daRenderAdgroups(daRawData.adgroups); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button>';
       html += '</div>';
       html += '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span></div><div class="card-body" style="overflow-x:auto">';
-      html += '<table><thead><tr>'+
-        '<th>캠페인</th><th>광고그룹</th>'+
-        '<th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
-        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
-        '<th style="text-align:right">CPC</th><th style="text-align:right">전환</th>'+
-        '<th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th>'+
-        '<th style="text-align:right">구매ROAS</th></tr></thead><tbody>';
-      filtered.forEach(function(r){
-        html += '<tr>'+
-          '<td style="font-size:12px;color:#6b7280">'+(r.campaignName||'-')+'</td>'+
-          '<td><strong>'+(r.adSetName||r.assetGroupName||'-')+'</strong></td>'+
-          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
-          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
-          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
-          '<td style="text-align:right">'+daNum(r.convCount)+'</td>'+
-          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
-          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
-          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
-          '</tr>';
-      });
-      html += '</tbody></table></div></div>';
+      html += daRenderColTable('adgroups', filtered);
+      html += '</div></div>';
       wrap.innerHTML = html;
-      bindMultiSelect('da-ag-camp-filter', function(sel){ daCampFilter=sel; daRenderAdgroups(daRawData.adgroups); });
+      bindMultiSelect('da-ag-camp-filter', function(sel){ daAgCampFilter=sel; daRenderAdgroups(daRawData.adgroups); });
+      bindMultiSelect('da-ag-ag-filter', function(sel){ daAgFilter=sel; daRenderAdgroups(daRawData.adgroups); });
     }
 
     function daGenderLabel(g){
@@ -1818,15 +1978,14 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
       return m ? parseInt(m[1]) : 9998;
     }
 
-    function daRenderBreakdown(wrap, rows, key, label, fmtKey, sortKeyFn){
-      if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">'+label+' 데이터가 없습니다.</div>'; return; }
-      // 같은 키로 합산 (캠페인별로 쪼개진 행을 합침)
+    function daBuildBreakdownArr(rows, key, fmtKey, sortKeyFn){
       var byKey = {};
       rows.forEach(function(r){
         var k = r[key] || '_unknown';
-        if (!byKey[k]) byKey[k] = { _key:k, imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 };
+        if (!byKey[k]) byKey[k] = { _key:k, _label:fmtKey(k), imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 };
         byKey[k].imp += r.imp; byKey[k].clk += r.clk; byKey[k].cost += r.cost;
-        byKey[k].convCount += r.convCount; byKey[k].purchaseConvCount += r.purchaseConvCount;
+        byKey[k].convCount += r.convCount;
+        byKey[k].purchaseConvCount += r.purchaseConvCount;
         byKey[k].purchaseConvSales += r.purchaseConvSales;
       });
       var arr = Object.values(byKey).map(function(d){
@@ -1835,39 +1994,52 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         d.purchaseRoas = d.cost>0 ? d.purchaseConvSales/d.cost*100 : 0;
         return d;
       });
-      // 정렬: sortKeyFn 있으면 그걸로 오름차순, 없으면 비용 내림차순
-      if (typeof sortKeyFn === 'function') {
+      var totalCost = arr.reduce(function(s,r){return s+r.cost;},0) || 1;
+      arr.forEach(function(r){ r._costPct = r.cost/totalCost*100; });
+      // 디폴트 정렬 (sortKeyFn이 있고 사용자 정렬이 없을 때만 적용)
+      if (typeof sortKeyFn === 'function' && !DA_SORT_STATE['__currentBreakdownTab__']) {
         arr.sort(function(a,b){ return sortKeyFn(a._key) - sortKeyFn(b._key); });
-      } else {
+      } else if (!DA_SORT_STATE['__currentBreakdownTab__']) {
         arr.sort(function(a,b){return b.cost-a.cost;});
       }
+      return arr;
+    }
+    function daRenderBreakdown(wrap, rows, key, label, fmtKey, sortKeyFn, tabId){
+      if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">'+label+' 데이터가 없습니다.</div>'; return; }
+      DA_RERENDER[tabId] = function(){ if (daRawData[tabId]) daRenderBreakdown(wrap, daRawData[tabId], key, label, fmtKey, sortKeyFn, tabId); };
+      // 사용자가 정렬을 지정하지 않았다면 디폴트 정렬 함수 사용
+      var arr = (function(){
+        var byKey = {};
+        rows.forEach(function(r){
+          var k = r[key] || '_unknown';
+          if (!byKey[k]) byKey[k] = { _key:k, _label:fmtKey(k), imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 };
+          byKey[k].imp += r.imp; byKey[k].clk += r.clk; byKey[k].cost += r.cost;
+          byKey[k].convCount += r.convCount;
+          byKey[k].purchaseConvCount += r.purchaseConvCount;
+          byKey[k].purchaseConvSales += r.purchaseConvSales;
+        });
+        var a = Object.values(byKey).map(function(d){
+          d.ctr = d.imp>0 ? d.clk/d.imp*100 : 0;
+          d.cpc = d.clk>0 ? Math.round(d.cost/d.clk) : 0;
+          d.purchaseRoas = d.cost>0 ? d.purchaseConvSales/d.cost*100 : 0;
+          return d;
+        });
+        var totalCost = a.reduce(function(s,r){return s+r.cost;},0) || 1;
+        a.forEach(function(r){ r._costPct = r.cost/totalCost*100; });
+        // 사용자가 정렬 안 했으면 디폴트 (연령은 sortKeyFn, 나머지는 비용 내림)
+        if (!DA_SORT_STATE[tabId]) {
+          if (typeof sortKeyFn==='function') a.sort(function(x,y){return sortKeyFn(x._key)-sortKeyFn(y._key);});
+          else a.sort(function(x,y){return y.cost-x.cost;});
+        }
+        return a;
+      })();
 
-      var totalCost = arr.reduce(function(s,r){return s+r.cost;},0) || 1;
-      var html = '<div class="card"><div class="card-header"><span class="card-title">'+label+'별 성과 ('+arr.length+'개)</span></div>'+
-        '<div class="card-body" style="overflow-x:auto"><table><thead><tr>'+
-        '<th>'+label+'</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
-        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
-        '<th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th>'+
-        '<th style="text-align:right">구매매출</th><th style="text-align:right">구매ROAS</th>'+
-        '<th style="width:100px">비용비중</th></tr></thead><tbody>';
-      arr.forEach(function(r){
-        var pct = (r.cost/totalCost*100).toFixed(1);
-        html += '<tr>'+
-          '<td><strong>'+fmtKey(r._key)+'</strong></td>'+
-          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
-          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
-          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
-          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
-          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
-          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
-          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
-          '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden">'+
-          '<div style="width:'+pct+'%;background:#3b82f6;height:100%"></div></div>'+
-          '<div style="font-size:10px;color:#64748b;text-align:right;margin-top:2px">'+pct+'%</div></td>'+
-          '</tr>';
-      });
-      html += '</tbody></table></div></div>';
+      var html = '<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-bottom:12px">';
+      html += '<button class="btn btn-outline btn-sm" onclick="daOpenColSettings(\\\''+tabId+'\\\', function(){ if(daRawData[\\\''+tabId+'\\\']) DA_RERENDER[\\\''+tabId+'\\\'](); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button>';
+      html += '</div>';
+      html += '<div class="card"><div class="card-header"><span class="card-title">'+label+'별 성과 ('+arr.length+'개)</span></div><div class="card-body" style="overflow-x:auto">';
+      html += daRenderColTable(tabId, arr);
+      html += '</div></div>';
       wrap.innerHTML = html;
     }
 
@@ -2924,18 +3096,35 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       };
     }
 
+    var TAB_SORT_STATE = {};
+    var TAB_RERENDER = {};
+    function applyTabSort(tabId, items) {
+      var st = TAB_SORT_STATE[tabId];
+      if (!st || !st.field) return items;
+      var col = (TAB_COL_DEFS[tabId] || []).find(function(c){ return c.key === st.field; });
+      var isStr = col && col.tp === 's';
+      var dir = st.dir === 'asc' ? 1 : -1;
+      return items.slice().sort(function(a, b){
+        var va = a[st.field], vb = b[st.field];
+        if (isStr) return ((va||'').toString().localeCompare((vb||'').toString())) * dir;
+        return ((Number(va)||0) - (Number(vb)||0)) * dir;
+      });
+    }
     function renderColTable(tabId, items, opts) {
       opts = opts || {};
       var cols = getVisibleCols(tabId);
+      var sorted = applyTabSort(tabId, items);
+      var st = TAB_SORT_STATE[tabId] || {};
       var html = '<table style="table-layout:auto"><thead><tr>';
       if (opts.showIndex !== false) html += '<th style="width:30px">#</th>';
       for (var i = 0; i < cols.length; i++) {
         var c = cols[i]; var isR = c.tp === 'n';
-        html += '<th style="'+(isR?'text-align:right;':'')+'white-space:nowrap">'+c.label+'</th>';
+        var arrow = (st.field === c.key) ? (st.dir === 'asc' ? ' ▲' : ' ▼') : '';
+        html += '<th data-tab-sort="'+tabId+'" data-sort-field="'+c.key+'" style="cursor:pointer;user-select:none;'+(isR?'text-align:right;':'')+'white-space:nowrap">'+c.label+arrow+'</th>';
       }
       html += '</tr></thead><tbody>';
-      for (var j = 0; j < items.length; j++) {
-        var row = items[j];
+      for (var j = 0; j < sorted.length; j++) {
+        var row = sorted[j];
         html += '<tr>';
         if (opts.showIndex !== false) html += '<td style="color:#94a3b8;text-align:center">'+(j+1)+'</td>';
         for (var k = 0; k < cols.length; k++) html += cols[k].render(row);
@@ -2943,6 +3132,25 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       }
       html += '</tbody></table>';
       return html;
+    }
+    // 헤더 클릭 → 정렬 토글 (한 번만 바인딩)
+    if (!window.__tabSortBound) {
+      window.__tabSortBound = true;
+      document.addEventListener('click', function(e){
+        var th = e.target && (e.target.tagName==='TH' ? e.target : (e.target.closest && e.target.closest('th[data-tab-sort]')));
+        if (!th || !th.dataset || !th.dataset.tabSort) return;
+        var tabId = th.dataset.tabSort;
+        var field = th.dataset.sortField;
+        var st = TAB_SORT_STATE[tabId];
+        if (st && st.field === field) {
+          st.dir = st.dir === 'desc' ? 'asc' : 'desc';
+        } else {
+          var col = (TAB_COL_DEFS[tabId] || []).find(function(c){ return c.key === field; });
+          TAB_SORT_STATE[tabId] = { field: field, dir: col && col.tp === 's' ? 'asc' : 'desc' };
+        }
+        var rer = TAB_RERENDER[tabId];
+        if (typeof rer === 'function') rer();
+      });
     }
 
     // ═══ 시간대별 탭 컬럼 정의 ═══
@@ -3010,15 +3218,33 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
     function renderHourlyTab(d) {
       const wrap = document.getElementById('hourly-tab-content');
+      TAB_RERENDER['hourly'] = function(){ if (hourlyData) renderHourlyTab(hourlyData); };
       let html = '';
+      var hCols = getVisibleCols('hourly');
+      var hSt = TAB_SORT_STATE['hourly'] || {};
+      function sortBy(arr, firstKey) {
+        if (!hSt.field) return arr;
+        if (hSt.field === '__first__') {
+          return arr.slice().sort(function(a,b){ return ((Number(a[firstKey])||0)-(Number(b[firstKey])||0)) * (hSt.dir==='asc'?1:-1); });
+        }
+        var col = (TAB_COL_DEFS['hourly'] || []).find(function(c){return c.key===hSt.field;});
+        var isStr = col && col.tp === 's';
+        return arr.slice().sort(function(a,b){
+          var va=a[hSt.field], vb=b[hSt.field];
+          if (isStr) return ((va||'').toString().localeCompare((vb||'').toString())) * (hSt.dir==='asc'?1:-1);
+          return ((Number(va)||0)-(Number(vb)||0)) * (hSt.dir==='asc'?1:-1);
+        });
+      }
+      function arrow(field){ return hSt.field===field ? (hSt.dir==='asc'?' ▲':' ▼') : ''; }
+
       // 시간대별
       html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">시간대별 성과</span><button class="btn btn-outline btn-sm" onclick="openColSettings(\\\'hourly\\\', function(){ if(hourlyData) renderHourlyTab(hourlyData); })" style="font-size:11px;padding:5px 10px">⚙ 열 설정</button></div><div class="card-body" style="overflow-x:auto">';
-      var maxCost = Math.max.apply(null, d.byHour.map(function(h){return h.cost}).concat([1]));
-      var hCols = getVisibleCols('hourly');
-      html += '<table><thead><tr><th>시간</th>';
-      for (var i=0;i<hCols.length;i++) html += '<th style="'+(hCols[i].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i].label+'</th>';
+      var sortedHour = sortBy(d.byHour || [], 'hour');
+      var maxCost = Math.max.apply(null, (d.byHour||[]).map(function(h){return h.cost}).concat([1]));
+      html += '<table><thead><tr><th data-tab-sort="hourly" data-sort-field="__first__" style="cursor:pointer;user-select:none">시간'+arrow('__first__')+'</th>';
+      for (var i=0;i<hCols.length;i++) html += '<th data-tab-sort="hourly" data-sort-field="'+hCols[i].key+'" style="cursor:pointer;user-select:none;'+(hCols[i].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i].label+arrow(hCols[i].key)+'</th>';
       html += '<th style="width:120px">비용비중</th></tr></thead><tbody>';
-      d.byHour.forEach(function(h) {
+      sortedHour.forEach(function(h) {
         var barW = Math.max((h.cost/maxCost)*100, 1);
         html += '<tr><td style="font-weight:600">'+String(h.hour).padStart(2,'0')+':00</td>';
         for (var j=0;j<hCols.length;j++) html += hCols[j].render(h);
@@ -3029,11 +3255,12 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
       // 요일별
       html += '<div class="card"><div class="card-header"><span class="card-title">요일별 성과</span></div><div class="card-body" style="overflow-x:auto">';
-      var maxDayCost = Math.max.apply(null, d.byDay.map(function(d2){return d2.cost}).concat([1]));
-      html += '<table><thead><tr><th>요일</th>';
-      for (var i2=0;i2<hCols.length;i2++) html += '<th style="'+(hCols[i2].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i2].label+'</th>';
+      var sortedDay = sortBy(d.byDay || [], 'dayIdx');
+      var maxDayCost = Math.max.apply(null, (d.byDay||[]).map(function(d2){return d2.cost}).concat([1]));
+      html += '<table><thead><tr><th data-tab-sort="hourly" data-sort-field="__first__" style="cursor:pointer;user-select:none">요일'+arrow('__first__')+'</th>';
+      for (var i2=0;i2<hCols.length;i2++) html += '<th data-tab-sort="hourly" data-sort-field="'+hCols[i2].key+'" style="cursor:pointer;user-select:none;'+(hCols[i2].tp==='n'?'text-align:right;':'')+'white-space:nowrap">'+hCols[i2].label+arrow(hCols[i2].key)+'</th>';
       html += '<th style="width:120px">비용비중</th></tr></thead><tbody>';
-      d.byDay.forEach(function(day) {
+      sortedDay.forEach(function(day) {
         var barW = Math.max((day.cost/maxDayCost)*100, 1);
         html += '<tr><td style="font-weight:600">'+day.day+'요일</td>';
         for (var j2=0;j2<hCols.length;j2++) html += hCols[j2].render(day);
@@ -3118,6 +3345,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('campaigns-tab-content');
       if (!campaigns || !campaigns.length) { wrap.innerHTML = '<div class="empty">캠페인 데이터가 없습니다.</div>'; return; }
       campaignData = campaigns;
+      TAB_RERENDER['campaigns'] = function(){ if (campaignData) renderCampaignTab(campaignData); };
 
       var filtered = (!campFilterIds.length) ? campaigns : campaigns.filter(function(c){ return campFilterIds.indexOf(String(c.campaignId)) >= 0; });
 
@@ -3257,6 +3485,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('adgroups-tab-content');
       if (!adgroups?.length) { wrap.innerHTML = '<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
       adgroupData = adgroups;
+      TAB_RERENDER['adgroups'] = function(){ if (adgroupData) renderAdgroupTab(adgroupData); };
 
       // 캠페인 옵션
       var campMap = {};
