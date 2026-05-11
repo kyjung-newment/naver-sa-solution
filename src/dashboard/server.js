@@ -1554,6 +1554,67 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     function daPct(v){return Number(v||0).toFixed(2)+'%'}
     function daRoas(v){var n=Number(v||0);return '<span style="color:'+(n>=100?'#16a34a':'#ef4444')+';font-weight:600">'+n.toFixed(2)+'%</span>';}
 
+    // ── DA 다중 선택 위젯 ──
+    function renderMultiSelect(opts){
+      var label = opts.placeholder;
+      if (opts.selected.length > 0) label = opts.selected.length + '개 선택됨';
+      var maxLen = Math.max.apply(null, opts.items.map(function(it){ return (it.name || it.id || '').length; }).concat([20]));
+      var winW = (typeof window !== 'undefined' ? window.innerWidth : 1200);
+      var popWidth = Math.min(Math.max(maxLen * 14 + 60, 380), Math.round(winW * 0.9));
+      var html = '<div class="ms-wrap" id="'+opts.id+'-wrap" style="position:relative;display:inline-block">';
+      html += '<button type="button" id="'+opts.id+'-btn" style="border:1px solid #e2e8f0;border-radius:6px;padding:5px 12px;font-size:12px;background:#fff;cursor:pointer;min-width:160px;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:8px"><span>'+label+'</span><span style="color:#94a3b8;font-size:10px">▼</span></button>';
+      html += '<div id="'+opts.id+'-pop" class="ms-pop" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);z-index:1000;width:'+popWidth+'px;max-width:90vw">';
+      html += '<div style="padding:8px;border-bottom:1px solid #e2e8f0;display:flex;gap:6px;align-items:center">';
+      html += '<input type="text" id="'+opts.id+'-search" placeholder="검색..." style="flex:1;min-width:120px;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">';
+      html += '<button type="button" data-act="all" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">전체</button>';
+      html += '<button type="button" data-act="none" style="padding:4px 10px;font-size:11px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;white-space:nowrap">해제</button>';
+      html += '<button type="button" data-act="close" title="닫기" style="padding:4px 8px;font-size:14px;line-height:1;background:#fff;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;color:#64748b">×</button>';
+      html += '</div>';
+      html += '<div id="'+opts.id+'-list" style="max-height:320px;overflow-y:auto;overflow-x:hidden;padding:4px 0">';
+      opts.items.forEach(function(it){
+        var checked = opts.selected.indexOf(it.id) >= 0;
+        html += '<label class="ms-item" data-name="'+(it.name||'').toLowerCase().replace(/"/g,'&quot;')+'" style="display:grid;grid-template-columns:18px 1fr;align-items:center;gap:10px;padding:6px 14px;font-size:12px;cursor:pointer">';
+        html += '<input type="checkbox" value="'+String(it.id).replace(/"/g,'&quot;')+'" '+(checked?'checked':'')+' style="cursor:pointer;accent-color:#6366f1;width:16px;height:16px;margin:0">';
+        html += '<span style="text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(it.name||it.id)+'</span></label>';
+      });
+      html += '</div>';
+      html += '<div style="padding:8px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:6px">';
+      html += '<button type="button" data-act="apply" style="padding:5px 14px;font-size:12px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">적용</button>';
+      html += '</div></div></div>';
+      return html;
+    }
+    function bindMultiSelect(id, onApply){
+      var wrap = document.getElementById(id+'-wrap');
+      if (!wrap) return;
+      var btn = document.getElementById(id+'-btn');
+      var pop = document.getElementById(id+'-pop');
+      var search = document.getElementById(id+'-search');
+      var list = document.getElementById(id+'-list');
+      function closeOthers(){ document.querySelectorAll('.ms-pop').forEach(function(p){ if(p.id!==id+'-pop') p.style.display='none'; }); }
+      function show(){ closeOthers(); pop.style.display='block'; setTimeout(function(){search&&search.focus();},50); }
+      function hide(){ pop.style.display='none'; }
+      btn.onclick = function(e){ e.stopPropagation(); pop.style.display==='block'?hide():show(); };
+      var onDoc = function(e){ if (!wrap.contains(e.target)) hide(); };
+      document.addEventListener('click', onDoc);
+      if (search) search.oninput = function(){
+        var q = search.value.toLowerCase();
+        list.querySelectorAll('.ms-item').forEach(function(el){ el.style.display = (!q || (el.dataset.name||'').indexOf(q)>=0) ? '' : 'none'; });
+      };
+      pop.querySelectorAll('button[data-act]').forEach(function(b){
+        b.onclick = function(e){
+          e.stopPropagation();
+          var act = b.dataset.act;
+          if (act==='all') list.querySelectorAll('input[type=checkbox]').forEach(function(c){ if(c.closest('.ms-item').style.display!=='none') c.checked=true; });
+          else if (act==='none') list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=false;});
+          else if (act==='close') hide();
+          else if (act==='apply'){
+            var sel=[]; list.querySelectorAll('input[type=checkbox]:checked').forEach(function(c){sel.push(c.value);});
+            hide(); document.removeEventListener('click', onDoc); onApply(sel);
+          }
+        };
+      });
+    }
+
     function daPeriodParams(){
       var p = 'period='+daPeriod;
       if (daPeriod==='custom') p += '&startDate='+daCustomStart+'&endDate='+daCustomEnd;
