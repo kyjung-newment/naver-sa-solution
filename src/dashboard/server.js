@@ -1465,33 +1465,439 @@ router.delete('/accounts/:id', requireLogin, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── DA 성과 대시보드 (준비 중 placeholder) ─────────────────────────
+// ─── DA 성과 대시보드 ──────────────────────────────────────────────
 router.get('/da-dashboard', requireLogin, async (req, res) => {
   const user = await getUser(req);
+  const layoutOpts = await getLayoutOpts(req);
+  const selId = layoutOpts.selectedAccountId || '';
+  const selAccount = selId ? (layoutOpts.accounts || []).find(a => String(a.id) === String(selId)) : null;
+
+  // DA 미설정 안내
+  if (!selAccount) {
+    return res.send(appLayout('DA 성과 대시보드', `
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:32px;text-align:center;color:#64748b">
+        사이드바에서 DA가 활성화된 광고주를 선택해주세요.
+      </div>`, user, 'da-dashboard', layoutOpts));
+  }
+  if (!selAccount.has_da) {
+    return res.send(appLayout('DA 성과 대시보드', `
+      <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:12px;padding:32px;text-align:center;color:#78350f">
+        <div style="font-size:48px;margin-bottom:8px">📺</div>
+        <strong>${selAccount.name}</strong>은(는) DA가 활성화되지 않은 계정입니다.<br>
+        <a href="/smart-sa/accounts/${selAccount.id}/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 "광고 유형 → DA"를 체크해주세요.
+      </div>`, user, 'da-dashboard', layoutOpts));
+  }
+  if (!selAccount.naver_cookie || !selAccount.da_xsrf_token) {
+    return res.send(appLayout('DA 성과 대시보드', `
+      <div style="background:#fee2e2;border:1px solid #fecaca;border-radius:12px;padding:32px;text-align:center;color:#7f1d1d">
+        <div style="font-size:48px;margin-bottom:8px">🔒</div>
+        DA 연동 정보(쿠키 + XSRF Token)가 등록되지 않았습니다.<br>
+        <a href="/smart-sa/accounts/${selAccount.id}/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 등록해주세요.
+      </div>`, user, 'da-dashboard', layoutOpts));
+  }
+
   const content = `
-    <div style="display:flex;align-items:center;justify-content:center;min-height:60vh">
-      <div style="text-align:center;max-width:480px;padding:40px 24px">
-        <div style="font-size:64px;margin-bottom:16px">📺</div>
-        <h2 style="margin:0 0 12px 0;font-size:22px;color:#1e293b">DA 성과 대시보드</h2>
-        <div style="display:inline-block;background:#fef3c7;color:#92400e;font-size:12px;font-weight:600;padding:4px 12px;border-radius:9999px;margin-bottom:20px">준비 중</div>
-        <p style="color:#64748b;font-size:14px;line-height:1.7;margin:0 0 24px">
-          네이버 디스플레이 광고(DA) 성과 대시보드가<br>
-          곧 오픈됩니다. 같은 광고 계정 내 디스플레이 캠페인의<br>
-          노출/클릭/비용/전환 데이터를 한눈에 확인할 수 있습니다.
-        </p>
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px 20px;text-align:left">
-          <div style="font-size:13px;font-weight:600;color:#475569;margin-bottom:8px">출시 예정 기능</div>
-          <ul style="margin:0;padding-left:20px;font-size:13px;color:#64748b;line-height:1.9">
-            <li>캠페인/광고그룹/소재별 성과</li>
-            <li>디바이스/지면별 분석</li>
-            <li>일/주/월간 자동 리포트 발송</li>
-            <li>CSV 다운로드 + 다중 필터</li>
-          </ul>
+    <!-- 기간 선택 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="period-tabs">
+          <button class="period-btn active" data-period="yesterday">어제</button>
+          <button class="period-btn" data-period="7days">최근 7일</button>
+          <button class="period-btn" data-period="30days">최근 30일</button>
+          <button class="period-btn" data-period="lastMonth">전월</button>
+          <button class="period-btn" id="da-custom-period-btn" data-period="custom">기간 선택</button>
         </div>
+        <div id="da-custom-date-wrap" style="display:none;align-items:center;gap:6px">
+          <input type="date" id="da-date-start" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">
+          <span>~</span>
+          <input type="date" id="da-date-end" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">
+          <button class="btn btn-outline btn-sm" onclick="daApplyCustomDate()">적용</button>
+        </div>
+        <span style="color:#64748b;font-size:12px">현재 광고주: <strong>${selAccount.name}</strong> (${selAccount.customer_id})</span>
       </div>
     </div>
+
+    <!-- 탭 메뉴 -->
+    <div class="tab-bar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;flex-wrap:wrap">
+      ${['summary','campaigns','adgroups','gender','age','placement'].map((tab, i) => {
+        const labels = ['요약','캠페인별','그룹별','성별','연령대','노출지면'];
+        return `<button class="tab-btn dash-tab ${i===0?'active':''}" data-tab="${tab}" onclick="daSwitchTab('${tab}')">${labels[i]}</button>`;
+      }).join('')}
+      </div>
+      <button id="da-csv-btn" class="btn btn-outline btn-sm" onclick="daDownloadCsv()" style="font-size:12px;padding:6px 12px;display:none">📥 CSV 다운로드</button>
+    </div>
+
+    <div id="da-tab-summary" class="da-tab-content">
+      <div class="kpi-grid" id="da-kpi-grid">
+        ${['노출수','클릭수','CTR','총비용','구매전환','구매전환매출','구매ROAS','전환수']
+          .map(l => `<div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:#e5e7eb">—</div></div>`).join('')}
+      </div>
+    </div>
+    <div id="da-tab-campaigns" class="da-tab-content" style="display:none"><div id="da-campaigns-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div></div>
+    <div id="da-tab-adgroups" class="da-tab-content" style="display:none"><div id="da-adgroups-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div></div>
+    <div id="da-tab-gender" class="da-tab-content" style="display:none"><div id="da-gender-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div></div>
+    <div id="da-tab-age" class="da-tab-content" style="display:none"><div id="da-age-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div></div>
+    <div id="da-tab-placement" class="da-tab-content" style="display:none"><div id="da-placement-content"><div class="empty">탭을 선택하면 데이터를 로딩합니다.</div></div></div>
+
+    <script>
+    var daAccountId = '${selId}';
+    var daPeriod = 'yesterday';
+    var daCustomStart = '', daCustomEnd = '';
+    var daCurrentTab = 'summary';
+    var daTabLoaded = {};
+    var daRawData = {}; // 탭별 원본 데이터 캐시 (CSV용)
+    var daCampFilter = []; // 그룹별 탭 캠페인 필터
+
+    function daNum(v){return Number(v||0).toLocaleString('ko-KR')}
+    function daWon(v){return '₩'+Number(v||0).toLocaleString('ko-KR')}
+    function daPct(v){return Number(v||0).toFixed(2)+'%'}
+    function daRoas(v){var n=Number(v||0);return '<span style="color:'+(n>=100?'#16a34a':'#ef4444')+';font-weight:600">'+n.toFixed(2)+'%</span>';}
+
+    function daPeriodParams(){
+      var p = 'period='+daPeriod;
+      if (daPeriod==='custom') p += '&startDate='+daCustomStart+'&endDate='+daCustomEnd;
+      return p;
+    }
+
+    document.querySelectorAll('.period-btn').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        if (btn.dataset.period === 'custom') {
+          document.getElementById('da-custom-date-wrap').style.display = 'flex';
+          var today = new Date();
+          var end = new Date(today); end.setDate(end.getDate()-1);
+          var start = new Date(today); start.setDate(start.getDate()-7);
+          document.getElementById('da-date-start').value = start.toISOString().slice(0,10);
+          document.getElementById('da-date-end').value = end.toISOString().slice(0,10);
+          return;
+        }
+        document.getElementById('da-custom-date-wrap').style.display = 'none';
+        document.querySelectorAll('.period-btn').forEach(function(b){b.classList.remove('active')});
+        btn.classList.add('active');
+        daPeriod = btn.dataset.period;
+        daResetTabs();
+        daLoadCurrentTab();
+      });
+    });
+
+    function daApplyCustomDate(){
+      var s = document.getElementById('da-date-start').value;
+      var e = document.getElementById('da-date-end').value;
+      if (!s||!e) return toast('시작/종료일을 선택해주세요.', true);
+      if (s>e) return toast('시작일이 종료일보다 큽니다.', true);
+      daCustomStart=s; daCustomEnd=e; daPeriod='custom';
+      document.querySelectorAll('.period-btn').forEach(function(b){b.classList.remove('active')});
+      document.getElementById('da-custom-period-btn').classList.add('active');
+      daResetTabs(); daLoadCurrentTab();
+    }
+
+    function daResetTabs(){ for(var k in daTabLoaded) daTabLoaded[k]=false; daRawData={}; }
+
+    function daSwitchTab(name){
+      daCurrentTab = name;
+      document.querySelectorAll('.da-tab-content').forEach(function(el){el.style.display='none'});
+      document.getElementById('da-tab-'+name).style.display='block';
+      document.querySelectorAll('.dash-tab').forEach(function(b){
+        if (b.dataset.tab===name) b.classList.add('active'); else b.classList.remove('active');
+      });
+      document.getElementById('da-csv-btn').style.display = (name==='summary')?'none':'inline-flex';
+      daLoadCurrentTab();
+    }
+
+    function daLoadCurrentTab(){
+      if (daCurrentTab==='summary') daLoadSummary();
+      else if (!daTabLoaded[daCurrentTab]) daLoadTab(daCurrentTab);
+    }
+
+    setTimeout(function(){ daLoadSummary(); }, 200);
+
+    async function daLoadSummary(){
+      var grid = document.getElementById('da-kpi-grid');
+      grid.innerHTML = ['노출수','클릭수','CTR','총비용','구매전환','구매전환매출','구매ROAS','전환수']
+        .map(function(l){return '<div class="kpi-card"><div class="kpi-label">'+l+'</div><div class="kpi-value"><span class="spinner"></span></div></div>';}).join('');
+      try {
+        var res = await fetch('/smart-sa/api/da/summary?accountId='+daAccountId+'&'+daPeriodParams());
+        var json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        var s = json.summary;
+        var fields = [
+          ['노출수', daNum(s.imp), 'kpi-blue'],
+          ['클릭수', daNum(s.clk), 'kpi-cyan'],
+          ['CTR', daPct(s.ctr), 'kpi-green'],
+          ['총비용', daWon(s.cost), 'kpi-red'],
+          ['구매전환', daNum(s.purchaseConvCount), 'kpi-purple'],
+          ['구매전환매출', daWon(s.purchaseConvSales), 'kpi-purple'],
+          ['구매ROAS', daRoas(s.purchaseRoas), 'kpi-green'],
+          ['전환수', daNum(s.convCount), 'kpi-orange'],
+        ];
+        grid.innerHTML = fields.map(function(f){
+          return '<div class="kpi-card '+f[2]+'"><div class="kpi-label">'+f[0]+'</div><div class="kpi-value">'+f[1]+'</div></div>';
+        }).join('');
+      } catch(e){
+        grid.innerHTML = '<div class="empty" style="grid-column:1/-1;color:#ef4444">조회 실패: '+e.message+'</div>';
+      }
+    }
+
+    async function daLoadTab(tab){
+      var wrap = document.getElementById('da-'+tab+'-content');
+      wrap.innerHTML = '<div class="empty"><span class="spinner"></span> '+
+        ({campaigns:'캠페인별',adgroups:'그룹별',gender:'성별',age:'연령대',placement:'노출지면'}[tab])+
+        ' 데이터 로딩 중...</div>';
+      try {
+        var res = await fetch('/smart-sa/api/da/tab/'+tab+'?accountId='+daAccountId+'&'+daPeriodParams());
+        var json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        daTabLoaded[tab] = true;
+        daRawData[tab] = json.rows;
+        if (tab==='campaigns') daRenderCampaigns(json.rows);
+        else if (tab==='adgroups') daRenderAdgroups(json.rows);
+        else if (tab==='gender') daRenderBreakdown(wrap, json.rows, 'gender', '성별', daGenderLabel);
+        else if (tab==='age') daRenderBreakdown(wrap, json.rows, 'ageGroup', '연령대', daAgeLabel);
+        else if (tab==='placement') daRenderBreakdown(wrap, json.rows, 'publisherGroupCode', '매체/지면', function(v){return v||'-';});
+      } catch(e){
+        wrap.innerHTML = '<div class="empty" style="color:#ef4444">조회 실패: '+e.message+'</div>';
+      }
+    }
+
+    function daObjectiveBadge(o){
+      var map = {
+        PMAX: ['#dbeafe','#1e40af','PMAX'],
+        CATALOG: ['#fef3c7','#92400e','카탈로그'],
+        CONVERSION: ['#dcfce7','#166534','전환'],
+        TRAFFIC: ['#e0e7ff','#3730a3','트래픽'],
+        REACH: ['#fce7f3','#9f1239','도달'],
+        VIDEO_VIEWS: ['#ffedd5','#9a3412','동영상'],
+      };
+      var m = map[o] || ['#f1f5f9','#475569', o||''];
+      return '<span class="badge" style="background:'+m[0]+';color:'+m[1]+';margin-left:6px;font-size:10px;padding:1px 6px">'+m[2]+'</span>';
+    }
+
+    function daRenderCampaigns(rows){
+      var wrap = document.getElementById('da-campaigns-content');
+      if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">캠페인 데이터가 없습니다.</div>'; return; }
+      var html = '<div class="card"><div class="card-header"><span class="card-title">캠페인별 성과 ('+rows.length+'개)</span></div>'+
+        '<div class="card-body" style="overflow-x:auto"><table><thead><tr>'+
+        '<th>캠페인</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
+        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
+        '<th style="text-align:right">CPC</th><th style="text-align:right">전환</th>'+
+        '<th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th>'+
+        '<th style="text-align:right">구매ROAS</th><th style="text-align:right">결과</th>'+
+        '</tr></thead><tbody>';
+      rows.forEach(function(r){
+        html += '<tr>'+
+          '<td><strong>'+(r.campaignName||'-')+'</strong>'+daObjectiveBadge(r.campaignObjective)+'</td>'+
+          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
+          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
+          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
+          '<td style="text-align:right">'+daNum(r.convCount)+'</td>'+
+          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
+          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
+          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
+          '<td style="text-align:right;font-size:11px;color:#64748b">'+daNum(r.resultCount)+' '+(r.resultString||'')+'</td>'+
+          '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      wrap.innerHTML = html;
+    }
+
+    function daRenderAdgroups(rows){
+      var wrap = document.getElementById('da-adgroups-content');
+      if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">광고그룹 데이터가 없습니다.</div>'; return; }
+      // 캠페인 필터 옵션
+      var campSet = {};
+      rows.forEach(function(r){ if(r.campaignName) campSet[r.campaignName]=true; });
+      var campOpts = Object.keys(campSet).sort().map(function(n){return {id:n, name:n};});
+      var filtered = (!daCampFilter.length) ? rows : rows.filter(function(r){return daCampFilter.indexOf(r.campaignName)>=0;});
+      var html = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
+      html += renderMultiSelect({ id:'da-ag-camp-filter', placeholder:'전체 캠페인', items:campOpts, selected:daCampFilter.slice() });
+      html += '<span style="font-size:12px;color:#94a3b8;margin-left:auto">표시: '+filtered.length+'개 / 전체: '+rows.length+'개</span>';
+      html += '</div>';
+      html += '<div class="card"><div class="card-header"><span class="card-title">광고그룹별 성과</span></div><div class="card-body" style="overflow-x:auto">';
+      html += '<table><thead><tr>'+
+        '<th>캠페인</th><th>광고그룹</th>'+
+        '<th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
+        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
+        '<th style="text-align:right">CPC</th><th style="text-align:right">전환</th>'+
+        '<th style="text-align:right">구매전환</th><th style="text-align:right">구매매출</th>'+
+        '<th style="text-align:right">구매ROAS</th></tr></thead><tbody>';
+      filtered.forEach(function(r){
+        html += '<tr>'+
+          '<td style="font-size:12px;color:#6b7280">'+(r.campaignName||'-')+'</td>'+
+          '<td><strong>'+(r.adSetName||r.assetGroupName||'-')+'</strong></td>'+
+          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
+          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
+          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
+          '<td style="text-align:right">'+daNum(r.convCount)+'</td>'+
+          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
+          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
+          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
+          '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      wrap.innerHTML = html;
+      bindMultiSelect('da-ag-camp-filter', function(sel){ daCampFilter=sel; daRenderAdgroups(daRawData.adgroups); });
+    }
+
+    function daGenderLabel(g){ return ({M:'남성',F:'여성',U:'미상'})[g] || (g||'-'); }
+    function daAgeLabel(a){
+      if (!a) return '-';
+      var m = String(a).match(/(\\d+)/);
+      return m ? m[1]+'대' : a;
+    }
+
+    function daRenderBreakdown(wrap, rows, key, label, fmtKey){
+      if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">'+label+' 데이터가 없습니다.</div>'; return; }
+      // 같은 키로 합산 (캠페인별로 쪼개진 행을 합침)
+      var byKey = {};
+      rows.forEach(function(r){
+        var k = r[key] || '_unknown';
+        if (!byKey[k]) byKey[k] = { _key:k, imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 };
+        byKey[k].imp += r.imp; byKey[k].clk += r.clk; byKey[k].cost += r.cost;
+        byKey[k].convCount += r.convCount; byKey[k].purchaseConvCount += r.purchaseConvCount;
+        byKey[k].purchaseConvSales += r.purchaseConvSales;
+      });
+      var arr = Object.values(byKey).map(function(d){
+        d.ctr = d.imp>0 ? d.clk/d.imp*100 : 0;
+        d.cpc = d.clk>0 ? Math.round(d.cost/d.clk) : 0;
+        d.purchaseRoas = d.cost>0 ? d.purchaseConvSales/d.cost*100 : 0;
+        return d;
+      }).sort(function(a,b){return b.cost-a.cost;});
+
+      var totalCost = arr.reduce(function(s,r){return s+r.cost;},0) || 1;
+      var html = '<div class="card"><div class="card-header"><span class="card-title">'+label+'별 성과 ('+arr.length+'개)</span></div>'+
+        '<div class="card-body" style="overflow-x:auto"><table><thead><tr>'+
+        '<th>'+label+'</th><th style="text-align:right">노출</th><th style="text-align:right">클릭</th>'+
+        '<th style="text-align:right">CTR</th><th style="text-align:right">총비용</th>'+
+        '<th style="text-align:right">CPC</th><th style="text-align:right">구매전환</th>'+
+        '<th style="text-align:right">구매매출</th><th style="text-align:right">구매ROAS</th>'+
+        '<th style="width:100px">비용비중</th></tr></thead><tbody>';
+      arr.forEach(function(r){
+        var pct = (r.cost/totalCost*100).toFixed(1);
+        html += '<tr>'+
+          '<td><strong>'+fmtKey(r._key)+'</strong></td>'+
+          '<td style="text-align:right">'+daNum(r.imp)+'</td>'+
+          '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>'+
+          '<td style="text-align:right">'+daPct(r.ctr)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cost)+'</td>'+
+          '<td style="text-align:right">'+daWon(r.cpc)+'</td>'+
+          '<td style="text-align:right;color:#7c3aed;font-weight:600">'+daNum(r.purchaseConvCount)+'</td>'+
+          '<td style="text-align:right;color:#16a34a;font-weight:600">'+daWon(r.purchaseConvSales)+'</td>'+
+          '<td style="text-align:right">'+daRoas(r.purchaseRoas)+'</td>'+
+          '<td><div style="background:#e2e8f0;border-radius:4px;height:14px;overflow:hidden">'+
+          '<div style="width:'+pct+'%;background:#3b82f6;height:100%"></div></div>'+
+          '<div style="font-size:10px;color:#64748b;text-align:right;margin-top:2px">'+pct+'%</div></td>'+
+          '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      wrap.innerHTML = html;
+    }
+
+    // CSV 다운로드 (현재 탭)
+    function daDownloadCsv(){
+      var pane = document.getElementById('da-tab-'+daCurrentTab);
+      if (!pane) return;
+      var tables = pane.querySelectorAll('table');
+      if (!tables.length) return toast('다운로드할 데이터가 없습니다.', true);
+      var lines = [];
+      tables.forEach(function(tbl, idx){
+        if (idx>0) lines.push('');
+        var heads=[]; tbl.querySelectorAll('thead th').forEach(function(th){heads.push('"'+th.textContent.replace(/[▲▼]/g,'').trim().replace(/"/g,'""')+'"')});
+        lines.push(heads.join(','));
+        tbl.querySelectorAll('tbody tr').forEach(function(tr){
+          var row=[]; tr.querySelectorAll('td').forEach(function(td){
+            var t=(td.innerText||'').trim().replace(/[₩￦]/g,'').replace(/\\n/g,' ');
+            row.push('"'+t.replace(/"/g,'""')+'"');
+          });
+          if (row.length) lines.push(row.join(','));
+        });
+      });
+      var csv = lines.join('\\r\\n');
+      var blob = new Blob(['\\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var ts = new Date();
+      var labelMap={summary:'요약',campaigns:'캠페인별',adgroups:'그룹별',gender:'성별',age:'연령대',placement:'노출지면'};
+      a.href=url; a.download='DA_'+(labelMap[daCurrentTab]||daCurrentTab)+'_'+ts.toISOString().slice(0,10).replace(/-/g,'')+'.csv';
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},100);
+      toast('CSV 다운로드 시작');
+    }
+    </script>
   `;
-  res.send(appLayout('DA 성과 대시보드', content, user, 'da-dashboard', await getLayoutOpts(req)));
+  res.send(appLayout('DA 성과 대시보드', content, user, 'da-dashboard', layoutOpts));
+});
+
+// ─── DA API: 요약 ───────────────────────────────────────────────────
+router.get('/api/da/summary', requireLogin, async (req, res) => {
+  try {
+    const { accountId, period = 'yesterday' } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA가 활성화되지 않은 계정입니다.' });
+    if (!account.naver_cookie || !account.da_xsrf_token) return res.status(400).json({ ok: false, error: 'DA 쿠키/토큰 미등록' });
+    const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
+    const rows = await fetchReportPerformance({
+      adAccountNo: account.customer_id,
+      cookie: account.naver_cookie,
+      xsrfToken: account.da_xsrf_token,
+      startDate: dr.since, endDate: dr.until,
+      reportAdUnit: 'AD_ACCOUNT',
+    });
+    const summary = rows.map(normalizeRow).reduce((acc, r) => {
+      acc.imp += r.imp; acc.clk += r.clk; acc.cost += r.cost;
+      acc.convCount += r.convCount;
+      acc.purchaseConvCount += r.purchaseConvCount;
+      acc.purchaseConvSales += r.purchaseConvSales;
+      return acc;
+    }, { imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 });
+    summary.ctr = summary.imp > 0 ? summary.clk / summary.imp * 100 : 0;
+    summary.cpc = summary.clk > 0 ? Math.round(summary.cost / summary.clk) : 0;
+    summary.purchaseRoas = summary.cost > 0 ? summary.purchaseConvSales / summary.cost * 100 : 0;
+    res.json({ ok: true, summary });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── DA API: 탭 데이터 ──────────────────────────────────────────────
+router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
+  try {
+    const { tab } = req.params;
+    const { accountId, period = 'yesterday' } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA가 활성화되지 않은 계정입니다.' });
+    if (!account.naver_cookie || !account.da_xsrf_token) return res.status(400).json({ ok: false, error: 'DA 쿠키/토큰 미등록' });
+
+    const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
+
+    // 탭별 파라미터 매핑
+    const paramMap = {
+      campaigns:  { reportAdUnit: 'CAMPAIGN', audience: 'TOTAL', placeUnit: 'TOTAL' },
+      adgroups:   { reportAdUnit: 'AD_SET',   audience: 'TOTAL', placeUnit: 'TOTAL' },
+      gender:     { reportAdUnit: 'AD_ACCOUNT', audience: 'GENDER', placeUnit: 'TOTAL' },
+      age:        { reportAdUnit: 'AD_ACCOUNT', audience: 'AGE',    placeUnit: 'TOTAL' },
+      placement:  { reportAdUnit: 'AD_ACCOUNT', audience: 'TOTAL', placeUnit: 'MEDIA_GROUP_AND_PLACE' },
+    };
+    if (!paramMap[tab]) return res.status(400).json({ ok: false, error: '알 수 없는 탭' });
+
+    const rows = await fetchReportPerformance({
+      adAccountNo: account.customer_id,
+      cookie: account.naver_cookie,
+      xsrfToken: account.da_xsrf_token,
+      startDate: dr.since, endDate: dr.until,
+      ...paramMap[tab],
+    });
+    res.json({ ok: true, rows: rows.map(normalizeRow) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ─── SA 성과 대시보드 ───────────────────────────────────────────────
