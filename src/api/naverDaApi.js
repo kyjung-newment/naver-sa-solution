@@ -27,7 +27,6 @@ function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath) {
       path,
       method: 'GET',
       headers: {
-        ':authority': BASE_HOST,
         accept: 'application/json, text/plain, */*',
         'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
         cookie: cookie,

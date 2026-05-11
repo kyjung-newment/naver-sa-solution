@@ -1383,6 +1383,11 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             ⚠️ 쿠키는 보통 며칠~수 주 유효합니다. 만료 시 다시 갱신 필요.
           </div>
           <div class="form-group">
+            <label>DA 광고계정 번호 (ads.naver.com URL의 숫자, Customer ID와 다름)</label>
+            <input name="da_account_no" value="${v('da_account_no')}" placeholder="예: 2406994 (URL: ads.naver.com/manage/ad-accounts/<strong>2406994</strong>/...)" style="font-family:monospace;font-size:12px">
+            <p style="font-size:11px;color:#94a3b8;margin-top:4px">ads.naver.com 로그인 후 주소창의 <code>/ad-accounts/숫자/</code> 부분의 숫자를 입력. 비워두면 위 Customer ID 사용 시도.</p>
+          </div>
+          <div class="form-group">
             <label>광고관리 쿠키 (Cookie 헤더 전체)</label>
             <textarea name="naver_cookie" rows="4" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
           </div>
@@ -1841,8 +1846,9 @@ router.get('/api/da/summary', requireLogin, async (req, res) => {
     if (!account.naver_cookie || !account.da_xsrf_token) return res.status(400).json({ ok: false, error: 'DA 쿠키/토큰 미등록' });
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
     const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
+    const adAccountNo = account.da_account_no || account.customer_id;
     const rows = await fetchReportPerformance({
-      adAccountNo: account.customer_id,
+      adAccountNo,
       cookie: account.naver_cookie,
       xsrfToken: account.da_xsrf_token,
       startDate: dr.since, endDate: dr.until,
@@ -1887,8 +1893,9 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
     };
     if (!paramMap[tab]) return res.status(400).json({ ok: false, error: '알 수 없는 탭' });
 
+    const adAccountNo = account.da_account_no || account.customer_id;
     const rows = await fetchReportPerformance({
-      adAccountNo: account.customer_id,
+      adAccountNo,
       cookie: account.naver_cookie,
       xsrfToken: account.da_xsrf_token,
       startDate: dr.since, endDate: dr.until,

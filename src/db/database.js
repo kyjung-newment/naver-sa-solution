@@ -237,6 +237,7 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS has_sa BOOLEAN DEFAULT true`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS has_da BOOLEAN DEFAULT false`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_xsrf_token TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_account_no TEXT DEFAULT ''`);
     // DA 자동 리포트 기능 플래그
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_daily_report INTEGER DEFAULT 0`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_weekly_report INTEGER DEFAULT 0`);
@@ -449,7 +450,7 @@ async function updateAccount(id, userId, data) {
       auto_bid_target_rank = $12, auto_bid_max_bid = $13,
       auto_bid_min_bid = $14, auto_bid_interval = $15,
       site_url = $18, naver_cookie = $19,
-      has_sa = $20, has_da = $21, da_xsrf_token = $22
+      has_sa = $20, has_da = $21, da_xsrf_token = $22, da_account_no = $23
     WHERE id = $16 AND user_id = $17
   `, [
     data.name,
@@ -473,6 +474,7 @@ async function updateAccount(id, userId, data) {
     data.has_sa === false || data.has_sa === 0 || data.has_sa === '0' ? false : true,
     data.has_da === true || data.has_da === 1 || data.has_da === '1' || data.has_da === 'on' ? true : false,
     data.da_xsrf_token || '',
+    data.da_account_no || '',
   ]);
 }
 
