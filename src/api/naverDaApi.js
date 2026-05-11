@@ -97,9 +97,7 @@ async function fetchReportPerformance(args) {
     adAccountNo, cookie,
     startDate, endDate,
     reportAdUnit = 'CAMPAIGN',
-    audience = 'TOTAL',
-    placeUnit = 'TOTAL',
-    dateUnit = 'TOTAL',
+    dateUnit, // 'TOTAL' | 'DAY' | 'WEEK' | 'MONTH' | 'HOUR'
     pageSize = 100,
     maxPages = 50,
     refererPath,
@@ -123,6 +121,7 @@ async function fetchReportPerformance(args) {
       pageNumber: String(pageNumber),
       pageSize: String(pageSize),
     };
+    if (dateUnit) params.reportDateUnit = dateUnit;
     const json = await fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, 'reportPerformance');
     const list = json.reportPerformanceDetailResponseList || [];
     allRows.push(...list);
