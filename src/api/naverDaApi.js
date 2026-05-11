@@ -80,9 +80,19 @@ function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath) {
  *   pageSize: number (기본 100)
  *   maxPages: number (안전장치, 기본 50)
  */
+/**
+ * 쿠키 문자열에서 XSRF-TOKEN 값 자동 추출
+ * X-Xsrf-Token 헤더는 쿠키의 XSRF-TOKEN 값과 동일해야 함 (Naver CSRF 정책)
+ */
+function extractXsrfFromCookie(cookie) {
+  if (!cookie) return '';
+  const m = cookie.match(/XSRF-TOKEN=([^;]+)/);
+  return m ? m[1].trim() : '';
+}
+
 async function fetchReportPerformance(args) {
   const {
-    adAccountNo, cookie, xsrfToken,
+    adAccountNo, cookie,
     startDate, endDate,
     reportAdUnit = 'CAMPAIGN',
     audience = 'TOTAL',
@@ -94,8 +104,11 @@ async function fetchReportPerformance(args) {
   } = args;
 
   if (!cookie) throw new Error('DA 쿠키가 등록되지 않았습니다. 광고주 설정에서 ads.naver.com 쿠키를 입력해주세요.');
-  if (!xsrfToken) throw new Error('DA XSRF 토큰이 등록되지 않았습니다.');
   if (!adAccountNo) throw new Error('DA 광고계정 번호 누락');
+
+  // 쿠키에서 XSRF-TOKEN 자동 추출 (별도 입력 불필요)
+  const xsrfToken = args.xsrfToken || extractXsrfFromCookie(cookie);
+  if (!xsrfToken) throw new Error('쿠키에 XSRF-TOKEN이 포함되지 않았습니다. 쿠키를 다시 복사해서 등록해주세요.');
 
   const allRows = [];
   let pageNumber = 1;
@@ -178,4 +191,5 @@ function normalizeRow(r) {
 module.exports = {
   fetchReportPerformance,
   normalizeRow,
+  extractXsrfFromCookie,
 };

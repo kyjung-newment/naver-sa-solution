@@ -1373,27 +1373,22 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
         <div class="card-header"><span class="card-title">📺 DA 연동 정보 (DA 사용 시 필수)</span></div>
         <div class="card-body">
           <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;font-size:12px;color:#78350f;margin-bottom:14px;line-height:1.6">
-            <strong>📌 쿠키/토큰 확인 방법</strong><br>
+            <strong>📌 쿠키 확인 방법</strong><br>
             1. <a href="https://ads.naver.com" target="_blank" style="color:#0284c7;font-weight:600">ads.naver.com</a>에 로그인 → 해당 광고주 선택<br>
-            2. F12(개발자 도구) → <strong>Network(네트워크)</strong> 탭 → 필터에 <code style="background:#fff;padding:1px 4px;border-radius:3px">reportPerformance</code> 입력<br>
+            2. F12 → <strong>Network</strong> 탭 → 필터에 <code style="background:#fff;padding:1px 4px;border-radius:3px">reportPerformance</code> 입력<br>
             3. 디스플레이 광고 → 보고서 → 성과 보고서 클릭하여 호출 발생<br>
-            4. 발생한 요청 클릭 → <strong>Headers(헤더)</strong> 탭에서:<br>
-            &nbsp;&nbsp;&nbsp;• <strong>Cookie</strong> 헤더 전체 값 복사 → 아래 "광고관리 쿠키"에 붙여넣기<br>
-            &nbsp;&nbsp;&nbsp;• <strong>X-Xsrf-Token</strong> 헤더 값 복사 → 아래 "XSRF Token"에 붙여넣기<br>
-            ⚠️ 쿠키는 보통 며칠~수 주 유효합니다. 만료 시 다시 갱신 필요.
+            4. 발생한 요청 → <strong>Headers</strong> 탭 → <strong>Cookie</strong> 헤더 전체 값 복사 → 아래 붙여넣기<br>
+            ✅ XSRF 토큰은 쿠키에서 자동 추출됩니다 (별도 입력 불필요)<br>
+            ⚠️ 쿠키 만료 시 (보통 며칠) 다시 갱신 필요. 갱신 시 쿠키 전체 재복사.
           </div>
           <div class="form-group">
-            <label>DA 광고계정 번호 (ads.naver.com URL의 숫자, Customer ID와 다름)</label>
-            <input name="da_account_no" value="${v('da_account_no')}" placeholder="예: 2406994 (URL: ads.naver.com/manage/ad-accounts/<strong>2406994</strong>/...)" style="font-family:monospace;font-size:12px">
-            <p style="font-size:11px;color:#94a3b8;margin-top:4px">ads.naver.com 로그인 후 주소창의 <code>/ad-accounts/숫자/</code> 부분의 숫자를 입력. 비워두면 위 Customer ID 사용 시도.</p>
+            <label>DA 광고계정 번호 (ads.naver.com URL의 숫자)</label>
+            <input name="da_account_no" value="${v('da_account_no')}" placeholder="예: 2406994" style="font-family:monospace;font-size:12px">
+            <p style="font-size:11px;color:#94a3b8;margin-top:4px">URL <code>ads.naver.com/manage/ad-accounts/<strong>2406994</strong>/...</code>의 숫자. Customer ID와 다릅니다.</p>
           </div>
           <div class="form-group">
-            <label>광고관리 쿠키 (Cookie 헤더 전체)</label>
-            <textarea name="naver_cookie" rows="4" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
-          </div>
-          <div class="form-group">
-            <label>XSRF Token (X-Xsrf-Token 헤더 값)</label>
-            <input name="da_xsrf_token" value="${v('da_xsrf_token')}" placeholder="예: 149f37be-6d7f-477d-9a15-e0bee31ab79b" style="font-family:monospace;font-size:11px">
+            <label>광고관리 쿠키 (Cookie 헤더 전체) — XSRF-TOKEN 포함되어야 함</label>
+            <textarea name="naver_cookie" rows="5" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
           </div>
         </div>
       </div>
@@ -1492,11 +1487,11 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         <a href="/smart-sa/accounts/${selAccount.id}/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 "광고 유형 → DA"를 체크해주세요.
       </div>`, user, 'da-dashboard', layoutOpts));
   }
-  if (!selAccount.naver_cookie || !selAccount.da_xsrf_token) {
+  if (!selAccount.naver_cookie) {
     return res.send(appLayout('DA 성과 대시보드', `
       <div style="background:#fee2e2;border:1px solid #fecaca;border-radius:12px;padding:32px;text-align:center;color:#7f1d1d">
         <div style="font-size:48px;margin-bottom:8px">🔒</div>
-        DA 연동 정보(쿠키 + XSRF Token)가 등록되지 않았습니다.<br>
+        DA 광고관리 쿠키가 등록되지 않았습니다.<br>
         <a href="/smart-sa/accounts/${selAccount.id}/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 등록해주세요.
       </div>`, user, 'da-dashboard', layoutOpts));
   }
@@ -1843,14 +1838,13 @@ router.get('/api/da/summary', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA가 활성화되지 않은 계정입니다.' });
-    if (!account.naver_cookie || !account.da_xsrf_token) return res.status(400).json({ ok: false, error: 'DA 쿠키/토큰 미등록' });
+    if (!account.naver_cookie) return res.status(400).json({ ok: false, error: 'DA 쿠키 미등록' });
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
     const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
     const adAccountNo = account.da_account_no || account.customer_id;
     const rows = await fetchReportPerformance({
       adAccountNo,
       cookie: account.naver_cookie,
-      xsrfToken: account.da_xsrf_token,
       startDate: dr.since, endDate: dr.until,
       reportAdUnit: 'AD_ACCOUNT',
     });
@@ -1878,7 +1872,7 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA가 활성화되지 않은 계정입니다.' });
-    if (!account.naver_cookie || !account.da_xsrf_token) return res.status(400).json({ ok: false, error: 'DA 쿠키/토큰 미등록' });
+    if (!account.naver_cookie) return res.status(400).json({ ok: false, error: 'DA 쿠키 미등록' });
 
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
     const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
@@ -1897,7 +1891,6 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
     const rows = await fetchReportPerformance({
       adAccountNo,
       cookie: account.naver_cookie,
-      xsrfToken: account.da_xsrf_token,
       startDate: dr.since, endDate: dr.until,
       ...paramMap[tab],
     });
