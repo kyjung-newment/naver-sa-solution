@@ -1713,8 +1713,8 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         if (tab==='campaigns') daRenderCampaigns(json.rows);
         else if (tab==='adgroups') daRenderAdgroups(json.rows);
         else if (tab==='gender') daRenderBreakdown(wrap, json.rows, 'gender', '성별', daGenderLabel);
-        else if (tab==='age') daRenderBreakdown(wrap, json.rows, 'ageGroup', '연령대', daAgeLabel);
-        else if (tab==='placement') daRenderBreakdown(wrap, json.rows, 'publisherGroupCode', '매체/지면', function(v){return v||'-';});
+        else if (tab==='age') daRenderBreakdown(wrap, json.rows, 'ageGroup', '연령대', daAgeLabel, daAgeSortKey);
+        else if (tab==='placement') daRenderBreakdown(wrap, json.rows, 'publisherGroupCode', '매체/지면', function(v){return v||'알수없음';});
       } catch(e){
         wrap.innerHTML = '<div class="empty" style="color:#ef4444">조회 실패: '+e.message+'</div>';
       }
@@ -1803,14 +1803,22 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
       bindMultiSelect('da-ag-camp-filter', function(sel){ daCampFilter=sel; daRenderAdgroups(daRawData.adgroups); });
     }
 
-    function daGenderLabel(g){ return ({M:'남성',F:'여성',U:'미상'})[g] || (g||'-'); }
+    function daGenderLabel(g){
+      if (!g || g === 'U' || g === 'UNKNOWN' || g === 'GROUP_UNKNOWN') return '알수없음';
+      return ({M:'남성',F:'여성'})[g] || g;
+    }
     function daAgeLabel(a){
-      if (!a) return '-';
+      if (!a || a === 'GROUP_UNKNOWN' || a === 'UNKNOWN') return '알수없음';
       var m = String(a).match(/(\\d+)/);
       return m ? m[1]+'대' : a;
     }
+    function daAgeSortKey(a){
+      if (!a || a === 'GROUP_UNKNOWN' || a === 'UNKNOWN') return 9999; // 알수없음 마지막
+      var m = String(a).match(/(\\d+)/);
+      return m ? parseInt(m[1]) : 9998;
+    }
 
-    function daRenderBreakdown(wrap, rows, key, label, fmtKey){
+    function daRenderBreakdown(wrap, rows, key, label, fmtKey, sortKeyFn){
       if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">'+label+' 데이터가 없습니다.</div>'; return; }
       // 같은 키로 합산 (캠페인별로 쪼개진 행을 합침)
       var byKey = {};
@@ -1826,7 +1834,13 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         d.cpc = d.clk>0 ? Math.round(d.cost/d.clk) : 0;
         d.purchaseRoas = d.cost>0 ? d.purchaseConvSales/d.cost*100 : 0;
         return d;
-      }).sort(function(a,b){return b.cost-a.cost;});
+      });
+      // 정렬: sortKeyFn 있으면 그걸로 오름차순, 없으면 비용 내림차순
+      if (typeof sortKeyFn === 'function') {
+        arr.sort(function(a,b){ return sortKeyFn(a._key) - sortKeyFn(b._key); });
+      } else {
+        arr.sort(function(a,b){return b.cost-a.cost;});
+      }
 
       var totalCost = arr.reduce(function(s,r){return s+r.cost;},0) || 1;
       var html = '<div class="card"><div class="card-header"><span class="card-title">'+label+'별 성과 ('+arr.length+'개)</span></div>'+
@@ -1954,7 +1968,26 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
     } else if (tab === 'age') {
       rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'AGE' });
     } else if (tab === 'placement') {
-      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'TOTAL', placeUnit: 'PLACEMENT_GROUP' });
+      // 매체 그룹은 AD_SET별로만 가져올 수 있음 → 모든 ad set 조회 후 집계
+      const adSets = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_SET' });
+      const adSetIds = [...new Set(adSets.map(a => a.adSetNo).filter(Boolean))];
+      // 각 ad set 병렬 호출 (최대 동시 5개로 제한)
+      const allRows = [];
+      const concurrency = 5;
+      for (let i = 0; i < adSetIds.length; i += concurrency) {
+        const batch = adSetIds.slice(i, i + concurrency);
+        const results = await Promise.allSettled(batch.map(adSetNo =>
+          fetchReportPerformanceDetail({
+            ...baseArgs,
+            reportAdUnit: 'AD_SET',
+            adUnitNo: adSetNo,
+            reportDimension: 'TOTAL',
+            placeUnit: 'PLACEMENT_GROUP',
+          })
+        ));
+        results.forEach(r => { if (r.status === 'fulfilled' && Array.isArray(r.value)) allRows.push(...r.value); });
+      }
+      rows = allRows;
     } else {
       return res.status(400).json({ ok: false, error: '알 수 없는 탭' });
     }
