@@ -5552,8 +5552,20 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
 
   const content = `
     ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
-    <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${selAccount.name || ''}</strong></p>
+    <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${selAccount.name || ''}</strong>
+      ${selAccount.has_sa === false ? '' : '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;margin-left:6px;padding:1px 6px">SA</span>'}
+      ${selAccount.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;margin-left:3px;padding:1px 6px">DA</span>' : ''}
+    </p>
 
+    <!-- SA / DA 탭 -->
+    <div class="tab-bar" style="margin-bottom:16px">
+      <button class="tab-btn dash-tab ${selAccount.has_sa !== false ? 'active' : (!selAccount.has_da ? 'active' : '')}" data-rep-tab="sa" onclick="switchRepTab('sa')">🔍 SA 리포트</button>
+      <button class="tab-btn dash-tab ${selAccount.has_sa === false && selAccount.has_da ? 'active' : ''}" data-rep-tab="da" onclick="switchRepTab('da')">📺 DA 리포트</button>
+    </div>
+
+    <!-- SA 탭 -->
+    <div id="rep-tab-sa" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? 'style="display:none"' : ''}>
+    ${selAccount.has_sa === false ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 SA가 활성화되지 않은 계정입니다. 광고주 설정에서 SA를 활성화하세요.</div>' : `
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
@@ -5570,6 +5582,59 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
           </div>
         </div>`;
       }).join('')}
+    </div>`}
+    </div>
+
+    <!-- DA 탭 -->
+    <div id="rep-tab-da" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? '' : 'style="display:none"'}>
+    ${!selAccount.has_da ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 DA가 활성화되지 않은 계정입니다. 광고주 설정에서 DA를 활성화하고 광고관리 쿠키를 등록하세요.</div>' : (!selAccount.naver_cookie ? '<div class="alert" style="background:#fee2e2;color:#7f1d1d;border:1px solid #fecaca;padding:16px;border-radius:8px">DA 광고관리 쿠키가 등록되지 않았습니다. <a href="/smart-sa/accounts/'+selAccount.id+'/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 등록해주세요.</div>' : `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+      ${['daily','weekly','monthly'].map(t => {
+        const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
+        const desc  = {daily:'어제 하루 DA 성과 (매일 09:30)',weekly:'최근 7일 DA 성과 (월요일 09:30)',monthly:'전월 DA 성과 (매월 1일 09:30)'}[t];
+        return `<div class="card" style="border-color:#fce7f3">
+          <div class="card-body" style="text-align:center">
+            <div style="font-size:32px;margin-bottom:12px">${{daily:'📺',weekly:'📺',monthly:'📺'}[t]}</div>
+            <h3 style="font-weight:600;margin-bottom:6px">DA ${label} 리포트</h3>
+            <p style="color:#64748b;font-size:12px;margin-bottom:16px">${desc}</p>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-outline" style="flex:1;justify-content:center" onclick="downloadDaReportExcel('${t}')" id="da-excel-btn-${t}">📥 엑셀 다운로드</button>
+              <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="triggerDaReport('${t}')">이메일 발송</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">⏰ DA 자동 발송 스케줄</span></div>
+      <div class="card-body">
+        <table>
+          <thead><tr><th>리포트</th><th>발송 시각</th><th>자동 발송</th><th>최근 발송</th></tr></thead>
+          <tbody>
+            ${['daily','weekly','monthly'].map(t => {
+              const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
+              const time = {daily:'매일 09:30 KST',weekly:'매주 월요일 09:30 KST',monthly:'매월 1일 09:30 KST'}[t];
+              const featKey = 'feat_da_' + t + '_report';
+              const isOn = !!selAccount[featKey];
+              const col = 'last_da_' + t + '_report';
+              const lastDate = selAccount[col] ? (() => { const d = new Date(new Date(selAccount[col]).getTime() + 9*60*60*1000); return d.getUTCFullYear() + '. ' + (d.getUTCMonth()+1) + '. ' + d.getUTCDate() + '. ' + (d.getUTCHours() >= 12 ? '오후' : '오전') + ' ' + String(d.getUTCHours() > 12 ? d.getUTCHours()-12 : d.getUTCHours() || 12).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0'); })() : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              return `<tr>
+                <td><strong>DA ${label}</strong></td>
+                <td>${time}</td>
+                <td>
+                  <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+                    <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleDaReportFeat('${featKey}',this.checked)" style="width:16px;height:16px;accent-color:#9f1239">
+                    <span style="font-size:13px;color:${isOn ? '#16a34a' : '#94a3b8'}" id="label-${featKey}">${isOn ? 'ON' : 'OFF'}</span>
+                  </label>
+                </td>
+                <td style="font-size:12px">${lastDate}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    `)}
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="card-header">
@@ -5625,6 +5690,104 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     `}
     <script>
     const reportAccountId = '${selId}';
+
+    function switchRepTab(name){
+      document.querySelectorAll('.rep-tab-content').forEach(function(el){el.style.display='none';});
+      document.getElementById('rep-tab-'+name).style.display='block';
+      document.querySelectorAll('[data-rep-tab]').forEach(function(b){
+        if (b.dataset.repTab===name) b.classList.add('active'); else b.classList.remove('active');
+      });
+    }
+
+    // ── DA 리포트 핸들러 ──
+    async function toggleDaReportFeat(feat, enabled) {
+      const label = document.getElementById('label-'+feat);
+      try {
+        const res = await fetch('/smart-sa/api/da-report/toggle-feat', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({accountId: reportAccountId, feat, enabled})
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error);
+        label.textContent = enabled ? 'ON' : 'OFF';
+        label.style.color = enabled ? '#16a34a' : '#94a3b8';
+        if (enabled && json.addedEmail) {
+          toast('DA 자동 발송 활성화 (수신자 추가: ' + json.addedEmail + ')');
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          toast('DA ' + (enabled ? '자동 발송 활성화' : '자동 발송 비활성화'));
+        }
+      } catch(e) { toast(e.message, true); }
+    }
+
+    async function downloadDaReportExcel(type) {
+      if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
+      const btn = document.getElementById('da-excel-btn-'+type);
+      const orig = btn ? btn.innerHTML : '';
+      const typeLabel = {daily:'일간', weekly:'주간', monthly:'월간'}[type] || type;
+      let overlay = document.getElementById('report-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'report-loading-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center';
+        document.body.appendChild(overlay);
+        if (!document.getElementById('spin-style')) {
+          const style = document.createElement('style');
+          style.id = 'spin-style';
+          style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+          document.head.appendChild(style);
+        }
+      }
+      overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3);max-width:400px"><div style="width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:#9f1239;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px"></div><div style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:8px">DA '+typeLabel+' 엑셀 생성 중...</div><div style="font-size:13px;color:#94a3b8">'+(type==='monthly'?'월간은 최대 4분':'최대 1~2분')+' 소요될 수 있습니다.</div></div>';
+      overlay.style.display = 'flex';
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 생성 중...'; }
+      try {
+        const res = await fetch('/smart-sa/api/da-report/download-excel?type='+type+'&accountId='+reportAccountId);
+        if (!res.ok) { const t = await res.text(); throw new Error(t || '서버 오류'); }
+        const blob = await res.blob();
+        const cd = res.headers.get('Content-Disposition') || '';
+        let fname = 'DA_'+typeLabel+'_리포트.xlsx';
+        var m = cd.match(/filename\\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/);
+        if (m) { try { fname = decodeURIComponent(m[1]); } catch(_){} }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click();
+        setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        toast('DA ' + typeLabel + ' 엑셀 다운로드 시작: ' + fname);
+      } catch(e) { toast(e.message || 'DA 엑셀 생성 실패', true); }
+      finally { overlay.style.display = 'none'; if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
+    }
+
+    async function triggerDaReport(type) {
+      if (!reportAccountId) return toast('광고주를 선택해주세요.', true);
+      let overlay = document.getElementById('report-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'report-loading-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center';
+        overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)"><div style="width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:#9f1239;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px"></div><div style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:8px">DA 리포트 생성 중...</div><div style="font-size:13px;color:#94a3b8">엑셀 + 이메일 발송. 최대 1~4분 소요.</div></div>';
+        document.body.appendChild(overlay);
+        if (!document.getElementById('spin-style')) {
+          const style = document.createElement('style');
+          style.id = 'spin-style';
+          style.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+          document.head.appendChild(style);
+        }
+      }
+      overlay.style.display = 'flex';
+      try {
+        const res = await fetch('/smart-sa/api/da-report/trigger', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({type, accountId: reportAccountId})
+        });
+        const text = await res.text();
+        let json; try { json = JSON.parse(text); } catch(_) { overlay.style.display='none'; throw new Error('서버 응답 오류'); }
+        overlay.style.display = 'none';
+        if (!json.ok) throw new Error(json.error);
+        toast(json.message || 'DA 리포트 발송 완료!');
+      } catch(e) { overlay.style.display='none'; toast(e.message, true); }
+    }
 
     async function toggleReportFeat(feat, enabled) {
       const label = document.getElementById('label-'+feat);
@@ -5928,6 +6091,130 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     console.error('리포트 발송 오류:', err);
     res.json({ ok: false, error: `발송 실패: ${err.message}` });
   }
+});
+
+// ─── DA 리포트 API ─────────────────────────────────────────────────
+router.post('/api/da-report/toggle-feat', requireLogin, async (req, res) => {
+  try {
+    const { accountId, feat, enabled } = req.body;
+    const valid = ['feat_da_daily_report','feat_da_weekly_report','feat_da_monthly_report'];
+    if (!valid.includes(feat)) return res.status(400).json({ ok: false, error: '잘못된 기능' });
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA 미활성 계정' });
+    await db.pool.query(`UPDATE ad_accounts SET ${feat} = $1 WHERE id = $2 AND user_id = $3`,
+      [enabled ? 1 : 0, accountId, req.session.userId]);
+    // ON 시 광고담당자 다우오피스 이메일 자동 추가 (SA와 동일 정책)
+    let addedEmail = null;
+    if (enabled) {
+      try {
+        const smtp = await db.getSmtpCredentials(req.session.userId);
+        const daouEmail = (smtp?.daou_email || '').trim().toLowerCase();
+        if (daouEmail) {
+          const current = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
+          const currentLower = current.map(e => e.toLowerCase());
+          if (!currentLower.includes(daouEmail)) {
+            const merged = [...current, smtp.daou_email.trim()].join(',');
+            await db.pool.query('UPDATE ad_accounts SET report_emails = $1 WHERE id = $2 AND user_id = $3',
+              [merged, accountId, req.session.userId]);
+            addedEmail = smtp.daou_email.trim();
+          }
+        }
+      } catch (e) { console.warn('DA 자동 이메일 추가 실패:', e.message); }
+    }
+    res.json({ ok: true, addedEmail });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/api/da-report/download-excel', requireLogin, async (req, res) => {
+  const { type = 'daily', accountId } = req.query;
+  try {
+    if (!['daily','weekly','monthly'].includes(type)) return res.status(400).send('잘못된 타입');
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+    if (!account.has_da) return res.status(400).send('DA 미활성 계정');
+    if (!account.naver_cookie) return res.status(400).send('DA 쿠키 미등록');
+    const { generateDaExcelBuffer } = require('../report/daGenerator');
+    const { buffer } = await generateDaExcelBuffer(account, type);
+    const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = `${safeName}_DA_${typeLabel}_리포트_${dateStr}.xlsx`;
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error(`❌ DA 엑셀 다운로드 [${type}]:`, err.message);
+    res.status(500).set('Content-Type', 'text/plain; charset=utf-8').send(`DA 엑셀 생성 오류: ${err.message}`);
+  }
+});
+
+router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
+  const { type, accountId } = req.body;
+  if (!['daily','weekly','monthly'].includes(type)) return res.status(400).json({ ok: false, error: '잘못된 타입' });
+  try {
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA 미활성 계정' });
+    if (!account.naver_cookie) return res.status(400).json({ ok: false, error: 'DA 쿠키 미등록' });
+    const smtp = await db.getSmtpCredentials(req.session.userId);
+    const emailUser = smtp?.daou_email || smtp?.username || '';
+    const emailPass = smtp?.smtp_pass || '';
+    if (!emailUser || !emailPass) return res.json({ ok: false, error: 'SMTP 미설정. 내 정보에서 다우오피스 계정을 설정해주세요.' });
+    const enriched = {
+      ...account,
+      email_host: smtp?.smtp_host || 'outbound.daouoffice.com',
+      email_port: 465,
+      email_user: emailUser,
+      email_pass: emailPass,
+    };
+    const { generateAndSendDa } = require('../report/daGenerator');
+    const ok = await generateAndSendDa(enriched, type);
+    if (ok) {
+      await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+      res.json({ ok: true, message: 'DA 리포트 발송 완료!' });
+    } else {
+      res.json({ ok: false, error: 'DA 리포트 생성/발송 실패. Vercel 로그 확인.' });
+    }
+  } catch (err) {
+    console.error('DA 리포트 발송 오류:', err);
+    res.json({ ok: false, error: `DA 발송 실패: ${err.message}` });
+  }
+});
+
+// ─── DA Cron (UTC 00:30 = KST 09:30) ──────────────────────────────
+['daily', 'weekly', 'monthly'].forEach(type => {
+  router.get(`/api/cron/da-${type}`, async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+    try {
+      const accounts = await db.getAllAccountsWithFeature(`da_${type}_report`);
+      let sent = 0, failed = 0;
+      for (const account of accounts) {
+        if (!account.has_da || !account.naver_cookie) { failed++; continue; }
+        const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+        account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
+        account.email_port = 465;
+        account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+        account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+        const { generateAndSendDa } = require('../report/daGenerator');
+        const ok = await generateAndSendDa(account, type).catch(err => { console.error(`❌ DA cron [${account.name}]:`, err.message); return false; });
+        if (ok) {
+          sent++;
+          await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+        } else { failed++; }
+      }
+      console.log(`✅ DA Cron [${type}]: ${sent}/${accounts.length}건 발송`);
+      res.json({ ok: true, type, sent, failed, total: accounts.length });
+    } catch (err) {
+      console.error(`❌ DA Cron [${type}]:`, err.message);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 });
 
 // ─── Vercel Cron 엔드포인트 ────────────────────────────────────────

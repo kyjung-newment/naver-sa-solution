@@ -45,6 +45,18 @@
     {
       "path": "/smart-sa/api/cron/monthly",
       "schedule": "0 0 1 * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/da-daily",
+      "schedule": "30 0 * * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/da-weekly",
+      "schedule": "30 0 * * 1"
+    },
+    {
+      "path": "/smart-sa/api/cron/da-monthly",
+      "schedule": "30 0 1 * *"
     }
   ]
 }

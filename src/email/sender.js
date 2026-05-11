@@ -578,4 +578,4 @@ async function sendReport({ account, type, period, data, prevData }) {
   console.log(`✅ [${account.name}] ${typeLabel} 리포트 → ${recipients.join(', ')}${excelBuffer ? ' (엑셀 첨부)' : ''}`);
 }
 
-module.exports = { sendReport, buildHtmlReport, buildExcelReport };
+module.exports = { sendReport, buildHtmlReport, buildExcelReport, sendMailWithFallback };
