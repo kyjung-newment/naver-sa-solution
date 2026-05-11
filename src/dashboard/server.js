@@ -931,7 +931,10 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                   : '<span class="badge badge-gray">미동기화</span>';
                 return `
                 <tr>
-                  <td><strong>${a.name}</strong></td>
+                  <td><strong>${a.name}</strong><br>
+                    ${a.has_sa === false ? '' : '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;margin-right:3px;padding:1px 6px">SA</span>'}
+                    ${a.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;padding:1px 6px">DA</span>' : ''}
+                  </td>
                   <td style="font-family:monospace;font-size:13px;color:#64748b">${a.customer_id}</td>
                   <td>
                     ${syncBadge}<br>
@@ -1341,6 +1344,55 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
         </div>
       </div>
 
+      <!-- 광고 유형 선택 (SA / DA) -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">광고 유형</span></div>
+        <div class="card-body">
+          <p style="font-size:12px;color:#94a3b8;margin:0 0 12px">이 계정에서 집행 중인 광고 유형을 선택하세요. 선택한 유형의 대시보드와 리포트만 활성화됩니다.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
+              <input type="checkbox" name="has_sa" value="1" ${(account.has_sa === false ? '' : 'checked')} style="width:16px;height:16px;flex-shrink:0">
+              <div>
+                <div style="font-size:13px;font-weight:500">🔍 SA (검색광고)</div>
+                <div style="font-size:11px;color:#94a3b8">파워링크/쇼핑검색/브랜드/파워콘텐츠</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
+              <input type="checkbox" name="has_da" value="1" ${account.has_da ? 'checked' : ''} style="width:16px;height:16px;flex-shrink:0">
+              <div>
+                <div style="font-size:13px;font-weight:500">📺 DA (디스플레이광고)</div>
+                <div style="font-size:11px;color:#94a3b8">성과형 디스플레이 (GFA)</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- DA 자격증명 (광고관리 쿠키 + XSRF 토큰) -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">📺 DA 연동 정보 (DA 사용 시 필수)</span></div>
+        <div class="card-body">
+          <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;font-size:12px;color:#78350f;margin-bottom:14px;line-height:1.6">
+            <strong>📌 쿠키/토큰 확인 방법</strong><br>
+            1. <a href="https://ads.naver.com" target="_blank" style="color:#0284c7;font-weight:600">ads.naver.com</a>에 로그인 → 해당 광고주 선택<br>
+            2. F12(개발자 도구) → <strong>Network(네트워크)</strong> 탭 → 필터에 <code style="background:#fff;padding:1px 4px;border-radius:3px">reportPerformance</code> 입력<br>
+            3. 디스플레이 광고 → 보고서 → 성과 보고서 클릭하여 호출 발생<br>
+            4. 발생한 요청 클릭 → <strong>Headers(헤더)</strong> 탭에서:<br>
+            &nbsp;&nbsp;&nbsp;• <strong>Cookie</strong> 헤더 전체 값 복사 → 아래 "광고관리 쿠키"에 붙여넣기<br>
+            &nbsp;&nbsp;&nbsp;• <strong>X-Xsrf-Token</strong> 헤더 값 복사 → 아래 "XSRF Token"에 붙여넣기<br>
+            ⚠️ 쿠키는 보통 며칠~수 주 유효합니다. 만료 시 다시 갱신 필요.
+          </div>
+          <div class="form-group">
+            <label>광고관리 쿠키 (Cookie 헤더 전체)</label>
+            <textarea name="naver_cookie" rows="4" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
+          </div>
+          <div class="form-group">
+            <label>XSRF Token (X-Xsrf-Token 헤더 값)</label>
+            <input name="da_xsrf_token" value="${v('da_xsrf_token')}" placeholder="예: 149f37be-6d7f-477d-9a15-e0bee31ab79b" style="font-family:monospace;font-size:11px">
+          </div>
+        </div>
+      </div>
+
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><span class="card-title">이메일 발송 설정</span></div>
         <div class="card-body">
@@ -1400,6 +1452,9 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   const data = { ...req.body };
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor']
     .forEach(k => { data[k] = k in req.body; });
+  // SA/DA 체크박스 (체크 안 하면 키 자체가 안 옴)
+  data.has_sa = 'has_sa' in req.body;
+  data.has_da = 'has_da' in req.body;
   await db.updateAccount(req.params.id, user.id, data);
   res.redirect(303, '/smart-sa/accounts?msg=saved');
 });

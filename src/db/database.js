@@ -232,6 +232,20 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS naver_cookie TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // SA/DA 광고 유형 플래그 + DA 전용 자격증명 (ads.naver.com 세션)
+  try {
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS has_sa BOOLEAN DEFAULT true`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS has_da BOOLEAN DEFAULT false`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_xsrf_token TEXT DEFAULT ''`);
+    // DA 자동 리포트 기능 플래그
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_daily_report INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_weekly_report INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_monthly_report INTEGER DEFAULT 0`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_daily_report TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_weekly_report TIMESTAMP`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_monthly_report TIMESTAMP`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   // master_keywords에 품질지수(Qi) 컬럼 추가
   try {
     await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS qi_grade INTEGER DEFAULT 0`);
@@ -434,7 +448,8 @@ async function updateAccount(id, userId, data) {
       feat_keyword_monitor = $10, feat_auto_bidding = $11,
       auto_bid_target_rank = $12, auto_bid_max_bid = $13,
       auto_bid_min_bid = $14, auto_bid_interval = $15,
-      site_url = $18, naver_cookie = $19
+      site_url = $18, naver_cookie = $19,
+      has_sa = $20, has_da = $21, da_xsrf_token = $22
     WHERE id = $16 AND user_id = $17
   `, [
     data.name,
@@ -455,6 +470,9 @@ async function updateAccount(id, userId, data) {
     id, userId,
     data.site_url || '',
     data.naver_cookie || '',
+    data.has_sa === false || data.has_sa === 0 || data.has_sa === '0' ? false : true,
+    data.has_da === true || data.has_da === 1 || data.has_da === '1' || data.has_da === 'on' ? true : false,
+    data.da_xsrf_token || '',
   ]);
 }
 
