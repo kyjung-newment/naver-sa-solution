@@ -48,7 +48,16 @@ function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, endpoint
       res.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode === 401 || res.statusCode === 403) {
-          return reject(new Error(`DA 인증 실패 (${res.statusCode}): 쿠키 또는 XSRF 토큰이 만료되었거나 잘못되었습니다. 광고주 설정에서 다시 갱신해주세요.`));
+          // Naver의 실제 에러 메시지를 같이 노출 (권한 부족 vs 인증 만료 구분)
+          let detail = '';
+          try {
+            const j = JSON.parse(body);
+            detail = j.message || j.error || j.msg || JSON.stringify(j).slice(0, 200);
+          } catch (_) { detail = body.slice(0, 200); }
+          return reject(new Error(
+            `DA 인증/권한 실패 (${res.statusCode}): ${detail || '응답 본문 없음'}\n` +
+            `→ 가능 원인: (1) 쿠키 만료 → 다시 복사 필요  (2) 해당 Naver 계정이 광고계정 ${adAccountNo}에 접근 권한 없음  (3) ads.naver.com에서 해당 광고주로 전환 후 새 쿠키 복사 필요`
+          ));
         }
         if (res.statusCode < 200 || res.statusCode >= 300) {
           return reject(new Error(`DA API 오류 ${res.statusCode}: ${body.slice(0, 300)}`));
