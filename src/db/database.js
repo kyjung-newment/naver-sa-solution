@@ -617,24 +617,46 @@ async function upsertMasterAdgroups(accountId, rows) {
 }
 
 async function upsertMasterKeywords(accountId, rows) {
-  await pool.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
-  // Keyword TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword, [4]bidAmt,
-  //   [5]useGroupBidAmt, [6]userLock, [7]inspectStatus, [8]status, [9]regTime,
-  //   [10]editTime, [11]pcLandingUrl, [12]moLandingUrl
-  for (const r of rows) {
-    if (r.length < 4) continue;
-    try {
-      await pool.query(
+  // Keyword TSV: [0]customerId, [1]adgroupId, [2]keywordId, [3]keyword, [4]bidAmt, ...
+  // 대용량 계정(5만+) 대응: 트랜잭션 + 500개씩 배치 insert
+  if (!rows || rows.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
+    const BATCH = 500;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const batch = rows.slice(i, i + BATCH).filter(r => r.length >= 4);
+      if (batch.length === 0) continue;
+      const values = [];
+      const params = [];
+      let pi = 1;
+      for (const r of batch) {
+        values.push(`($${pi},$${pi+1},$${pi+2},$${pi+3},$${pi+4},$${pi+5},$${pi+6},$${pi+7},$${pi+8},$${pi+9},$${pi+10},$${pi+11},$${pi+12})`);
+        params.push(
+          accountId, r[0], r[2], r[3] || '', r[1] || '',
+          parseInt(r[4]) || 0, parseInt(r[5]) || 0,
+          parseInt(r[6]) || 0, r[7] || '', r[8] || '', r[9] || '',
+          r[11] || '', r[12] || ''
+        );
+        pi += 13;
+      }
+      await client.query(
         `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, user_lock, inspect_status, status, reg_time, pc_landing_url, mo_landing_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [accountId, r[0], r[2], r[3] || '', r[1] || '',
-         parseInt(r[4]) || 0, parseInt(r[5]) || 0,
-         parseInt(r[6]) || 0, r[7] || '', r[8] || '', r[9] || '',
-         r[11] || '', r[12] || '']
+         VALUES ${values.join(',')}`,
+        params
       );
-    } catch (e) {
-      if (!e.message.includes('duplicate')) console.log(`키워드 저장 실패: ${e.message}`);
+      inserted += batch.length;
     }
+    await client.query('COMMIT');
+    console.log(`  📋 master_keywords ${inserted}개 저장 완료 (account_id=${accountId})`);
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.log('키워드 저장 실패:', e.message);
+    throw e;
+  } finally {
+    client.release();
   }
 }
 

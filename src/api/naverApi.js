@@ -453,7 +453,9 @@ function createApiClient(creds) {
 
       let status = report.status;
       let downloadUrl = report.downloadUrl;
-      for (let i = 0; i < 15 && status !== 'BUILT'; i++) {
+      // 대용량 계정(5만+ 키워드 등) 대응: Keyword는 90회 × 2초 = 최대 3분 폴링
+      const maxPolls = (item === 'Keyword') ? 90 : 30;
+      for (let i = 0; i < maxPolls && status !== 'BUILT'; i++) {
         if (status === 'NONE') return []; // 변경 데이터 없음 (Delta sync)
         await new Promise(r => setTimeout(r, 2000));
         const check = await apiCall('GET', `/master-reports/${reportId}`);
