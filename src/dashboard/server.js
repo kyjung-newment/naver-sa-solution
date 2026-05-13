@@ -21,8 +21,8 @@ router.use(session({
   cookie: { maxAge: 8 * 60 * 60 * 1000 },
 }));
 
-router.use(express.json({ limit: '5mb' })); // 이미지 base64 업로드 대응
-router.use(express.urlencoded({ extended: true, limit: '5mb' }));
+router.use(express.json({ limit: '20mb' })); // 이미지 base64 업로드 대응
+router.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
@@ -1355,27 +1355,56 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
 
       <!-- 광고 유형 선택 (SA / DA) -->
       <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">광고 유형</span></div>
+        <div class="card-header"><span class="card-title">광고 유형 + 데이터 수신 확인</span></div>
         <div class="card-body">
-          <p style="font-size:12px;color:#94a3b8;margin:0 0 12px">이 계정에서 집행 중인 광고 유형을 선택하세요. 선택한 유형의 대시보드와 리포트만 활성화됩니다.</p>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
-              <input type="checkbox" name="has_sa" value="1" ${(account.has_sa === false ? '' : 'checked')} style="width:16px;height:16px;flex-shrink:0">
-              <div>
-                <div style="font-size:13px;font-weight:500">🔍 SA (검색광고)</div>
-                <div style="font-size:11px;color:#94a3b8">파워링크/쇼핑검색/브랜드/파워콘텐츠</div>
+          <p style="font-size:12px;color:#94a3b8;margin:0 0 12px">이 계정에서 집행 중인 광고 유형을 선택하세요. <strong>"확인" 버튼</strong>으로 데이터가 정상 수신되는지 즉시 테스트할 수 있습니다.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+            <div style="padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
+              <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                <input type="checkbox" name="has_sa" value="1" ${(account.has_sa === false ? '' : 'checked')} style="width:16px;height:16px;flex-shrink:0">
+                <div style="flex:1"><div style="font-size:13px;font-weight:500">🔍 SA (검색광고)</div>
+                  <div style="font-size:11px;color:#94a3b8">파워링크/쇼핑검색/브랜드/파워콘텐츠</div></div>
+              </label>
+              <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+                <button type="button" class="btn btn-outline btn-sm" id="check-sa-btn" style="font-size:11px;padding:4px 10px">🔄 확인</button>
+                <span id="check-sa-status" style="font-size:11px;color:#94a3b8">미확인</span>
               </div>
-            </label>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
-              <input type="checkbox" name="has_da" value="1" ${account.has_da ? 'checked' : ''} style="width:16px;height:16px;flex-shrink:0">
-              <div>
-                <div style="font-size:13px;font-weight:500">📺 DA (디스플레이광고)</div>
-                <div style="font-size:11px;color:#94a3b8">성과형 디스플레이 (GFA)</div>
+            </div>
+            <div style="padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0">
+              <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                <input type="checkbox" name="has_da" value="1" ${account.has_da ? 'checked' : ''} style="width:16px;height:16px;flex-shrink:0">
+                <div style="flex:1"><div style="font-size:13px;font-weight:500">📺 DA (디스플레이광고)</div>
+                  <div style="font-size:11px;color:#94a3b8">성과형 디스플레이 (GFA)</div></div>
+              </label>
+              <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+                <button type="button" class="btn btn-outline btn-sm" id="check-da-btn" style="font-size:11px;padding:4px 10px">🔄 확인</button>
+                <span id="check-da-status" style="font-size:11px;color:#94a3b8">미확인</span>
               </div>
-            </label>
+            </div>
           </div>
         </div>
       </div>
+      <script>
+        (function(){
+          var accountId = ${account.id || 'null'};
+          async function check(kind){
+            var btn = document.getElementById('check-'+kind+'-btn');
+            var status = document.getElementById('check-'+kind+'-status');
+            btn.disabled = true; var orig = btn.innerHTML; btn.innerHTML = '<span class="spinner"></span> 확인 중...';
+            status.textContent = '확인 중...'; status.style.color = '#94a3b8';
+            try {
+              var res = await fetch('/smart-sa/api/account/check-'+kind+'-status?accountId='+accountId);
+              var json = await res.json();
+              if (json.status === 'ok') { status.textContent = '✅ ' + json.message; status.style.color = '#16a34a'; }
+              else if (json.status === 'disabled') { status.textContent = '⚪ ' + json.message; status.style.color = '#94a3b8'; }
+              else { status.textContent = '❌ ' + (json.message || '오류'); status.style.color = '#ef4444'; }
+            } catch(e) { status.textContent = '❌ ' + e.message; status.style.color = '#ef4444'; }
+            finally { btn.disabled = false; btn.innerHTML = orig; }
+          }
+          document.getElementById('check-sa-btn').onclick = function(){ check('sa'); };
+          document.getElementById('check-da-btn').onclick = function(){ check('da'); };
+        })();
+      </script>
 
       <!-- DA 자격증명 (광고관리 쿠키 + XSRF 토큰) -->
       <div class="card" style="margin-bottom:16px">
@@ -1416,7 +1445,8 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
       <script>
         (function(){
           var accountId = ${account.id || 'null'};
-          var images = ${JSON.stringify(JSON.parse(v('da_helper_images') || '[]') || [])};
+          // 전역 도움말 이미지 (모든 광고주 공유)
+          var images = ${JSON.stringify(JSON.parse(account._global_da_helper_images || '[]') || [])};
           var isAdmin = ${user?.is_admin ? 'true' : 'false'};
           function render(){
             var list = document.getElementById('da-helper-images-list');
@@ -1438,7 +1468,7 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
           function save(){
             fetch('/smart-sa/api/account/da-helper-images', {
               method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({ accountId: accountId, images: images })
+              body: JSON.stringify({ images: images })
             }).then(function(r){ return r.json(); }).then(function(j){
               if (j.ok) { render(); }
               else { alert('저장 실패: '+(j.error||'')); }
@@ -1521,6 +1551,9 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor']
     .forEach(k => { account[k] = !!account[k]; });
   const smtpInfo = await db.getSmtpCredentials(user.id);
+  // 전역 DA 도움말 이미지 (system_settings)
+  const settingRow = await db.get('SELECT value FROM system_settings WHERE key = $1', ['da_helper_images']).catch(() => null);
+  account._global_da_helper_images = settingRow?.value || '[]';
   res.send(appLayout(account.name + ' 설정', accountSettingsForm(account, smtpInfo, user), user, 'accounts', await getLayoutOpts(req)));
 });
 
@@ -1536,20 +1569,76 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   res.redirect(303, '/smart-sa/accounts?msg=saved');
 });
 
-// DA 도움말 이미지 저장 (admin만)
+// DA 도움말 이미지 저장 (admin만, 전역 공유)
 router.post('/api/account/da-helper-images', requireLogin, async (req, res) => {
   try {
     const user = await getUser(req);
     if (!user?.is_admin) return res.status(403).json({ ok: false, error: '관리자 권한 필요' });
-    const { accountId, images } = req.body;
+    const { images } = req.body;
     if (!Array.isArray(images)) return res.status(400).json({ ok: false, error: 'images 배열 필요' });
-    // 안전 제한: 최대 10장, 총 4MB
+    // 안전 제한: 최대 15장, 총 15MB
     const total = images.reduce((s, i) => s + (i?.src?.length || 0), 0);
-    if (images.length > 10) return res.status(400).json({ ok: false, error: '최대 10장' });
-    if (total > 4 * 1024 * 1024) return res.status(400).json({ ok: false, error: '총 용량 4MB 초과' });
+    if (images.length > 15) return res.status(400).json({ ok: false, error: '최대 15장' });
+    if (total > 15 * 1024 * 1024) return res.status(400).json({ ok: false, error: '총 용량 15MB 초과' });
     const json = JSON.stringify(images);
-    await db.pool.query('UPDATE ad_accounts SET da_helper_images = $1 WHERE id = $2', [json, accountId]);
+    // system_settings에 저장 (전역 공유)
+    await db.pool.query(`
+      INSERT INTO system_settings (key, value, updated_at) VALUES ('da_helper_images', $1, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP
+    `, [json]);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// DA 데이터 수신 확인 (즉시 호출 → 정상 여부 반환)
+router.get('/api/account/check-da-status', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (!account.has_da) return res.json({ ok: true, status: 'disabled', message: 'DA 비활성 계정' });
+    if (!account.naver_cookie) return res.json({ ok: false, status: 'no_cookie', message: '쿠키 미등록' });
+    const adAccountNo = account.da_account_no || account.customer_id;
+    if (!adAccountNo) return res.json({ ok: false, status: 'no_account_no', message: 'DA 광고계정 번호 미등록' });
+    const { fetchReportPerformance } = require('../api/naverDaApi');
+    const today = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    try {
+      const rows = await fetchReportPerformance({
+        adAccountNo, cookie: account.naver_cookie,
+        startDate: today, endDate: today,
+        reportAdUnit: 'AD_ACCOUNT',
+      });
+      res.json({ ok: true, status: 'ok', message: `정상 수신 (${rows.length}건)`, sampleCount: rows.length });
+    } catch (err) {
+      res.json({ ok: false, status: 'auth_fail', message: err.message });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// SA 데이터 수신 확인
+router.get('/api/account/check-sa-status', requireLogin, async (req, res) => {
+  try {
+    const { accountId } = req.query;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (account.has_sa === false) return res.json({ ok: true, status: 'disabled', message: 'SA 비활성 계정' });
+    const creds = await db.getApiCredentials(req.session.userId);
+    if (!creds) return res.json({ ok: false, status: 'no_creds', message: 'API 자격증명 미등록' });
+    if (!account.customer_id) return res.json({ ok: false, status: 'no_cid', message: 'Customer ID 미등록' });
+    try {
+      const { createApiClient } = require('../api/naverApi');
+      const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
+      const today = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const stats = await client.getStats({ startDate: today, endDate: today });
+      const cnt = stats?.campStats?.length || 0;
+      res.json({ ok: true, status: 'ok', message: `정상 수신 (캠페인 ${cnt}개)`, sampleCount: cnt });
+    } catch (err) {
+      res.json({ ok: false, status: 'auth_fail', message: err.message });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
