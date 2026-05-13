@@ -131,9 +131,23 @@ async function collectDetailData(client, dateRange) {
     for (const result of batchResults) {
       if (result.status === 'fulfilled') {
         const { dt, adRows, convRows, shopKwRows, shopConvRows } = result.value;
-        rawAdDetail.push(...adRows.map(r => ({ date: dt, cols: r })));
+        // AD_DETAIL: imp+clk+cost 모두 0인 행은 메모리 절감 위해 즉시 제외
+        // (전환은 별도 테이블에 있으므로 이 행들은 정말 의미 없는 노이즈)
+        for (const r of adRows) {
+          if (r.length < 14) continue;
+          const imp = parseInt(r[11]) || 0, clk = parseInt(r[12]) || 0, cost = parseInt(r[13]) || 0;
+          if (imp === 0 && clk === 0 && cost === 0) continue;
+          rawAdDetail.push({ date: dt, cols: r });
+        }
+        // CONVERSION은 전부 보존 (전환 발생 = 중요)
         rawConvDetail.push(...convRows.map(r => ({ date: dt, cols: r })));
-        rawShopKwDetail.push(...shopKwRows.map(r => ({ date: dt, cols: r })));
+        // SHOPPINGKEYWORD_DETAIL도 imp+clk+cost 0이면 제외
+        for (const r of shopKwRows) {
+          if (r.length < 14) continue;
+          const imp = parseInt(r[11]) || 0, clk = parseInt(r[12]) || 0, cost = parseInt(r[13]) || 0;
+          if (imp === 0 && clk === 0 && cost === 0) continue;
+          rawShopKwDetail.push({ date: dt, cols: r });
+        }
         rawShopConvDetail.push(...shopConvRows.map(r => ({ date: dt, cols: r })));
       } else {
         console.log(`배치 처리 실패:`, result.reason?.message);

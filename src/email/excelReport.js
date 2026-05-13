@@ -605,15 +605,23 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         wasteful.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.red }); });
         r += 2;
       }
-      // ── 전체 키워드 ──
-      r = subTitle(kws, r, `전체 키워드 목록 (${validKw.length}개, 비용순)`, 14);
+      // ── 전체 키워드 (성능 가드: 200개 초과 시 TOP 200만) ──
+      const KW_LIST_CAP = 200;
+      const showAllKw = validKw.length > KW_LIST_CAP ? validKw.slice(0, KW_LIST_CAP) : validKw;
+      const truncated = validKw.length > KW_LIST_CAP;
+      r = subTitle(kws, r, truncated
+        ? `전체 키워드 목록 (총 ${validKw.length}개 중 비용 상위 ${KW_LIST_CAP}개만 표시 — 메모리 보호)`
+        : `전체 키워드 목록 (${validKw.length}개, 비용순)`, 14);
       r = kwHeader(kws, r);
-      validKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1 }); });
+      showAllKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1 }); });
       if (unknownKw.length > 0) {
         r += 2;
-        r = subTitle(kws, r, `미인식 키워드 ${unknownKw.length}개`, 14);
+        const showUnknown = unknownKw.length > KW_LIST_CAP ? unknownKw.slice(0, KW_LIST_CAP) : unknownKw;
+        r = subTitle(kws, r, unknownKw.length > KW_LIST_CAP
+          ? `미인식 키워드 (총 ${unknownKw.length}개 중 비용 상위 ${KW_LIST_CAP}개)`
+          : `미인식 키워드 ${unknownKw.length}개`, 14);
         r = kwHeader(kws, r);
-        unknownKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.gray }); });
+        showUnknown.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.gray }); });
       }
     });
   }
