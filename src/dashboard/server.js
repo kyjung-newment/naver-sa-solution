@@ -1323,7 +1323,7 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
 });
 
 // 광고주 기능 설정 폼
-function accountSettingsForm(account = {}, smtpInfo = {}) {
+function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
   const v = (k, def = '') => account[k] ?? def;
   const chk = k => account[k] ? 'checked' : '';
   return `
@@ -1521,7 +1521,7 @@ router.get('/accounts/:id/edit', requireLogin, async (req, res) => {
   ['feat_daily_report','feat_weekly_report','feat_monthly_report','feat_keyword_monitor']
     .forEach(k => { account[k] = !!account[k]; });
   const smtpInfo = await db.getSmtpCredentials(user.id);
-  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account, smtpInfo), user, 'accounts', await getLayoutOpts(req)));
+  res.send(appLayout(account.name + ' 설정', accountSettingsForm(account, smtpInfo, user), user, 'accounts', await getLayoutOpts(req)));
 });
 
 router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
