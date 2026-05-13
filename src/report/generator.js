@@ -92,8 +92,8 @@ async function collectDetailData(client, dateRange) {
   const rawShopKwDetail = [];
   const rawShopConvDetail = [];
 
-  // 날짜별 3개씩 병렬 처리 (API 부하 완화 + 속도 개선)
-  const BATCH_SIZE = 3;
+  // 날짜별 6개씩 병렬 처리 (대용량 월간 리포트 안정화)
+  const BATCH_SIZE = 6;
   for (let i = 0; i < dates.length; i += BATCH_SIZE) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
@@ -707,8 +707,8 @@ async function collectReportData(account, type, customRange) {
     } catch (e) {}
   }
 
-  // 전체 타임아웃 가드: monthly는 240초, 그 외는 120초
-  const overallTimeout = type === 'monthly' ? 240000 : 120000;
+  // 전체 타임아웃: monthly 600s / weekly 300s / daily 180s
+  const overallTimeout = type === 'monthly' ? 600000 : (type === 'weekly' ? 300000 : 180000);
   const timeoutPromise = new Promise((_, rej) =>
     setTimeout(() => rej(new Error(`리포트 생성 시간 초과(${overallTimeout / 1000}s). 데이터가 너무 많거나 API 응답이 느립니다.`)), overallTimeout)
   );
@@ -723,10 +723,11 @@ async function collectReportData(account, type, customRange) {
   const data = await Promise.race([collectMain, timeoutPromise]);
 
   // 이전 기간 데이터: 가능한 만큼만, 실패해도 본 데이터로 진행
+  // monthly는 prev 데이터도 30일 → 더 긴 타임아웃 필요
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
-    const prevTimeout = 60000;
+    const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
       const prevPromise = (async () => {
         const prev = await collectDetailData(client, prevRange);

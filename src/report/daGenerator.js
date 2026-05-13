@@ -257,7 +257,7 @@ async function collectDaReportData(account, type, customRange) {
   const period = customRange && customRange.since && customRange.until
     ? `${customRange.since.replace(/-/g,'.')} ~ ${customRange.until.replace(/-/g,'.')} (맞춤)`
     : getPeriodLabel(type, dateRange);
-  const overallTimeout = type === 'monthly' ? 240000 : 120000;
+  const overallTimeout = type === 'monthly' ? 600000 : (type === 'weekly' ? 300000 : 180000);
   const timeoutPromise = new Promise((_, rej) =>
     setTimeout(() => rej(new Error(`DA 리포트 시간 초과(${overallTimeout / 1000}s)`)), overallTimeout)
   );
@@ -266,10 +266,11 @@ async function collectDaReportData(account, type, customRange) {
   let prevData = null;
   const prevRange = getPrevDateRange(type, dateRange);
   if (prevRange) {
+    const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
       prevData = await Promise.race([
         collectDaData(account, prevRange),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('prev timeout')), 60000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('prev timeout')), prevTimeout)),
       ]);
     } catch (e) { console.log('  ⚠️ DA 이전기간 스킵:', e.message); }
   }

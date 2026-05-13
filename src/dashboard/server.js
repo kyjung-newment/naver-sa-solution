@@ -6442,25 +6442,47 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
     if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
+    const startedAt = Date.now();
+    const MAX_RUNTIME_MS = 700000;
     try {
-      const accounts = await db.getAllAccountsWithFeature(`da_${type}_report`);
-      let sent = 0, failed = 0;
-      for (const account of accounts) {
-        if (!account.has_da || !account.naver_cookie) { failed++; continue; }
-        const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-        account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
-        account.email_port = 465;
-        account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
-        account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-        const { generateAndSendDa } = require('../report/daGenerator');
-        const ok = await generateAndSendDa(account, type).catch(err => { console.error(`❌ DA cron [${account.name}]:`, err.message); return false; });
-        if (ok) {
-          sent++;
-          await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
-        } else { failed++; }
+      const allAccounts = await db.getAllAccountsWithFeature(`da_${type}_report`);
+      // 최근 6시간 내 발송 스킵
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+      const accounts = allAccounts.filter(a => {
+        const last = a[`last_da_${type}_report`];
+        return !last || new Date(last).toISOString() < sixHoursAgo;
+      });
+      console.log(`🔄 DA Cron [${type}]: 대상 ${accounts.length}/${allAccounts.length}개 (최근 6h 발송 제외)`);
+
+      let sent = 0, failed = 0, skipped = 0;
+      const concurrency = 3;
+      for (let i = 0; i < accounts.length; i += concurrency) {
+        if (Date.now() - startedAt > MAX_RUNTIME_MS) {
+          skipped = accounts.length - sent - failed;
+          console.warn(`⏰ DA Cron [${type}]: 타임아웃 임박, ${skipped}개 미처리`);
+          break;
+        }
+        const batch = accounts.slice(i, i + concurrency);
+        await Promise.all(batch.map(async (account) => {
+          if (!account.has_da || !account.naver_cookie) { failed++; return; }
+          try {
+            const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+            account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
+            account.email_port = 465;
+            account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+            account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+            const { generateAndSendDa } = require('../report/daGenerator');
+            const ok = await generateAndSendDa(account, type).catch(err => { console.error(`❌ DA cron [${account.name}]:`, err.message); return false; });
+            if (ok) {
+              sent++;
+              await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+            } else { failed++; }
+          } catch (e) { failed++; console.error(`❌ DA cron 처리 [${account.name}]:`, e.message); }
+        }));
       }
-      console.log(`✅ DA Cron [${type}]: ${sent}/${accounts.length}건 발송`);
-      res.json({ ok: true, type, sent, failed, total: accounts.length });
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      console.log(`✅ DA Cron [${type}]: 발송 ${sent}, 실패 ${failed}, 미처리 ${skipped}, ${elapsed}s`);
+      res.json({ ok: true, type, sent, failed, skipped, total: allAccounts.length, elapsed });
     } catch (err) {
       console.error(`❌ DA Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });
@@ -6481,24 +6503,47 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
 
+    const startedAt = Date.now();
+    const MAX_RUNTIME_MS = 700000; // 700s (함수 한도 800s 안전 마진)
     try {
-      const accounts = await db.getAllAccountsWithFeature(`${type}_report`);
-      let sent = 0;
-      for (const account of accounts) {
-        // SMTP 자동 연동: 다우오피스 정보 사용
-        const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-        account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
-        account.email_port = 465;
-        account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
-        account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-        const ok = await generateAndSend(account, type).catch(() => false);
-        if (ok) {
-          await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+      const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`);
+      // 중복 발송 방지: 최근 6시간 내 이미 발송된 계정 스킵 (재시도 안전)
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+      const accounts = allAccounts.filter(a => {
+        const last = a[`last_${type}_report`];
+        return !last || new Date(last).toISOString() < sixHoursAgo;
+      });
+      console.log(`🔄 Cron [${type}]: 대상 ${accounts.length}/${allAccounts.length}개 계정 (최근 6h 발송 제외)`);
+
+      let sent = 0, failed = 0, skipped = 0;
+      // 병렬 처리: 한번에 3개씩
+      const concurrency = 3;
+      for (let i = 0; i < accounts.length; i += concurrency) {
+        // 타임아웃 인지: 다음 배치 진입 전 한도 확인
+        if (Date.now() - startedAt > MAX_RUNTIME_MS) {
+          skipped = accounts.length - sent - failed;
+          console.warn(`⏰ Cron [${type}]: 타임아웃 임박, ${skipped}개 미처리 → 다음 호출에서 재시도`);
+          break;
         }
-        sent++;
+        const batch = accounts.slice(i, i + concurrency);
+        await Promise.all(batch.map(async (account) => {
+          try {
+            const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+            account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
+            account.email_port = 465;
+            account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+            account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+            const ok = await generateAndSend(account, type).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
+            if (ok) {
+              sent++;
+              await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+            } else { failed++; }
+          } catch (e) { failed++; console.error(`❌ Cron 계정 처리 [${account.name}]:`, e.message); }
+        }));
       }
-      console.log(`✅ Vercel Cron [${type}]: ${sent}개 계정 처리`);
-      res.json({ ok: true, type, sent });
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      console.log(`✅ Vercel Cron [${type}]: 발송 ${sent}, 실패 ${failed}, 미처리 ${skipped}, ${elapsed}s`);
+      res.json({ ok: true, type, sent, failed, skipped, total: allAccounts.length, elapsed });
     } catch (err) {
       console.error(`❌ Vercel Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });

@@ -3,7 +3,8 @@
   "regions": ["icn1"],
   "functions": {
     "api/index.js": {
-      "maxDuration": 300,
+      "maxDuration": 800,
+      "memory": 3008,
       "includeFiles": "src/**,config/**,public/**,node_modules/**"
     }
   },
@@ -57,6 +58,22 @@
     {
       "path": "/smart-sa/api/cron/da-monthly",
       "schedule": "30 0 1 * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/monthly",
+      "schedule": "0 3 1 * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/da-monthly",
+      "schedule": "30 3 1 * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/monthly",
+      "schedule": "0 6 1 * *"
+    },
+    {
+      "path": "/smart-sa/api/cron/da-monthly",
+      "schedule": "30 6 1 * *"
     }
   ]
 }
