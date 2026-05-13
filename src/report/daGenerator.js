@@ -250,7 +250,8 @@ function ageSortKey(a) {
 /**
  * 전체 리포트 데이터 (현재 + 이전 기간)
  */
-async function collectDaReportData(account, type, customRange) {
+async function collectDaReportData(account, type, customRange, opts) {
+  opts = opts || {};
   const dateRange = customRange && customRange.since && customRange.until ? customRange : getDateRange(type);
   const period = customRange && customRange.since && customRange.until
     ? `${customRange.since.replace(/-/g,'.')} ~ ${customRange.until.replace(/-/g,'.')} (맞춤)`
@@ -262,7 +263,7 @@ async function collectDaReportData(account, type, customRange) {
   const data = await Promise.race([collectDaData(account, dateRange), timeoutPromise]);
 
   let prevData = null;
-  const prevRange = getPrevDateRange(type, dateRange);
+  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
@@ -778,18 +779,18 @@ async function buildDaExcelReport({ type, period, accountName, data, prevData })
 }
 
 // ─── Preview / Excel buffer / Send ──────────────────────────────────
-async function generateDaPreview(account, type, customRange) {
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
+async function generateDaPreview(account, type, customRange, opts) {
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
   return buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
 }
-async function generateDaExcelBuffer(account, type, customRange) {
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
+async function generateDaExcelBuffer(account, type, customRange, opts) {
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
   return { buffer: await buildDaExcelReport({ type, period, accountName: account.name, data, prevData }), period };
 }
-async function generateAndSendDa(account, type, customRange) {
+async function generateAndSendDa(account, type, customRange, opts) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
   const { sendMailWithFallback } = require('../email/sender');
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
   const html = buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
   const excelBuffer = await buildDaExcelReport({ type, period, accountName: account.name, data, prevData });
 

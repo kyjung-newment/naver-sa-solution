@@ -1625,25 +1625,36 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     </div>
 
     <div id="da-tab-summary" class="da-tab-content">
-      <!-- 성과지표 추이 차트 -->
+      <!-- 성과지표 추이 차트 (3개 지표 동시) -->
       <div class="card" style="margin-bottom:20px">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <span class="card-title">성과지표 추이 (일별)</span>
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:11px;color:#94a3b8">지표:</span>
-            <select id="da-trend-metric" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 8px;font-size:12px;background:#fff;cursor:pointer">
-              <option value="cost">총비용</option>
-              <option value="imp">노출수</option>
-              <option value="clk">클릭수</option>
-              <option value="ctr">CTR</option>
-              <option value="purchaseConvSales">구매매출</option>
-              <option value="purchaseConvCount">구매전환</option>
-              <option value="purchaseRoas">구매ROAS</option>
-            </select>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px">
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+              <select id="da-trend-metric-1" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer">
+                <option value="cost" selected>총비용</option><option value="imp">노출수</option><option value="clk">클릭수</option><option value="ctr">CTR</option>
+                <option value="purchaseConvSales">구매매출</option><option value="purchaseConvCount">구매전환</option><option value="purchaseRoas">구매ROAS</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#16a34a;display:inline-block"></span>
+              <select id="da-trend-metric-2" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer">
+                <option value="cost">총비용</option><option value="imp">노출수</option><option value="clk">클릭수</option><option value="ctr">CTR</option>
+                <option value="purchaseConvSales" selected>구매매출</option><option value="purchaseConvCount">구매전환</option><option value="purchaseRoas">구매ROAS</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:5px">
+              <span style="width:8px;height:8px;border-radius:50%;background:#3b82f6;display:inline-block"></span>
+              <select id="da-trend-metric-3" style="border:1px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:11px;background:#fff;cursor:pointer">
+                <option value="">선택안함</option><option value="cost">총비용</option><option value="imp">노출수</option><option value="clk">클릭수</option><option value="ctr">CTR</option>
+                <option value="purchaseConvSales">구매매출</option><option value="purchaseConvCount">구매전환</option><option value="purchaseRoas" selected>구매ROAS</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="card-body">
-          <div id="da-trend-chart" style="min-height:180px"><div class="empty"><span class="spinner"></span> 추이 데이터 로딩...</div></div>
+          <div id="da-trend-chart" style="min-height:240px"><div class="empty"><span class="spinner"></span> 추이 데이터 로딩...</div></div>
         </div>
       </div>
 
@@ -2050,31 +2061,56 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     function daRenderTrend(){
       var wrap = document.getElementById('da-trend-chart');
       if (!daTrendData || !daTrendData.length) { wrap.innerHTML = '<div class="empty">추이 데이터가 없습니다 (최소 2일 이상 기간 선택 필요).</div>'; return; }
-      var metric = document.getElementById('da-trend-metric').value;
       var labelMap = {cost:'총비용', imp:'노출수', clk:'클릭수', ctr:'CTR', purchaseConvSales:'구매매출', purchaseConvCount:'구매전환', purchaseRoas:'구매ROAS'};
       var fmtMap = {cost:daWon, imp:daNum, clk:daNum, ctr:daPct, purchaseConvSales:daWon, purchaseConvCount:daNum, purchaseRoas:function(v){return Number(v||0).toFixed(2)+'%';}};
-      var fmt = fmtMap[metric] || daNum;
-      var maxV = Math.max.apply(null, daTrendData.map(function(d){return Number(d[metric])||0;}).concat([1]));
-      // 가로 막대 차트
-      var html = '<div style="display:flex;flex-direction:column;gap:4px;font-size:11px">';
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;color:#94a3b8;font-size:11px"><span style="width:80px"></span><span style="flex:1">'+labelMap[metric]+'</span><span style="width:120px;text-align:right">값</span></div>';
+      var colors = ['#ef4444','#16a34a','#3b82f6'];
+      var metrics = [
+        document.getElementById('da-trend-metric-1').value,
+        document.getElementById('da-trend-metric-2').value,
+        document.getElementById('da-trend-metric-3').value,
+      ].filter(Boolean);
+      if (!metrics.length) { wrap.innerHTML = '<div class="empty">표시할 지표를 1개 이상 선택해주세요.</div>'; return; }
+
+      // 각 지표별 max 값 (0 나누기 방지)
+      var maxMap = {};
+      metrics.forEach(function(m){
+        maxMap[m] = Math.max.apply(null, daTrendData.map(function(d){return Number(d[m])||0;}).concat([1]));
+      });
+
+      var html = '<div style="display:flex;flex-direction:column;gap:6px;font-size:11px">';
+      // 헤더 라인
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;color:#94a3b8;font-size:11px;font-weight:600">';
+      html += '<span style="width:80px">날짜</span><span style="flex:1">지표 추이</span>';
+      metrics.forEach(function(m, i){
+        html += '<span style="width:90px;text-align:right;color:'+colors[i]+'">'+labelMap[m]+'</span>';
+      });
+      html += '</div>';
+      // 데이터 행
       daTrendData.forEach(function(d){
-        var v = Number(d[metric])||0;
-        var w = Math.max(v/maxV*100, 1);
-        var color = '#3b82f6';
-        if (metric==='purchaseRoas' || metric==='purchaseConvSales' || metric==='purchaseConvCount') color = '#16a34a';
-        else if (metric==='cost') color = '#ef4444';
-        else if (metric==='ctr') color = '#f59e0b';
-        html += '<div style="display:flex;align-items:center;gap:8px">';
-        html += '<span style="width:80px;color:#64748b;font-weight:500">'+(d.date||'-')+'</span>';
-        html += '<div style="flex:1;height:18px;background:#f1f5f9;border-radius:4px;overflow:hidden"><div style="width:'+w+'%;height:100%;background:'+color+';border-radius:4px;min-width:2px"></div></div>';
-        html += '<span style="width:120px;text-align:right;font-weight:600;color:#1e293b">'+fmt(v)+'</span>';
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9">';
+        html += '<span style="width:80px;color:#64748b;font-weight:500">'+(d.date||'-').slice(5)+'</span>';
+        // 막대 영역 (3개 지표 겹쳐서)
+        html += '<div style="flex:1;display:flex;flex-direction:column;gap:3px">';
+        metrics.forEach(function(m, i){
+          var v = Number(d[m])||0;
+          var w = Math.max(v/maxMap[m]*100, 0.5);
+          html += '<div style="height:8px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="width:'+w+'%;height:100%;background:'+colors[i]+';border-radius:3px;min-width:1px"></div></div>';
+        });
+        html += '</div>';
+        // 값 표시 (3개 지표 각각)
+        metrics.forEach(function(m, i){
+          var v = Number(d[m])||0;
+          var fmt = fmtMap[m] || daNum;
+          html += '<span style="width:90px;text-align:right;font-weight:600;color:'+colors[i]+'">'+fmt(v)+'</span>';
+        });
         html += '</div>';
       });
       html += '</div>';
       wrap.innerHTML = html;
     }
-    document.getElementById('da-trend-metric').addEventListener('change', daRenderTrend);
+    ['da-trend-metric-1','da-trend-metric-2','da-trend-metric-3'].forEach(function(id){
+      var el = document.getElementById(id); if (el) el.addEventListener('change', daRenderTrend);
+    });
 
     async function daLoadCampBars(){
       var wrap = document.getElementById('da-camp-bars');
@@ -6352,7 +6388,9 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     email_pass: emailPass,
   };
   try {
-    const ok = await generateAndSend(enriched, type, customRange);
+    // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (req.body.skipPrev=true 또는 type==='monthly' 기본 스킵)
+    const skipPrev = req.body.skipPrev === true || (type === 'monthly' && !customRange);
+    const ok = await generateAndSend(enriched, type, customRange, { skipPrev });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
@@ -6447,7 +6485,8 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
       email_pass: emailPass,
     };
     const { generateAndSendDa } = require('../report/daGenerator');
-    const ok = await generateAndSendDa(enriched, type, customRange);
+    const skipPrev = req.body.skipPrev === true || (type === 'monthly' && !customRange);
+    const ok = await generateAndSendDa(enriched, type, customRange, { skipPrev });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: 'DA 리포트 발송 완료!' });
@@ -6499,7 +6538,8 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
             account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
             account.email_pass = smtp?.smtp_pass || account.email_pass || '';
             const { generateAndSendDa } = require('../report/daGenerator');
-            const ok = await generateAndSendDa(account, type).catch(err => { console.error(`❌ DA cron [${account.name}]:`, err.message); return false; });
+            const skipPrev = (type === 'monthly');
+            const ok = await generateAndSendDa(account, type, null, { skipPrev }).catch(err => { console.error(`❌ DA cron [${account.name}]:`, err.message); return false; });
             if (ok) {
               sent++;
               await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
@@ -6560,7 +6600,9 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
             account.email_port = 465;
             account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
             account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-            const ok = await generateAndSend(account, type).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
+            // 월간은 prev 데이터 스킵 (메모리/타임아웃 안정화)
+            const skipPrev = (type === 'monthly');
+            const ok = await generateAndSend(account, type, null, { skipPrev }).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
             if (ok) {
               sent++;
               await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);

@@ -92,8 +92,8 @@ async function collectDetailData(client, dateRange) {
   const rawShopKwDetail = [];
   const rawShopConvDetail = [];
 
-  // 날짜별 6개씩 병렬 처리 (대용량 월간 리포트 안정화)
-  const BATCH_SIZE = 6;
+  // 날짜별 5개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
+  const BATCH_SIZE = 5;
   for (let i = 0; i < dates.length; i += BATCH_SIZE) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
@@ -532,7 +532,8 @@ async function calibrateWithStatsApi(data, client, dateRange) {
  * @param {object} account - DB의 ad_accounts + users JOIN 결과
  * @param {'daily'|'weekly'|'monthly'} type
  */
-async function generateAndSend(account, type, customRange) {
+async function generateAndSend(account, type, customRange, opts) {
+  opts = opts || {};
   console.log(`\n📊 [${account.name}] ${type.toUpperCase()} 리포트 생성...`);
 
   const client = createApiClient({
@@ -624,8 +625,9 @@ async function generateAndSend(account, type, customRange) {
     await calibrateWithStatsApi(data, client, dateRange);
 
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
+    // skipPrev 옵션 또는 ENV로 강제 스킵 가능 (cron OOM/타임아웃 방지)
     let prevData = null;
-    const prevRange = getPrevDateRange(type, dateRange);
+    const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
     if (prevRange) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
@@ -663,7 +665,8 @@ async function generateAndSend(account, type, customRange) {
  * - monthly의 경우 30일 + 전전월 30일을 모두 가져오면 5분 초과할 수 있어
  *   타임아웃 가드와 prev 스킵으로 안정성 확보
  */
-async function collectReportData(account, type, customRange) {
+async function collectReportData(account, type, customRange, opts) {
+  opts = opts || {};
   const client = createApiClient({
     apiKey: account.api_key,
     secretKey: account.secret_key,
@@ -724,8 +727,9 @@ async function collectReportData(account, type, customRange) {
 
   // 이전 기간 데이터: 가능한 만큼만, 실패해도 본 데이터로 진행
   // monthly는 prev 데이터도 30일 → 더 긴 타임아웃 필요
+  // skipPrev=true 또는 ENV로 강제 스킵 가능 (cron OOM 방지)
   let prevData = null;
-  const prevRange = getPrevDateRange(type, dateRange);
+  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
@@ -751,8 +755,8 @@ async function collectReportData(account, type, customRange) {
 /**
  * 미리보기용 HTML 생성 (이메일 발송 없이)
  */
-async function generatePreview(account, type, customRange) {
-  const { data, prevData, period } = await collectReportData(account, type, customRange);
+async function generatePreview(account, type, customRange, opts) {
+  const { data, prevData, period } = await collectReportData(account, type, customRange, opts);
   const { buildHtmlReport } = require('../email/sender');
   return buildHtmlReport({ type, period, accountName: account.name, data, prevData });
 }
@@ -760,8 +764,8 @@ async function generatePreview(account, type, customRange) {
 /**
  * Excel 버퍼 생성 (이메일 첨부와 동일한 파일을 다운로드용으로 반환)
  */
-async function generateExcelBuffer(account, type, customRange) {
-  const { data, prevData, period } = await collectReportData(account, type, customRange);
+async function generateExcelBuffer(account, type, customRange, opts) {
+  const { data, prevData, period } = await collectReportData(account, type, customRange, opts);
   const { buildExcelReport } = require('../email/excelReport');
   return { buffer: await buildExcelReport({ type, period, accountName: account.name, data, prevData }), period };
 }
