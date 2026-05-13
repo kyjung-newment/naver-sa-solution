@@ -603,8 +603,9 @@ async function generateAndSend(account, type, customRange, opts) {
       console.log('  ⚠️ DB 마스터 로드 실패:', e.message);
     }
 
-    // 1-2. DB에 데이터 없으면 API 마스터 리포트로 폴백 (타임아웃 15초)
-    if (Object.keys(campNameMap).length === 0) {
+    // 1-2. DB에 데이터 부족하면 API 마스터 리포트로 폴백/보완 (타임아웃 15초)
+    // 캠페인 매핑이 비어있거나, 키워드 매핑이 비어있어도 시도 (브랜드/파워콘텐츠 등 누락 보완)
+    if (Object.keys(campNameMap).length === 0 || Object.keys(kwNameMap).length === 0) {
       try {
         const masterTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('마스터 API 타임아웃')), 15000));
         const masterFetch = Promise.all([
