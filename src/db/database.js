@@ -238,6 +238,7 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS has_da BOOLEAN DEFAULT false`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_xsrf_token TEXT DEFAULT ''`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_account_no TEXT DEFAULT ''`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_helper_images TEXT DEFAULT '[]'`);
     // DA 자동 리포트 기능 플래그
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_daily_report INTEGER DEFAULT 0`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_weekly_report INTEGER DEFAULT 0`);
@@ -827,15 +828,18 @@ async function queryStatsKeywords(accountId, since, until) {
 }
 
 /** 시간대별 탭 */
-async function queryStatsHourly(accountId, since, until) {
+async function queryStatsHourly(accountId, since, until, campaignIds) {
+  const hasCamp = Array.isArray(campaignIds) && campaignIds.length > 0;
+  const campClause = hasCamp ? ` AND campaign_id = ANY($4)` : '';
+  const params = hasCamp ? [accountId, since, until, campaignIds.map(String)] : [accountId, since, until];
   const byHour = await all(`
     SELECT hour, COALESCE(SUM(imp),0)::int AS imp, COALESCE(SUM(clk),0)::int AS clk,
            COALESCE(SUM(cost),0)::bigint AS cost,
            COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
            COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
-    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3${campClause}
     GROUP BY hour ORDER BY hour
-  `, [accountId, since, until]);
+  `, params);
 
   const byDay = await all(`
     SELECT EXTRACT(DOW FROM stat_date)::int AS dow,
@@ -843,9 +847,9 @@ async function queryStatsHourly(accountId, since, until) {
            COALESCE(SUM(cost),0)::bigint AS cost,
            COALESCE(SUM(purchase_cnt),0)::int AS "purchaseCnt",
            COALESCE(SUM(purchase_amt),0)::bigint AS "purchaseAmt"
-    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3
+    FROM stat_daily_detail WHERE account_id = $1 AND stat_date >= $2 AND stat_date <= $3${campClause}
     GROUP BY dow ORDER BY dow
-  `, [accountId, since, until]);
+  `, params);
 
   return { byHour, byDay };
 }

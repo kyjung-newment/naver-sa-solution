@@ -514,30 +514,28 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // 5. 키워드별
+  // 5. 키워드별 (캠페인 유형별 시트 분리)
   // ══════════════════════════════════════════════════════════════════
-  const kwEntries = Object.entries(data.byKeyword || {}).sort((a, b) => b[1].cost - a[1].cost);
-  if (kwEntries.length > 0) {
-    const kws = wb.addWorksheet('키워드별');
-    setup(kws); setColWidths(kws, [14, 20, 22]);
+  const kwAll = Object.entries(data.byKeyword || {}).sort((a, b) => b[1].cost - a[1].cost);
+  if (kwAll.length > 0) {
+    // 캠페인 유형별 그룹화 (cost 합계 0이면 시트 미생성)
+    const typeGroups = {};
+    kwAll.forEach(([id, d]) => {
+      const tp = d.campaignType || '기타';
+      if (!typeGroups[tp]) typeGroups[tp] = [];
+      typeGroups[tp].push([id, d]);
+    });
 
-    // '-' 키워드 필터 (쇼핑검색은 키워드 인식 불가)
-    const validKw = kwEntries.filter(([, d]) => d.name && d.name !== '-' && !d.name.match(/^ncc/));
-    const unknownKw = kwEntries.filter(([, d]) => !d.name || d.name === '-' || d.name.match(/^ncc/));
-    const kwCount = kwEntries.length;
-    const validCount = validKw.length;
-    const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
+    // 시트 생성 순서 우선: 파워링크 → 쇼핑검색 → 브랜드검색 → 파워콘텐츠 → 기타
+    const typeOrder = ['파워링크', '쇼핑검색', '브랜드검색', '파워콘텐츠', '로컬', '기타'];
+    const sortedTypes = Object.keys(typeGroups).sort((a, b) => {
+      const ai = typeOrder.indexOf(a); const bi = typeOrder.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
 
-    let r = 3;
-    r = sectionTitle(kws, r, `키워드별 성과 현황 (${period})`, 15);
-    r++;
-    r = subTitle(kws, r, `전체 ${kwCount}개 · 인식 ${validCount}개 · 전환 발생 ${kwWithConv}개 · 미인식(쇼핑검색 등) ${unknownKw.length}개`, 15);
-    r++;
-
-    // 키워드 헤더 함수: 캠페인유형/광고그룹/키워드
     function kwHeader(ws, row) {
       const hRow = ws.getRow(row); hRow.height = 26;
-      ['캠페인유형', '광고그룹', '키워드', ...mHeaders].forEach((h, i) => {
+      ['광고그룹', '키워드', ...mHeaders].forEach((h, i) => {
         const c = hRow.getCell(i + 2);
         c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
         c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
@@ -545,58 +543,74 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
       });
       return row + 1;
     }
-
     function kwRow(ws, row, d, opts = {}) {
-      return dataRow(ws, row, d, { ...opts, labels: [d.campaignType || '', d.adgroupName || '', d.name || '(미인식)'] });
+      return dataRow(ws, row, d, { ...opts, labels: [d.adgroupName || '', d.name || '(미인식)'] });
     }
 
-    // ── 구매전환 TOP 10 ──
-    const convTop = [...validKw].filter(([, d]) => d.purchaseAmt > 0).sort((a, b) => b[1].purchaseAmt - a[1].purchaseAmt).slice(0, 10);
-    if (convTop.length > 0) {
-      r = subTitle(kws, r, '★ 구매전환매출 TOP 10 키워드', 15);
+    sortedTypes.forEach(tp => {
+      const list = typeGroups[tp];
+      // 데이터 0이면 시트 미생성 (cost 합계 0)
+      const totalCost = list.reduce((s, [, d]) => s + (d.cost || 0), 0);
+      if (totalCost <= 0) return;
+
+      const sheetName = `${tp}_키워드별`.slice(0, 31); // Excel 시트명 31자 제한
+      const kws = wb.addWorksheet(sheetName);
+      setup(kws); setColWidths(kws, [22, 24]);
+
+      // '-' 키워드 필터 (쇼핑검색 등은 키워드 인식 불가)
+      const validKw = list.filter(([, d]) => d.name && d.name !== '-' && !d.name.match(/^ncc/));
+      const unknownKw = list.filter(([, d]) => !d.name || d.name === '-' || d.name.match(/^ncc/));
+      const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
+
+      let r = 3;
+      r = sectionTitle(kws, r, `${tp} · 키워드별 성과 (${period})`, 14);
+      r++;
+      r = subTitle(kws, r, `전체 ${list.length}개 · 인식 ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' · 미인식 '+unknownKw.length+'개' : ''}`, 14);
+      r++;
+
+      // ── 구매전환매출 TOP 10 ──
+      const convTop = [...validKw].filter(([, d]) => d.purchaseAmt > 0).sort((a, b) => b[1].purchaseAmt - a[1].purchaseAmt).slice(0, 10);
+      if (convTop.length > 0) {
+        r = subTitle(kws, r, '★ 구매전환매출 TOP 10', 14);
+        r = kwHeader(kws, r);
+        convTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.green : undefined }); });
+        r += 2;
+      }
+      // ── 클릭 TOP 10 ──
+      const clkTop = [...validKw].sort((a, b) => b[1].clk - a[1].clk).slice(0, 10);
+      if (clkTop.length > 0 && clkTop[0][1].clk > 0) {
+        r = subTitle(kws, r, '★ 클릭 TOP 10', 14);
+        r = kwHeader(kws, r);
+        clkTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.blue : undefined }); });
+        r += 2;
+      }
+      // ── ROAS TOP 10 ──
+      const roasTop = [...validKw].filter(([, d]) => d.clk >= 5 && d.roas > 0).sort((a, b) => b[1].roas - a[1].roas).slice(0, 10);
+      if (roasTop.length > 0) {
+        r = subTitle(kws, r, '★ ROAS TOP 10 (5클릭 이상)', 14);
+        r = kwHeader(kws, r);
+        roasTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.green : undefined }); });
+        r += 2;
+      }
+      // ── 비효율 키워드 ──
+      const wasteful = validKw.filter(([, d]) => d.cost > 0 && d.purchaseCnt === 0).sort((a, b) => b[1].cost - a[1].cost).slice(0, 10);
+      if (wasteful.length > 0) {
+        r = subTitle(kws, r, '⚠ 비효율 키워드 (비용 발생, 전환 없음) TOP 10', 14);
+        r = kwHeader(kws, r);
+        wasteful.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.red }); });
+        r += 2;
+      }
+      // ── 전체 키워드 ──
+      r = subTitle(kws, r, `전체 키워드 목록 (${validKw.length}개, 비용순)`, 14);
       r = kwHeader(kws, r);
-      convTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.green : undefined }); });
-      r += 2;
-    }
-
-    // ── 클릭 TOP 10 ──
-    const clkTop = [...validKw].sort((a, b) => b[1].clk - a[1].clk).slice(0, 10);
-    if (clkTop.length > 0) {
-      r = subTitle(kws, r, '★ 클릭 TOP 10 키워드', 15);
-      r = kwHeader(kws, r);
-      clkTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.blue : undefined }); });
-      r += 2;
-    }
-
-    // ── ROAS TOP 10 ──
-    const roasTop = [...validKw].filter(([, d]) => d.clk >= 5 && d.roas > 0).sort((a, b) => b[1].roas - a[1].roas).slice(0, 10);
-    if (roasTop.length > 0) {
-      r = subTitle(kws, r, '★ ROAS TOP 10 키워드 (5클릭 이상)', 15);
-      r = kwHeader(kws, r);
-      roasTop.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, bold: idx < 3, labelColor: idx < 3 ? C.green : undefined }); });
-      r += 2;
-    }
-
-    // ── 비효율 키워드 ──
-    const wasteful = validKw.filter(([, d]) => d.cost > 0 && d.purchaseCnt === 0).sort((a, b) => b[1].cost - a[1].cost).slice(0, 10);
-    if (wasteful.length > 0) {
-      r = subTitle(kws, r, '⚠ 비효율 키워드 (비용 발생, 전환 없음) TOP 10', 15);
-      r = kwHeader(kws, r);
-      wasteful.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.red }); });
-      r += 2;
-    }
-
-    // ── 전체 키워드 ──
-    r = subTitle(kws, r, `전체 키워드 목록 (${validCount}개, 비용순)`, 15);
-    r = kwHeader(kws, r);
-    validKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1 }); });
-
-    if (unknownKw.length > 0) {
-      r += 2;
-      r = subTitle(kws, r, `미인식 키워드 (쇼핑검색 등) ${unknownKw.length}개`, 15);
-      r = kwHeader(kws, r);
-      unknownKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.gray }); });
-    }
+      validKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1 }); });
+      if (unknownKw.length > 0) {
+        r += 2;
+        r = subTitle(kws, r, `미인식 키워드 ${unknownKw.length}개`, 14);
+        r = kwHeader(kws, r);
+        unknownKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.gray }); });
+      }
+    });
   }
 
   // PC/모바일은 "유형 및 기기별" 시트에 합침 (별도 시트 제거)

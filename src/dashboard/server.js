@@ -21,8 +21,8 @@ router.use(session({
   cookie: { maxAge: 8 * 60 * 60 * 1000 },
 }));
 
-router.use(express.json());
-router.use(express.urlencoded({ extended: true }));
+router.use(express.json({ limit: '5mb' })); // 이미지 base64 업로드 대응
+router.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
@@ -1399,8 +1399,76 @@ function accountSettingsForm(account = {}, smtpInfo = {}) {
             <label>광고관리 쿠키 (Cookie 헤더 전체) — XSRF-TOKEN 포함되어야 함</label>
             <textarea name="naver_cookie" rows="5" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
           </div>
+
+          <!-- 도움말 이미지 (Admin 업로드, 모든 사용자 조회) -->
+          <div class="form-group" style="border-top:1px solid #e5e7eb;padding-top:14px;margin-top:14px">
+            <label style="display:flex;align-items:center;gap:8px">📷 DA 설정 도움말 이미지 ${user?.is_admin ? '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;padding:1px 6px">Admin 업로드</span>' : '<span class="badge badge-gray" style="font-size:10px;padding:1px 6px">Admin만 추가/삭제</span>'}</label>
+            <p style="font-size:11px;color:#94a3b8;margin:4px 0 8px">쿠키 갱신 방법, F12 캡처 위치 등을 시각적으로 안내하는 이미지를 업로드합니다.</p>
+            <div id="da-helper-images-list" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px"></div>
+            ${user?.is_admin ? `
+              <input type="file" id="da-helper-image-input" accept="image/*" style="display:none">
+              <button type="button" class="btn btn-outline btn-sm" id="da-helper-upload-btn" style="font-size:12px">+ 이미지 업로드</button>
+              <span id="da-helper-upload-status" style="font-size:11px;color:#94a3b8;margin-left:8px"></span>
+            ` : ''}
+          </div>
         </div>
       </div>
+      <script>
+        (function(){
+          var accountId = ${account.id || 'null'};
+          var images = ${JSON.stringify(JSON.parse(v('da_helper_images') || '[]') || [])};
+          var isAdmin = ${user?.is_admin ? 'true' : 'false'};
+          function render(){
+            var list = document.getElementById('da-helper-images-list');
+            if (!list) return;
+            if (!images.length) { list.innerHTML = '<div style="color:#94a3b8;font-size:12px;padding:12px;border:1px dashed #e5e7eb;border-radius:8px;width:100%">아직 등록된 도움말 이미지가 없습니다.</div>'; return; }
+            list.innerHTML = images.map(function(img, i){
+              return '<div style="position:relative;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff;width:200px"><img src="'+img.src+'" alt="'+(img.name||'')+'" style="width:100%;height:140px;object-fit:cover;cursor:pointer" onclick="window.open(\\''+img.src+'\\', \\'_blank\\')"><div style="padding:6px 8px;font-size:11px;color:#475569;display:flex;justify-content:space-between;align-items:center"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+(img.name||'image_'+(i+1))+'</span>'+(isAdmin?'<button type="button" data-del="'+i+'" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0">×</button>':'')+'</div></div>';
+            }).join('');
+            if (isAdmin) {
+              list.querySelectorAll('[data-del]').forEach(function(b){
+                b.onclick = function(){
+                  var idx = parseInt(b.dataset.del);
+                  if (!confirm('이미지를 삭제하시겠습니까?')) return;
+                  images.splice(idx, 1); save();
+                };
+              });
+            }
+          }
+          function save(){
+            fetch('/smart-sa/api/account/da-helper-images', {
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ accountId: accountId, images: images })
+            }).then(function(r){ return r.json(); }).then(function(j){
+              if (j.ok) { render(); }
+              else { alert('저장 실패: '+(j.error||'')); }
+            });
+          }
+          if (isAdmin) {
+            var btn = document.getElementById('da-helper-upload-btn');
+            var input = document.getElementById('da-helper-image-input');
+            var status = document.getElementById('da-helper-upload-status');
+            if (btn && input) {
+              btn.onclick = function(){ input.click(); };
+              input.onchange = function(){
+                var file = input.files[0]; if (!file) return;
+                if (file.size > 1024*1024) { status.textContent='⚠️ 1MB 이하만 허용'; status.style.color='#ef4444'; return; }
+                status.textContent = '업로드 중...'; status.style.color = '#94a3b8';
+                var reader = new FileReader();
+                reader.onload = function(e){
+                  images.push({ name: file.name, src: e.target.result });
+                  save();
+                  input.value = '';
+                  status.textContent = '업로드 완료'; status.style.color = '#16a34a';
+                  setTimeout(function(){ status.textContent = ''; }, 2000);
+                };
+                reader.readAsDataURL(file);
+              };
+            }
+          }
+          render();
+        })();
+      </script>
 
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><span class="card-title">이메일 발송 설정</span></div>
@@ -1466,6 +1534,25 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   data.has_da = 'has_da' in req.body;
   await db.updateAccount(req.params.id, user.id, data);
   res.redirect(303, '/smart-sa/accounts?msg=saved');
+});
+
+// DA 도움말 이미지 저장 (admin만)
+router.post('/api/account/da-helper-images', requireLogin, async (req, res) => {
+  try {
+    const user = await getUser(req);
+    if (!user?.is_admin) return res.status(403).json({ ok: false, error: '관리자 권한 필요' });
+    const { accountId, images } = req.body;
+    if (!Array.isArray(images)) return res.status(400).json({ ok: false, error: 'images 배열 필요' });
+    // 안전 제한: 최대 10장, 총 4MB
+    const total = images.reduce((s, i) => s + (i?.src?.length || 0), 0);
+    if (images.length > 10) return res.status(400).json({ ok: false, error: '최대 10장' });
+    if (total > 4 * 1024 * 1024) return res.status(400).json({ ok: false, error: '총 용량 4MB 초과' });
+    const json = JSON.stringify(images);
+    await db.pool.query('UPDATE ad_accounts SET da_helper_images = $1 WHERE id = $2', [json, accountId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 router.delete('/accounts/:id', requireLogin, async (req, res) => {
@@ -2263,7 +2350,7 @@ router.get('/api/da/summary', requireLogin, async (req, res) => {
   }
 });
 
-// ─── DA API: 일별 추이 ─────────────────────────────────────────────
+// ─── DA API: 일별 추이 (CAMPAIGN+DAY 집계 → 안정적 일자 분리) ───────
 router.get('/api/da/trend', requireLogin, async (req, res) => {
   try {
     const { accountId, period = 'yesterday' } = req.query;
@@ -2274,17 +2361,23 @@ router.get('/api/da/trend', requireLogin, async (req, res) => {
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
     const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
     const adAccountNo = account.da_account_no || account.customer_id;
-    const rows = await fetchReportPerformance({
+    // CAMPAIGN 단위 + DAY로 호출 (AD_ACCOUNT+DAY는 응답이 비는 경우 있음)
+    const raw = await fetchReportPerformance({
       adAccountNo,
       cookie: account.naver_cookie,
       startDate: dr.since, endDate: dr.until,
-      reportAdUnit: 'AD_ACCOUNT',
-      dateUnit: 'DAY', // 일별 분리
+      reportAdUnit: 'CAMPAIGN',
+      dateUnit: 'DAY',
     });
-    // 일자별로 합산 (계정 단위니까 하루 1행이 보통이지만 안전하게 합산)
+    // 일자별 집계 (캠페인 합산)
     const byDate = {};
-    rows.forEach(r => {
-      const date = r.targetDate || (r.targetYear && r.targetMonth ? `${r.targetYear}-${String(r.targetMonth).padStart(2,'0')}-01` : null) || '';
+    raw.forEach(r => {
+      // 응답 필드 이름이 모를 수 있어 다양한 후보 시도
+      let date = r.targetDate || r.statDate || r.date || '';
+      if (!date && r.targetYear && r.targetMonth) {
+        const day = r.targetDay || 1;
+        date = `${r.targetYear}-${String(r.targetMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      }
       if (!date) return;
       if (!byDate[date]) byDate[date] = { date, imp:0, clk:0, cost:0, purchaseConvCount:0, purchaseConvSales:0, convCount:0 };
       const n = normalizeRow(r);
@@ -2300,7 +2393,7 @@ router.get('/api/da/trend', requireLogin, async (req, res) => {
       d.purchaseRoas = d.cost > 0 ? d.purchaseConvSales / d.cost * 100 : 0;
       return d;
     }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    res.json({ ok: true, rows: out });
+    res.json({ ok: true, rows: out, _debug: out.length === 0 ? { rawCount: raw.length, sample: raw[0] } : undefined });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -3400,11 +3493,24 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
 
     // ── 시간대별 탭 ──
     var hourlyData = null;
+    var hourlyCampList = []; // 캠페인 목록 (한 번 로드)
+    var hourlyFilterCamps = []; // 선택된 캠페인 ID 다중
     async function loadHourly() {
       const wrap = document.getElementById('hourly-tab-content');
       wrap.innerHTML = '<div class="empty"><span class="spinner"></span> 시간대별 데이터 로딩 중... (10~30초 소요)</div>';
       try {
-        const res = await fetch('/smart-sa/api/tab/hourly?'+periodParams());
+        // 1) 캠페인 목록 (필요할 때만 로드)
+        if (!hourlyCampList.length) {
+          try {
+            const cr = await fetch('/smart-sa/api/tab/campaigns?'+periodParams());
+            const cj = await cr.json();
+            if (cj.ok) hourlyCampList = (cj.campaigns||[]).map(c => ({ id: String(c.campaignId), name: c.campaignName||c.campaignId }));
+          } catch(_){}
+        }
+        // 2) 시간대별 데이터 호출 (필터 적용)
+        var params = periodParams();
+        if (hourlyFilterCamps.length) params += '&campaigns=' + encodeURIComponent(hourlyFilterCamps.join(','));
+        const res = await fetch('/smart-sa/api/tab/hourly?'+params);
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
         tabLoaded.hourly = true;
@@ -3417,6 +3523,13 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       const wrap = document.getElementById('hourly-tab-content');
       TAB_RERENDER['hourly'] = function(){ if (hourlyData) renderHourlyTab(hourlyData); };
       let html = '';
+      // 캠페인 필터 바
+      if (hourlyCampList.length > 0) {
+        html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;flex-wrap:wrap">';
+        html += renderMultiSelect({ id:'hourly-camp-filter', placeholder:'전체 캠페인', items:hourlyCampList, selected:hourlyFilterCamps.slice() });
+        html += '<span style="font-size:12px;color:#94a3b8">'+ (hourlyFilterCamps.length ? hourlyFilterCamps.length+'개 캠페인 선택됨' : '전체 캠페인 합산') +'</span>';
+        html += '</div>';
+      }
       var hCols = getVisibleCols('hourly');
       var hSt = TAB_SORT_STATE['hourly'] || {};
       function sortBy(arr, firstKey) {
@@ -3466,6 +3579,11 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       });
       html += '</tbody></table></div></div>';
       wrap.innerHTML = html;
+      // 캠페인 필터 바인딩
+      bindMultiSelect('hourly-camp-filter', function(sel){
+        hourlyFilterCamps = sel;
+        loadHourly(); // 서버에서 다시 집계
+      });
     }
 
     // ── 타겟별 탭 ──
@@ -4407,6 +4525,8 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
 
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
+    // 캠페인 필터 (선택사항): ?campaigns=id1,id2
+    const campaignIds = (req.query.campaigns || '').toString().split(',').map(s => s.trim()).filter(Boolean);
     const enrich = obj => ({
       ...obj, cost: Number(obj.cost || 0), purchaseAmt: Number(obj.purchaseAmt || 0),
       ctr: obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0,
@@ -4417,7 +4537,7 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     // DB 우선 조회
     const synced = await db.isSynced(account.id, dateRange.since, dateRange.until);
     if (synced) {
-      const { byHour: dbHour, byDay: dbDay } = await db.queryStatsHourly(account.id, dateRange.since, dateRange.until);
+      const { byHour: dbHour, byDay: dbDay } = await db.queryStatsHourly(account.id, dateRange.since, dateRange.until, campaignIds.length ? campaignIds : null);
       // 시간대 0~23 전체 채우기
       const hourMap = {};
       for (let h = 0; h < 24; h++) hourMap[h] = { hour: h, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
@@ -4451,8 +4571,10 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     const byDay = {};
     for (let d = 0; d < 7; d++) byDay[d] = { day: dayNames[d], dayIdx: d, imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 };
 
+    const campSet = campaignIds.length ? new Set(campaignIds.map(String)) : null;
     for (const { date, cols } of adRows) {
       if (cols.length < 14) continue;
+      if (campSet && !campSet.has(String(cols[2]))) continue;
       const hour = parseInt(cols[7]) || 0;
       byHour[hour].imp += parseInt(cols[11]) || 0;
       byHour[hour].clk += parseInt(cols[12]) || 0;
@@ -4464,6 +4586,7 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     }
     for (const { date, cols } of convRows) {
       if (cols.length < 15) continue;
+      if (campSet && !campSet.has(String(cols[2]))) continue;
       const convType = cols[12];
       if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
       const hour = parseInt(cols[7]) || 0;
@@ -5566,7 +5689,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     <!-- SA 탭 -->
     <div id="rep-tab-sa" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? 'style="display:none"' : ''}>
     ${selAccount.has_sa === false ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 SA가 활성화되지 않은 계정입니다. 광고주 설정에서 SA를 활성화하세요.</div>' : `
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
         const desc  = {daily:'어제 하루 성과 (매일 09:00)',weekly:'최근 7일 성과 (월요일 09:00)',monthly:'최근 30일 성과 (매월 1일 09:00)'}[t];
@@ -5582,13 +5705,21 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
           </div>
         </div>`;
       }).join('')}
+      <div class="card" style="border:2px dashed #cbd5e1">
+        <div class="card-body" style="text-align:center">
+          <div style="font-size:32px;margin-bottom:12px">🛠</div>
+          <h3 style="font-weight:600;margin-bottom:6px">맞춤 리포트</h3>
+          <p style="color:#64748b;font-size:12px;margin-bottom:16px">원하는 기간 직접 선택<br>월간 폼으로 생성</p>
+          <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="openCustomReportModal('sa')">📅 기간 선택</button>
+        </div>
+      </div>
     </div>`}
     </div>
 
     <!-- DA 탭 -->
     <div id="rep-tab-da" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? '' : 'style="display:none"'}>
     ${!selAccount.has_da ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 DA가 활성화되지 않은 계정입니다. 광고주 설정에서 DA를 활성화하고 광고관리 쿠키를 등록하세요.</div>' : (!selAccount.naver_cookie ? '<div class="alert" style="background:#fee2e2;color:#7f1d1d;border:1px solid #fecaca;padding:16px;border-radius:8px">DA 광고관리 쿠키가 등록되지 않았습니다. <a href="/smart-sa/accounts/'+selAccount.id+'/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 등록해주세요.</div>' : `
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
         const desc  = {daily:'어제 하루 DA 성과 (매일 09:30)',weekly:'최근 7일 DA 성과 (월요일 09:30)',monthly:'전월 DA 성과 (매월 1일 09:30)'}[t];
@@ -5604,6 +5735,14 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
           </div>
         </div>`;
       }).join('')}
+      <div class="card" style="border:2px dashed #fce7f3">
+        <div class="card-body" style="text-align:center">
+          <div style="font-size:32px;margin-bottom:12px">🛠</div>
+          <h3 style="font-weight:600;margin-bottom:6px">DA 맞춤 리포트</h3>
+          <p style="color:#64748b;font-size:12px;margin-bottom:16px">원하는 기간 직접 선택<br>월간 폼으로 생성</p>
+          <button class="btn btn-primary" style="width:100%;justify-content:center;background:#9f1239" onclick="openCustomReportModal('da')">📅 기간 선택</button>
+        </div>
+      </div>
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">⏰ DA 자동 발송 스케줄</span></div>
@@ -5698,6 +5837,110 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         if (b.dataset.repTab===name) b.classList.add('active'); else b.classList.remove('active');
       });
     }
+
+    // ── 맞춤 기간 리포트 모달 ──
+    function openCustomReportModal(kind){
+      // kind: 'sa' or 'da'
+      var existing = document.getElementById('custom-report-modal');
+      if (existing) existing.remove();
+      var today = new Date(); var end = new Date(today); end.setDate(end.getDate()-1);
+      var start = new Date(today); start.setDate(start.getDate()-30);
+      var fmt = function(d){return d.toISOString().slice(0,10);};
+      var modal = document.createElement('div');
+      modal.id = 'custom-report-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99999;display:flex;align-items:center;justify-content:center';
+      var title = (kind==='da' ? 'DA' : 'SA') + ' 맞춤 리포트';
+      var color = kind==='da' ? '#9f1239' : '#6366f1';
+      modal.innerHTML = '<div style="background:#fff;width:480px;max-width:92vw;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
+        + '<div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><div style="font-size:16px;font-weight:700">'+title+'</div><button id="cr-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b">×</button></div>'
+        + '<div style="padding:20px 22px"><p style="color:#64748b;font-size:13px;margin:0 0 14px">리포트는 <strong>월간 리포트와 동일한 폼</strong>으로 생성됩니다 (전기간 비교 포함).</p>'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px">'
+        + '<div><label style="font-size:12px;color:#475569;font-weight:600;display:block;margin-bottom:4px">시작일</label><input type="date" id="cr-start" value="'+fmt(start)+'" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px"></div>'
+        + '<div><label style="font-size:12px;color:#475569;font-weight:600;display:block;margin-bottom:4px">종료일</label><input type="date" id="cr-end" value="'+fmt(end)+'" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px"></div>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px">'
+        + '<button id="cr-excel" class="btn btn-outline" style="flex:1">📥 엑셀 다운로드</button>'
+        + '<button id="cr-send" class="btn btn-primary" style="flex:1;background:'+color+'">📧 이메일 발송</button>'
+        + '</div></div></div>';
+      document.body.appendChild(modal);
+      document.getElementById('cr-close').onclick = function(){ modal.remove(); };
+      modal.addEventListener('click', function(e){ if (e.target===modal) modal.remove(); });
+      document.getElementById('cr-excel').onclick = function(){
+        var s = document.getElementById('cr-start').value; var e = document.getElementById('cr-end').value;
+        if (!s||!e) return toast('시작/종료일을 선택해주세요.', true);
+        if (s>e) return toast('시작일이 종료일보다 큽니다.', true);
+        modal.remove();
+        if (kind==='da') downloadDaReportCustom(s, e);
+        else downloadSaReportCustom(s, e);
+      };
+      document.getElementById('cr-send').onclick = function(){
+        var s = document.getElementById('cr-start').value; var e = document.getElementById('cr-end').value;
+        if (!s||!e) return toast('시작/종료일을 선택해주세요.', true);
+        if (s>e) return toast('시작일이 종료일보다 큽니다.', true);
+        modal.remove();
+        if (kind==='da') triggerDaReportCustom(s, e);
+        else triggerSaReportCustom(s, e);
+      };
+    }
+
+    async function downloadSaReportCustom(s, e){
+      showReportOverlay('맞춤 SA 리포트 엑셀 생성 중...');
+      try {
+        const res = await fetch('/smart-sa/api/report/download-excel?type=monthly&accountId='+reportAccountId+'&startDate='+s+'&endDate='+e+'&custom=1');
+        if (!res.ok) throw new Error(await res.text() || '서버 오류');
+        const blob = await res.blob(); triggerDownload(blob, res, '맞춤_SA_리포트.xlsx');
+        toast('SA 맞춤 리포트 다운로드 시작');
+      } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
+    }
+    async function triggerSaReportCustom(s, e){
+      showReportOverlay('맞춤 SA 리포트 생성 + 발송 중...');
+      try {
+        const res = await fetch('/smart-sa/api/report/trigger', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type:'monthly', accountId:reportAccountId, startDate:s, endDate:e, custom:true})});
+        const t = await res.text(); let json; try{json=JSON.parse(t);}catch(_){throw new Error('서버 응답 오류');}
+        if (!json.ok) throw new Error(json.error);
+        toast(json.message || 'SA 맞춤 리포트 발송 완료!');
+      } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
+    }
+    async function downloadDaReportCustom(s, e){
+      showReportOverlay('맞춤 DA 리포트 엑셀 생성 중...', '#9f1239');
+      try {
+        const res = await fetch('/smart-sa/api/da-report/download-excel?type=monthly&accountId='+reportAccountId+'&startDate='+s+'&endDate='+e+'&custom=1');
+        if (!res.ok) throw new Error(await res.text() || '서버 오류');
+        const blob = await res.blob(); triggerDownload(blob, res, '맞춤_DA_리포트.xlsx');
+        toast('DA 맞춤 리포트 다운로드 시작');
+      } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
+    }
+    async function triggerDaReportCustom(s, e){
+      showReportOverlay('맞춤 DA 리포트 생성 + 발송 중...', '#9f1239');
+      try {
+        const res = await fetch('/smart-sa/api/da-report/trigger', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type:'monthly', accountId:reportAccountId, startDate:s, endDate:e, custom:true})});
+        const t = await res.text(); let json; try{json=JSON.parse(t);}catch(_){throw new Error('서버 응답 오류');}
+        if (!json.ok) throw new Error(json.error);
+        toast(json.message || 'DA 맞춤 리포트 발송 완료!');
+      } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
+    }
+    function triggerDownload(blob, res, fallback){
+      const cd = res.headers.get('Content-Disposition') || '';
+      let fname = fallback;
+      var m = cd.match(/filename\\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/);
+      if (m) { try { fname = decodeURIComponent(m[1]); } catch(_){} }
+      const url = URL.createObjectURL(blob); const a = document.createElement('a');
+      a.href = url; a.download = fname; document.body.appendChild(a); a.click();
+      setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    }
+    function showReportOverlay(msg, color){
+      color = color || '#6366f1';
+      let overlay = document.getElementById('report-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div'); overlay.id='report-loading-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center';
+        document.body.appendChild(overlay);
+        if (!document.getElementById('spin-style')) { const s=document.createElement('style'); s.id='spin-style'; s.textContent='@keyframes spin{to{transform:rotate(360deg)}}'; document.head.appendChild(s); }
+      }
+      overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:40px 48px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3);max-width:400px"><div style="width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:'+color+';border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 20px"></div><div style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:8px">'+msg+'</div><div style="font-size:13px;color:#94a3b8">최대 4분 소요될 수 있습니다.</div></div>';
+      overlay.style.display='flex';
+    }
+    function hideReportOverlay(){ var o=document.getElementById('report-loading-overlay'); if(o) o.style.display='none'; }
 
     // ── DA 리포트 핸들러 ──
     async function toggleDaReportFeat(feat, enabled) {
@@ -5939,7 +6182,8 @@ router.get('/api/report/download-excel', requireLogin, async (req, res) => {
 
     const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
     const { generateExcelBuffer } = require('../report/generator');
-    const { buffer } = await generateExcelBuffer(enriched, type);
+    const customRange = (req.query.custom && req.query.startDate && req.query.endDate) ? { since: req.query.startDate, until: req.query.endDate } : null;
+    const { buffer } = await generateExcelBuffer(enriched, type, customRange);
 
     const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -6051,8 +6295,9 @@ router.post('/api/report/update-emails', requireLogin, async (req, res) => {
 });
 
 router.post('/api/report/trigger', requireLogin, async (req, res) => {
-  const { type, accountId } = req.body;
+  const { type, accountId, custom, startDate, endDate } = req.body;
   if (!['daily','weekly','monthly'].includes(type)) return res.status(400).json({ ok:false, error:'잘못된 타입' });
+  const customRange = (custom && startDate && endDate) ? { since: startDate, until: endDate } : null;
   const account = await db.getAccountById(accountId, req.session.userId);
   if (!account) return res.status(404).json({ ok:false, error:'광고주 없음' });
 
@@ -6080,10 +6325,12 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     email_pass: emailPass,
   };
   try {
-    const ok = await generateAndSend(enriched, type);
-    if (ok) {
+    const ok = await generateAndSend(enriched, type, customRange);
+    if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
+    } else if (ok) {
+      res.json({ ok: true, message: '맞춤 리포트 발송 완료!' });
     } else {
       res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. Vercel 로그를 확인해주세요.' });
     }
@@ -6137,7 +6384,8 @@ router.get('/api/da-report/download-excel', requireLogin, async (req, res) => {
     if (!account.has_da) return res.status(400).send('DA 미활성 계정');
     if (!account.naver_cookie) return res.status(400).send('DA 쿠키 미등록');
     const { generateDaExcelBuffer } = require('../report/daGenerator');
-    const { buffer } = await generateDaExcelBuffer(account, type);
+    const customRange = (req.query.custom && req.query.startDate && req.query.endDate) ? { since: req.query.startDate, until: req.query.endDate } : null;
+    const { buffer } = await generateDaExcelBuffer(account, type, customRange);
     const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
@@ -6152,8 +6400,9 @@ router.get('/api/da-report/download-excel', requireLogin, async (req, res) => {
 });
 
 router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
-  const { type, accountId } = req.body;
+  const { type, accountId, custom, startDate, endDate } = req.body;
   if (!['daily','weekly','monthly'].includes(type)) return res.status(400).json({ ok: false, error: '잘못된 타입' });
+  const customRange = (custom && startDate && endDate) ? { since: startDate, until: endDate } : null;
   try {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
@@ -6171,10 +6420,12 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
       email_pass: emailPass,
     };
     const { generateAndSendDa } = require('../report/daGenerator');
-    const ok = await generateAndSendDa(enriched, type);
-    if (ok) {
+    const ok = await generateAndSendDa(enriched, type, customRange);
+    if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_da_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: 'DA 리포트 발송 완료!' });
+    } else if (ok) {
+      res.json({ ok: true, message: 'DA 맞춤 리포트 발송 완료!' });
     } else {
       res.json({ ok: false, error: 'DA 리포트 생성/발송 실패. Vercel 로그 확인.' });
     }

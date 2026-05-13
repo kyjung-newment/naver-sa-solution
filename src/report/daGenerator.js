@@ -106,14 +106,14 @@ function groupBy(rows, keyFn, labelFn) {
 
 /**
  * 모든 데이터 수집 (캠페인/그룹/소재/성별/연령/지면)
- * 5분 타임아웃 가드
+ * 캠페인+그룹별 인구통계/지면도 추가 수집
  */
 async function collectDaData(account, dateRange) {
   const adAccountNo = account.da_account_no || account.customer_id;
   const baseArgs = { adAccountNo, cookie: account.naver_cookie, startDate: dateRange.since, endDate: dateRange.until };
 
-  // 캠페인/그룹/소재 + 성별/연령 병렬
-  const [campRows, agRows, crRows, genderRows, ageRows] = await Promise.allSettled([
+  // 1) 캠페인/그룹/소재 + 계정전체 성별/연령 병렬
+  const [campRows, agRows, crRows, accGenderRows, accAgeRows] = await Promise.allSettled([
     fetchReportPerformance({ ...baseArgs, reportAdUnit: 'CAMPAIGN' }),
     fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_SET' }),
     fetchReportPerformance({ ...baseArgs, reportAdUnit: 'CREATIVE' }),
@@ -121,39 +121,116 @@ async function collectDaData(account, dateRange) {
     fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'AGE' }),
   ]).then(results => results.map(r => r.status === 'fulfilled' ? (r.value || []).map(normalizeRow) : []));
 
-  // 매체 그룹: AD_SET별 호출 → 집계 (병렬 5개씩)
-  let placeRows = [];
-  if (agRows.length > 0) {
-    const adSetIds = [...new Set(agRows.map(r => r.adSetNo).filter(Boolean))];
+  // 2) 캠페인 ID 목록 추출 (캠페인별 브레이크다운용)
+  const campIds = [...new Set(campRows.map(r => r.campaignNo).filter(Boolean))];
+  const agIds = [...new Set(agRows.map(r => r.adSetNo).filter(Boolean))];
+
+  // 캠페인 ID → 이름 매핑
+  const campNameMap = {};
+  campRows.forEach(r => { if (r.campaignNo) campNameMap[r.campaignNo] = r.campaignName || r.campaignNo; });
+  const agNameMap = {};
+  agRows.forEach(r => { if (r.adSetNo) agNameMap[r.adSetNo] = { name: r.adSetName || r.adSetNo, campId: r.campaignNo, campName: r.campaignName }; });
+
+  // 3) 캠페인별 성별/연령/지면 (병렬, 5개씩)
+  async function fetchPerCampaign(dimension, placeUnit) {
+    const out = [];
     const concurrency = 5;
-    for (let i = 0; i < adSetIds.length; i += concurrency) {
-      const batch = adSetIds.slice(i, i + concurrency);
-      const results = await Promise.allSettled(batch.map(no =>
-        fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_SET', adUnitNo: no, reportDimension: 'TOTAL', placeUnit: 'PLACEMENT_GROUP' })
-      ));
-      results.forEach(r => { if (r.status === 'fulfilled' && Array.isArray(r.value)) placeRows.push(...r.value.map(normalizeRow)); });
+    for (let i = 0; i < campIds.length; i += concurrency) {
+      const batch = campIds.slice(i, i + concurrency);
+      const results = await Promise.allSettled(batch.map(no => fetchReportPerformanceDetail({
+        ...baseArgs, reportAdUnit: 'CAMPAIGN', adUnitNo: no,
+        reportDimension: dimension, placeUnit,
+      })));
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          const cId = batch[idx];
+          r.value.forEach(row => {
+            const n = normalizeRow(row);
+            n._campId = cId; n._campName = campNameMap[cId] || cId;
+            out.push(n);
+          });
+        }
+      });
     }
+    return out;
+  }
+  async function fetchPerAdgroup(dimension, placeUnit) {
+    const out = [];
+    const concurrency = 5;
+    for (let i = 0; i < agIds.length; i += concurrency) {
+      const batch = agIds.slice(i, i + concurrency);
+      const results = await Promise.allSettled(batch.map(no => fetchReportPerformanceDetail({
+        ...baseArgs, reportAdUnit: 'AD_SET', adUnitNo: no,
+        reportDimension: dimension, placeUnit,
+      })));
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+          const aId = batch[idx]; const meta = agNameMap[aId] || {};
+          r.value.forEach(row => {
+            const n = normalizeRow(row);
+            n._agId = aId; n._agName = meta.name || aId;
+            n._campId = meta.campId; n._campName = meta.campName;
+            out.push(n);
+          });
+        }
+      });
+    }
+    return out;
   }
 
-  // 일별 추이 (계정 단위)
+  // 4) 모두 병렬 호출
+  const [
+    campGenderRows, campAgeRows, campPlaceRows,
+    agGenderRows, agAgeRows, agPlaceRows,
+  ] = await Promise.all([
+    fetchPerCampaign('GENDER', undefined).catch(() => []),
+    fetchPerCampaign('AGE', undefined).catch(() => []),
+    fetchPerCampaign('TOTAL', 'PLACEMENT_GROUP').catch(() => []),
+    fetchPerAdgroup('GENDER', undefined).catch(() => []),
+    fetchPerAdgroup('AGE', undefined).catch(() => []),
+    fetchPerAdgroup('TOTAL', 'PLACEMENT_GROUP').catch(() => []),
+  ]);
+
+  // 5) 일별 추이 (캠페인+DAY)
   let dailyRows = [];
   try {
-    const daily = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', dateUnit: 'DAY' });
+    const daily = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'CAMPAIGN', dateUnit: 'DAY' });
     dailyRows = (daily || []).map(normalizeRow);
   } catch (e) { /* skip */ }
+  const byDateMap = {};
+  dailyRows.forEach(r => {
+    let date = r.targetDate;
+    if (!date && r.targetYear) date = `${r.targetYear}-${String(r.targetMonth || 1).padStart(2, '0')}-${String(r.targetDay || 1).padStart(2, '0')}`;
+    if (!date) return;
+    if (!byDateMap[date]) byDateMap[date] = { date, imp: 0, clk: 0, cost: 0, purchaseConvCount: 0, purchaseConvSales: 0, convCount: 0 };
+    byDateMap[date].imp += r.imp; byDateMap[date].clk += r.clk; byDateMap[date].cost += r.cost;
+    byDateMap[date].purchaseConvCount += r.purchaseConvCount;
+    byDateMap[date].purchaseConvSales += r.purchaseConvSales;
+    byDateMap[date].convCount += r.convCount;
+  });
+  const byDate = Object.values(byDateMap).map(d => {
+    d.ctr = d.imp > 0 ? d.clk / d.imp * 100 : 0;
+    d.purchaseRoas = d.cost > 0 ? d.purchaseConvSales / d.cost * 100 : 0;
+    return d;
+  }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   return {
     total: buildTotals(campRows),
     byCampaign: groupBy(campRows, r => r.campaignNo, r => r.campaignName).sort((a, b) => b.cost - a.cost),
     byAdgroup: groupBy(agRows, r => r.adSetNo, r => r.adSetName).sort((a, b) => b.cost - a.cost),
     byCreative: groupBy(crRows, r => r.creativeNo, r => r.creativeName).sort((a, b) => b.cost - a.cost),
-    byGender: groupBy(genderRows, r => r.gender || '_unknown', r => genderLabel(r.gender)).sort((a, b) => b.cost - a.cost),
-    byAge: groupBy(ageRows, r => r.ageGroup || '_unknown', r => ageLabel(r.ageGroup)).sort((a, b) => ageSortKey(a._key) - ageSortKey(b._key)),
-    byPlacement: groupBy(placeRows, r => r.publisherGroupCode || r.placementGroupCode || '_unknown', r => (r.publisherGroupCode || r.placementGroupCode || '알수없음')).sort((a, b) => b.cost - a.cost),
-    byDate: dailyRows.map(r => {
-      const date = r.targetDate || r.scheduleString || '';
-      return { date, imp: r.imp, clk: r.clk, cost: r.cost, purchaseConvCount: r.purchaseConvCount, purchaseConvSales: r.purchaseConvSales };
-    }).filter(d => d.date).sort((a, b) => (a.date || '').localeCompare(b.date || '')),
+    byGender: groupBy(accGenderRows, r => r.gender || '_unknown', r => genderLabel(r.gender)).sort((a, b) => b.cost - a.cost),
+    byAge: groupBy(accAgeRows, r => r.ageGroup || '_unknown', r => ageLabel(r.ageGroup)).sort((a, b) => ageSortKey(a._key) - ageSortKey(b._key)),
+
+    // 캠페인+세그먼트 단위 (Excel 시트용 raw rows, _campName 포함)
+    byCampaignGender: campGenderRows,
+    byCampaignAge: campAgeRows,
+    byCampaignPlacement: campPlaceRows,
+    byAdgroupGender: agGenderRows,
+    byAdgroupAge: agAgeRows,
+    byAdgroupPlacement: agPlaceRows,
+
+    byDate,
   };
 }
 
@@ -175,9 +252,11 @@ function ageSortKey(a) {
 /**
  * 전체 리포트 데이터 (현재 + 이전 기간)
  */
-async function collectDaReportData(account, type) {
-  const dateRange = getDateRange(type);
-  const period = getPeriodLabel(type, dateRange);
+async function collectDaReportData(account, type, customRange) {
+  const dateRange = customRange && customRange.since && customRange.until ? customRange : getDateRange(type);
+  const period = customRange && customRange.since && customRange.until
+    ? `${customRange.since.replace(/-/g,'.')} ~ ${customRange.until.replace(/-/g,'.')} (맞춤)`
+    : getPeriodLabel(type, dateRange);
   const overallTimeout = type === 'monthly' ? 240000 : 120000;
   const timeoutPromise = new Promise((_, rej) =>
     setTimeout(() => rej(new Error(`DA 리포트 시간 초과(${overallTimeout / 1000}s)`)), overallTimeout)
@@ -390,10 +469,25 @@ function buildDaHtmlReport({ type, period, accountName, data, prevData }) {
   }
   if (demHtml) html += section('인구통계 분석', '👥', demHtml);
 
-  // 7. 노출지면별
-  if (data.byPlacement.length > 0) {
-    const top = data.byPlacement.slice(0, 15);
-    const totalCost = data.byPlacement.reduce((s, r) => s + r.cost, 0) || 1;
+  // 7. 노출지면별 (캠페인별 데이터에서 집계)
+  const placeAgg = {};
+  (data.byCampaignPlacement || []).forEach(r => {
+    const k = r.publisherGroupCode || r.placementGroupCode || '_unknown';
+    if (!placeAgg[k]) placeAgg[k] = { _key: k, _label: k === '_unknown' ? '알수없음' : k, imp: 0, clk: 0, cost: 0, convCount: 0, purchaseConvCount: 0, purchaseConvSales: 0 };
+    placeAgg[k].imp += r.imp; placeAgg[k].clk += r.clk; placeAgg[k].cost += r.cost;
+    placeAgg[k].convCount += r.convCount;
+    placeAgg[k].purchaseConvCount += r.purchaseConvCount;
+    placeAgg[k].purchaseConvSales += r.purchaseConvSales;
+  });
+  const byPlace = Object.values(placeAgg).map(d => {
+    d.ctr = d.imp > 0 ? d.clk / d.imp * 100 : 0;
+    d.cpc = d.clk > 0 ? Math.round(d.cost / d.clk) : 0;
+    d.purchaseRoas = d.cost > 0 ? d.purchaseConvSales / d.cost * 100 : 0;
+    return d;
+  }).sort((a, b) => b.cost - a.cost);
+  if (byPlace.length > 0) {
+    const top = byPlace.slice(0, 15);
+    const totalCost = byPlace.reduce((s, r) => s + r.cost, 0) || 1;
     top.forEach(r => { r._costPct = (r.cost / totalCost * 100).toFixed(1); });
     const rows = top.map(d => [{ v: d._label, bold: true }, ...metricRow(d), { v: d._costPct + '%' }]);
     const tableHtml = makeTable([{ label: '매체/지면', align: 'left' }, ...metricHeaders, { label: '비용비중', align: 'right' }], rows);
@@ -456,95 +550,207 @@ function buildDaHtmlReport({ type, period, accountName, data, prevData }) {
   return html;
 }
 
-// ─── Excel 리포트 빌더 ─────────────────────────────────────────────
+// ─── Excel 리포트 빌더 (SA 스타일 컬러/포맷) ───────────────────────
 async function buildDaExcelReport({ type, period, accountName, data, prevData }) {
   const ExcelJS = require('exceljs');
+  const path = require('path');
+  const fs = require('fs');
   const wb = new ExcelJS.Workbook();
   wb.creator = 'NEWMENT';
   wb.created = new Date();
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
 
-  const headerStyle = { font: { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF03C75A' } }, alignment: { horizontal: 'center', vertical: 'middle' } };
-  const titleStyle = { font: { bold: true, size: 14 }, alignment: { horizontal: 'left' } };
-  const sumStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } } };
+  // 로고
+  let logoId = null;
+  try {
+    const lp = path.join(__dirname, '..', 'assets', 'logo.png');
+    if (fs.existsSync(lp)) logoId = wb.addImage({ buffer: fs.readFileSync(lp), extension: 'png' });
+  } catch (e) {}
 
-  function addMetricSheet(sheetName, items, labelHeader, includeSum) {
-    const ws = wb.addWorksheet(sheetName);
-    ws.columns = [
-      { header: labelHeader, key: 'label', width: 36 },
-      { header: '총비용', key: 'cost', width: 14, style: { numFmt: '#,##0' } },
-      { header: '노출수', key: 'imp', width: 12, style: { numFmt: '#,##0' } },
-      { header: '클릭수', key: 'clk', width: 10, style: { numFmt: '#,##0' } },
-      { header: 'CTR(%)', key: 'ctr', width: 10, style: { numFmt: '0.00' } },
-      { header: 'CPC', key: 'cpc', width: 10, style: { numFmt: '#,##0' } },
-      { header: '전환', key: 'convCount', width: 8, style: { numFmt: '#,##0' } },
-      { header: '구매전환', key: 'purchaseConvCount', width: 10, style: { numFmt: '#,##0' } },
-      { header: '구매매출', key: 'purchaseConvSales', width: 14, style: { numFmt: '#,##0' } },
-      { header: '구매ROAS(%)', key: 'purchaseRoas', width: 12, style: { numFmt: '0.00' } },
-    ];
-    ws.getRow(1).eachCell(c => Object.assign(c, headerStyle));
-    items.forEach(d => ws.addRow({
-      label: d._label || '-', cost: d.cost, imp: d.imp, clk: d.clk, ctr: d.ctr,
-      cpc: d.cpc, convCount: d.convCount, purchaseConvCount: d.purchaseConvCount,
-      purchaseConvSales: d.purchaseConvSales, purchaseRoas: d.purchaseRoas,
-    }));
-    if (includeSum && data.total) {
-      const sumRow = ws.addRow({
-        label: '합계', cost: data.total.cost, imp: data.total.imp, clk: data.total.clk,
-        ctr: data.total.ctr, cpc: data.total.cpc, convCount: data.total.convCount,
-        purchaseConvCount: data.total.purchaseConvCount, purchaseConvSales: data.total.purchaseConvSales,
-        purchaseRoas: data.total.purchaseRoas,
-      });
-      sumRow.eachCell(c => Object.assign(c, sumStyle));
-    }
-    ws.views = [{ state: 'frozen', ySplit: 1 }];
+  const C = {
+    green: 'FF03C75A', dark: 'FF111827', white: 'FFFFFFFF',
+    headerBg: 'FFF3F4F6', border: 'FFD9D9D9', altRow: 'FFFAFBFC',
+    totalBg: 'FFF1F5F9', red: 'FFDC2626', blue: 'FF1D4ED8',
+    gray: 'FF6B7280', purple: 'FF7C3AED', greenT: 'FF16A34A',
+  };
+  const FMT = { num: '#,##0', won: '₩#,##0', pct: '0.00"%"', roas: '0.00"%"' };
+  const border = { top: { style: 'thin', color: { argb: C.border } }, bottom: { style: 'thin', color: { argb: C.border } }, left: { style: 'thin', color: { argb: C.border } }, right: { style: 'thin', color: { argb: C.border } } };
+  const cm = { horizontal: 'center', vertical: 'middle' };
+
+  function setupSheet(ws) {
+    ws.properties.defaultRowHeight = 20;
+    ws.views = [{ showGridLines: false }];
+    ws.getColumn(1).width = 2;
+  }
+  function sectionHeader(ws, r, text, span) {
+    const row = ws.getRow(r); row.height = 32;
+    ws.mergeCells(r, 2, r, span);
+    for (let c = 2; c <= span; c++) { row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.green } }; row.getCell(c).border = border; }
+    const cell = row.getCell(2);
+    cell.value = text; cell.font = { bold: true, size: 13, color: { argb: C.white } }; cell.alignment = cm;
+    return r + 1;
+  }
+  function tableHeaderRow(ws, r, headers) {
+    const row = ws.getRow(r); row.height = 26;
+    headers.forEach((h, i) => {
+      const c = row.getCell(i + 2);
+      c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
+      c.alignment = cm; c.border = border;
+    });
+    return r + 1;
+  }
+  // 메트릭 헤더 (DA 표준 11열)
+  const M_HEADERS = ['총비용', '노출수', '클릭수', 'CTR', 'CPC', 'CPM', '전환수', '구매전환', '구매매출', '구매ROAS', '장바구니'];
+  const M_FMTS = [FMT.won, FMT.num, FMT.num, FMT.pct, FMT.won, FMT.won, FMT.num, FMT.num, FMT.won, FMT.roas, FMT.num];
+  function dataRowMetric(ws, r, d, opts = {}) {
+    const row = ws.getRow(r); row.height = 22;
+    const sc = opts.startCol || 2;
+    const labels = opts.labels || [];
+    labels.forEach((lb, li) => {
+      const c = row.getCell(sc + li);
+      c.value = lb; c.font = { size: 10, bold: !!opts.bold, color: { argb: opts.labelColor || C.dark } };
+      c.alignment = { horizontal: 'left', vertical: 'middle', wrapText: false }; c.border = border;
+      if (opts.bg) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
+      else if (opts.stripe) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+    });
+    const ms = sc + labels.length;
+    const vals = [d.cost || 0, d.imp || 0, d.clk || 0, d.ctr || 0, d.cpc || 0, d.cpm || 0, d.convCount || 0, d.purchaseConvCount || 0, d.purchaseConvSales || 0, d.purchaseRoas || 0, d.cartConvCount || 0];
+    vals.forEach((v, i) => {
+      const c = row.getCell(ms + i);
+      c.value = v; c.numFmt = M_FMTS[i];
+      c.font = { size: 10, bold: !!opts.bold, color: { argb: opts.bold ? C.dark : C.gray } };
+      c.alignment = cm; c.border = border;
+      if (opts.bg) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
+      else if (opts.stripe) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+    });
+    return r + 1;
   }
 
-  // Summary 시트
+  // ──────────────────── 표지 시트 (요약) ────────────────────
   const ws0 = wb.addWorksheet('요약');
-  ws0.mergeCells('A1:C1');
-  ws0.getCell('A1').value = `${accountName} · ${typeLabel} DA 성과 리포트`;
-  ws0.getCell('A1').style = titleStyle;
-  ws0.getCell('A2').value = `기간: ${period}`;
-  ws0.getCell('A3').value = `발송일: ${new Date().toLocaleString('ko-KR')}`;
+  setupSheet(ws0);
+  // 컬럼 너비
+  [22, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16].forEach((w, i) => ws0.getColumn(i + 2).width = w);
+  // 로고 + 타이틀
+  if (logoId !== null) ws0.addImage(logoId, { tl: { col: 1, row: 1 }, ext: { width: 350, height: 37 } });
+  let r = 4;
+  ws0.mergeCells(r, 2, r, 12);
+  const titleCell = ws0.getRow(r).getCell(2);
+  titleCell.value = `${accountName} · DA ${typeLabel} 성과 리포트`;
+  titleCell.font = { bold: true, size: 18, color: { argb: C.dark } };
+  titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
+  ws0.getRow(r).height = 32;
+  r++;
+  ws0.getRow(r).getCell(2).value = `📅 기간: ${period}    📤 발송일: ${new Date().toLocaleString('ko-KR')}`;
+  ws0.getRow(r).getCell(2).font = { size: 11, color: { argb: C.gray } };
+  ws0.mergeCells(r, 2, r, 12);
+  r += 2;
+  // 섹션: 핵심 지표
+  r = sectionHeader(ws0, r, '🔑 핵심 지표', 12);
+  // KPI 카드 형식 (각 셀)
   const t = data.total;
-  const rows = [
-    ['총비용', t.cost], ['노출수', t.imp], ['클릭수', t.clk], ['CTR(%)', Number((t.ctr || 0).toFixed(2))],
-    ['CPC', t.cpc], ['CPM', t.cpm], ['전환수', t.convCount], ['구매전환수', t.purchaseConvCount],
-    ['구매전환매출', t.purchaseConvSales], ['구매ROAS(%)', Number((t.purchaseRoas || 0).toFixed(2))],
-    ['장바구니수', t.cartConvCount], ['장바구니매출', t.cartConvSales],
+  const kpis = [
+    ['총비용', t.cost, FMT.won, C.red],
+    ['노출수', t.imp, FMT.num, C.dark],
+    ['클릭수', t.clk, FMT.num, C.blue],
+    ['CTR', t.ctr, FMT.pct, C.dark],
+    ['CPC', t.cpc, FMT.won, C.dark],
+    ['CPM', t.cpm, FMT.won, C.dark],
+    ['전환수', t.convCount, FMT.num, C.purple],
+    ['구매전환', t.purchaseConvCount, FMT.num, C.purple],
+    ['구매매출', t.purchaseConvSales, FMT.won, C.greenT],
+    ['구매ROAS', t.purchaseRoas, FMT.roas, t.purchaseRoas >= 100 ? C.greenT : C.red],
+    ['장바구니', t.cartConvCount, FMT.num, C.dark],
   ];
-  ws0.addRow([]);
-  ws0.addRow(['지표', '값']);
-  ws0.getRow(5).eachCell(c => Object.assign(c, headerStyle));
-  rows.forEach(r => ws0.addRow(r));
-  ws0.getColumn(1).width = 24;
-  ws0.getColumn(2).width = 18;
-  ws0.getColumn(2).numFmt = '#,##0';
+  // 라벨 행
+  const labelRow = ws0.getRow(r); labelRow.height = 24;
+  kpis.forEach((k, i) => {
+    const c = labelRow.getCell(i + 2);
+    c.value = k[0]; c.font = { size: 10, color: { argb: C.gray } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
+    c.alignment = cm; c.border = border;
+  });
+  r++;
+  // 값 행
+  const valRow = ws0.getRow(r); valRow.height = 32;
+  kpis.forEach((k, i) => {
+    const c = valRow.getCell(i + 2);
+    c.value = k[1]; c.numFmt = k[2];
+    c.font = { bold: true, size: 12, color: { argb: k[3] } };
+    c.alignment = cm; c.border = border;
+  });
+  r += 2;
 
-  if (data.byCampaign.length) addMetricSheet('캠페인별', data.byCampaign, '캠페인', true);
+  // 캠페인별 표
+  if (data.byCampaign.length) {
+    r = sectionHeader(ws0, r, '📋 캠페인별 성과', 12);
+    r = tableHeaderRow(ws0, r, ['캠페인', ...M_HEADERS]);
+    data.byCampaign.forEach((c, i) => { r = dataRowMetric(ws0, r, c, { labels: [c._label || '-'], stripe: i % 2 === 1 }); });
+    r = dataRowMetric(ws0, r, t, { labels: ['합계'], bold: true, bg: C.totalBg });
+    r += 1;
+  }
+
+  // ──────────────────── 개별 시트 헬퍼 ────────────────────
+  function addMetricSheet(sheetName, items, labelHeader, includeSum) {
+    if (!items || !items.length) return;
+    const ws = wb.addWorksheet(sheetName);
+    setupSheet(ws);
+    ws.getColumn(2).width = 32;
+    for (let i = 0; i < M_HEADERS.length; i++) ws.getColumn(i + 3).width = 14;
+    let rr = 1;
+    rr = sectionHeader(ws, rr, sheetName, 12);
+    rr = tableHeaderRow(ws, rr, [labelHeader, ...M_HEADERS]);
+    items.forEach((d, i) => { rr = dataRowMetric(ws, rr, d, { labels: [d._label || '-'], stripe: i % 2 === 1 }); });
+    if (includeSum && data.total) rr = dataRowMetric(ws, rr, data.total, { labels: ['합계'], bold: true, bg: C.totalBg });
+    ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
+  }
+
+  // 캠페인+세그먼트 단위 시트 (캠페인 → 광고그룹 → 세그먼트 + 메트릭)
+  function addSegmentedSheet(sheetName, items, segHeader, segFn) {
+    if (!items || !items.length) return;
+    const ws = wb.addWorksheet(sheetName);
+    setupSheet(ws);
+    [28, 24, 14, ...M_HEADERS.map(() => 14)].forEach((w, i) => ws.getColumn(i + 2).width = w);
+    let rr = 1;
+    rr = sectionHeader(ws, rr, sheetName, 14);
+    rr = tableHeaderRow(ws, rr, ['캠페인', '광고그룹', segHeader, ...M_HEADERS]);
+    items.forEach((d, i) => {
+      rr = dataRowMetric(ws, rr, d, {
+        labels: [d._campName || '-', d._agName || '-', segFn(d)],
+        stripe: i % 2 === 1,
+      });
+    });
+    ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
+  }
+
   if (data.byAdgroup.length) addMetricSheet('광고그룹별', data.byAdgroup, '광고그룹');
   if (data.byCreative.length) addMetricSheet('소재별', data.byCreative, '소재');
-  if (data.byGender.length) addMetricSheet('성별', data.byGender, '성별');
-  if (data.byAge.length) addMetricSheet('연령대', data.byAge, '연령대');
-  if (data.byPlacement.length) addMetricSheet('노출지면', data.byPlacement, '매체/지면');
+  // 캠페인 단위 인구통계/지면
+  addSegmentedSheet('캠페인별_성별', data.byCampaignGender, '성별', d => genderLabel(d.gender));
+  addSegmentedSheet('캠페인별_연령', data.byCampaignAge, '연령대', d => ageLabel(d.ageGroup));
+  addSegmentedSheet('캠페인별_노출지면', data.byCampaignPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
+  // 광고그룹 단위
+  addSegmentedSheet('광고그룹별_성별', data.byAdgroupGender, '성별', d => genderLabel(d.gender));
+  addSegmentedSheet('광고그룹별_연령', data.byAdgroupAge, '연령대', d => ageLabel(d.ageGroup));
+  addSegmentedSheet('광고그룹별_노출지면', data.byAdgroupPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
 
   return await wb.xlsx.writeBuffer();
 }
 
 // ─── Preview / Excel buffer / Send ──────────────────────────────────
-async function generateDaPreview(account, type) {
-  const { data, prevData, period } = await collectDaReportData(account, type);
+async function generateDaPreview(account, type, customRange) {
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
   return buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
 }
-async function generateDaExcelBuffer(account, type) {
-  const { data, prevData, period } = await collectDaReportData(account, type);
+async function generateDaExcelBuffer(account, type, customRange) {
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
   return { buffer: await buildDaExcelReport({ type, period, accountName: account.name, data, prevData }), period };
 }
-async function generateAndSendDa(account, type) {
+async function generateAndSendDa(account, type, customRange) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
   const { sendMailWithFallback } = require('../email/sender');
-  const { data, prevData, period } = await collectDaReportData(account, type);
+  const { data, prevData, period } = await collectDaReportData(account, type, customRange);
   const html = buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
   const excelBuffer = await buildDaExcelReport({ type, period, accountName: account.name, data, prevData });
 

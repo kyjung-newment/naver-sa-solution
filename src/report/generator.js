@@ -532,7 +532,7 @@ async function calibrateWithStatsApi(data, client, dateRange) {
  * @param {object} account - DB의 ad_accounts + users JOIN 결과
  * @param {'daily'|'weekly'|'monthly'} type
  */
-async function generateAndSend(account, type) {
+async function generateAndSend(account, type, customRange) {
   console.log(`\n📊 [${account.name}] ${type.toUpperCase()} 리포트 생성...`);
 
   const client = createApiClient({
@@ -542,8 +542,10 @@ async function generateAndSend(account, type) {
   });
 
   try {
-    const dateRange = getDateRange(type);
-    const period = getPeriodLabel(type, dateRange);
+    const dateRange = customRange && customRange.since && customRange.until ? customRange : getDateRange(type);
+    const period = customRange && customRange.since && customRange.until
+      ? `${customRange.since.replace(/-/g,'.')} ~ ${customRange.until.replace(/-/g,'.')} (맞춤)`
+      : getPeriodLabel(type, dateRange);
 
     // 1. 이름 매핑: DB 마스터 데이터 우선 → 없으면 API 마스터 리포트 폴백
     const campNameMap = {};
@@ -661,15 +663,17 @@ async function generateAndSend(account, type) {
  * - monthly의 경우 30일 + 전전월 30일을 모두 가져오면 5분 초과할 수 있어
  *   타임아웃 가드와 prev 스킵으로 안정성 확보
  */
-async function collectReportData(account, type) {
+async function collectReportData(account, type, customRange) {
   const client = createApiClient({
     apiKey: account.api_key,
     secretKey: account.secret_key,
     customerId: account.customer_id,
   });
 
-  const dateRange = getDateRange(type);
-  const period = getPeriodLabel(type, dateRange);
+  const dateRange = customRange && customRange.since && customRange.until ? customRange : getDateRange(type);
+  const period = customRange && customRange.since && customRange.until
+    ? `${customRange.since.replace(/-/g,'.')} ~ ${customRange.until.replace(/-/g,'.')} (맞춤)`
+    : getPeriodLabel(type, dateRange);
 
   const campNameMap = {};
   const campTypeMap = {};
@@ -746,8 +750,8 @@ async function collectReportData(account, type) {
 /**
  * 미리보기용 HTML 생성 (이메일 발송 없이)
  */
-async function generatePreview(account, type) {
-  const { data, prevData, period } = await collectReportData(account, type);
+async function generatePreview(account, type, customRange) {
+  const { data, prevData, period } = await collectReportData(account, type, customRange);
   const { buildHtmlReport } = require('../email/sender');
   return buildHtmlReport({ type, period, accountName: account.name, data, prevData });
 }
@@ -755,8 +759,8 @@ async function generatePreview(account, type) {
 /**
  * Excel 버퍼 생성 (이메일 첨부와 동일한 파일을 다운로드용으로 반환)
  */
-async function generateExcelBuffer(account, type) {
-  const { data, prevData, period } = await collectReportData(account, type);
+async function generateExcelBuffer(account, type, customRange) {
+  const { data, prevData, period } = await collectReportData(account, type, customRange);
   const { buildExcelReport } = require('../email/excelReport');
   return { buffer: await buildExcelReport({ type, period, accountName: account.name, data, prevData }), period };
 }
