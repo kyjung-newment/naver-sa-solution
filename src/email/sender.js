@@ -125,7 +125,7 @@ function section(title, icon, content) {
 }
 
 // ─── 메인 HTML 리포트 빌더 ─────────────────────────────────────────
-function buildHtmlReport({ type, period, accountName, data, prevData }) {
+function buildHtmlReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
   const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
   const t = data.total;
@@ -246,9 +246,14 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
   // 3-1. 기간비교 (주간/월간만)
   // ══════════════════════════════════════════════════════════════
   if (prevData && type !== 'daily') {
-    const cmpLabel = { weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비';
-    const currLabel = { weekly: '금주', monthly: '당월' }[type] || '당기';
-    const prevLabelStr = { weekly: '전주', monthly: '전월' }[type] || '전기';
+    function fmtRange(r) {
+      if (!r) return '';
+      const a = (r.since || '').replace(/-/g, '.'); const b = (r.until || '').replace(/-/g, '.');
+      return a === b ? a : `${a}~${b}`;
+    }
+    const currLabel = isCustom ? `당기 (${fmtRange(dateRange)})` : ({ weekly: '금주', monthly: '당월' }[type] || '당기');
+    const prevLabelStr = isCustom ? `전기 (${fmtRange(prevRange)})` : ({ weekly: '전주', monthly: '전월' }[type] || '전기');
+    const cmpLabel = isCustom ? '전기 대비' : ({ weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비');
 
     function cmpBadge(curr, prev) {
       if (!prev) return '';
@@ -530,7 +535,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData }) {
 const { buildExcelReport } = require('./excelReport');
 
 // ─── 이메일 발송 ────────────────────────────────────────────────────
-async function sendReport({ account, type, period, data, prevData }) {
+async function sendReport({ account, type, period, data, prevData, dateRange, prevRange, isCustom }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
   const today = new Date().toLocaleDateString('ko-KR');
   const recipients = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
@@ -544,12 +549,12 @@ async function sendReport({ account, type, period, data, prevData }) {
     return;
   }
 
-  const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData });
+  const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
 
   // 엑셀 리포트 생성
   let excelBuffer = null;
   try {
-    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData });
+    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
     console.log(`📊 [${account.name}] 엑셀 리포트 생성 완료 (${Math.round(excelBuffer.length / 1024)}KB)`);
   } catch (e) {
     console.warn(`⚠️ [${account.name}] 엑셀 리포트 생성 실패:`, e.message);

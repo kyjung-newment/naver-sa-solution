@@ -8,13 +8,13 @@ const f = {
   won: n => `₩${Number(n || 0).toLocaleString('ko-KR')}`,
 };
 
-async function buildExcelReport({ type, period, accountName, data, prevData }) {
+async function buildExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = '뉴먼트 솔루션';
   wb.created = new Date();
 
-  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
-  const diffLabel = { daily: '전일 대비', weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비';
+  const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
+  const diffLabel = isCustom ? '전기 대비' : ({ daily: '전일 대비', weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비');
   const t = data.total;
   const pt = prevData?.total || null;
   const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -248,10 +248,15 @@ async function buildExcelReport({ type, period, accountName, data, prevData }) {
   // ══════════════════════════════════════════════════════════════════
   // 2-1. 기간비교 (주간/월간만, prevData 있을 때) — 요약·캠페인 바로 다음
   // ══════════════════════════════════════════════════════════════════
-  if (prevData && type !== 'daily') {
-    const cmpLabel = { weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비';
-    const currLabel = { weekly: '금주', monthly: '당월' }[type] || '당기';
-    const prevCmpLabel = { weekly: '전주', monthly: '전월' }[type] || '전기';
+  if (prevData && (type !== 'daily' || isCustom)) {
+    function fmtRange(r) {
+      if (!r) return '';
+      const a = (r.since || '').replace(/-/g, '.'); const b = (r.until || '').replace(/-/g, '.');
+      return a === b ? a : `${a}~${b}`;
+    }
+    const cmpLabel = isCustom ? '전기 대비' : ({ weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비');
+    const currLabel = isCustom ? `당기 (${fmtRange(dateRange)})` : ({ weekly: '금주', monthly: '당월' }[type] || '당기');
+    const prevCmpLabel = isCustom ? `전기 (${fmtRange(prevRange)})` : ({ weekly: '전주', monthly: '전월' }[type] || '전기');
 
     const cmp = wb.addWorksheet('기간비교');
     setup(cmp); setColWidths(cmp, [16, 10]);

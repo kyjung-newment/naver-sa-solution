@@ -626,8 +626,17 @@ async function generateAndSend(account, type, customRange, opts) {
 
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     // skipPrev 옵션 또는 ENV로 강제 스킵 가능 (cron OOM/타임아웃 방지)
+    // 맞춤 기간: 동일 길이 직전 기간
+    function getCustomPrevRange2(dr) {
+      const since = new Date(dr.since); const until = new Date(dr.until);
+      const diffDays = Math.round((until - since) / 86400000) + 1;
+      const prevUntil = new Date(since); prevUntil.setDate(prevUntil.getDate() - 1);
+      const prevSince = new Date(prevUntil); prevSince.setDate(prevSince.getDate() - (diffDays - 1));
+      return { since: prevSince.toISOString().slice(0,10), until: prevUntil.toISOString().slice(0,10) };
+    }
     let prevData = null;
-    const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
+    const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null
+      : (customRange && customRange.since && customRange.until ? getCustomPrevRange2(customRange) : getPrevDateRange(type, dateRange));
     if (prevRange) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
@@ -643,12 +652,16 @@ async function generateAndSend(account, type, customRange, opts) {
     }
 
     // 5. 리포트 발송
+    const isCustom = !!(customRange && customRange.since && customRange.until);
     await sendReport({
       account,
       type,
       period,
       data,
       prevData,
+      dateRange,
+      prevRange,
+      isCustom,
     });
 
     console.log(`✅ [${account.name}] ${type.toUpperCase()} 완료`);
@@ -729,7 +742,16 @@ async function collectReportData(account, type, customRange, opts) {
   // monthly는 prev 데이터도 30일 → 더 긴 타임아웃 필요
   // skipPrev=true 또는 ENV로 강제 스킵 가능 (cron OOM 방지)
   let prevData = null;
-  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
+  // 맞춤 기간: 동일 길이 직전 기간 (예: 5/1~5/12 12일 → 4/19~4/30)
+  function getCustomPrevRange(dr) {
+    const since = new Date(dr.since); const until = new Date(dr.until);
+    const diffDays = Math.round((until - since) / 86400000) + 1; // inclusive
+    const prevUntil = new Date(since); prevUntil.setDate(prevUntil.getDate() - 1);
+    const prevSince = new Date(prevUntil); prevSince.setDate(prevSince.getDate() - (diffDays - 1));
+    return { since: prevSince.toISOString().slice(0,10), until: prevUntil.toISOString().slice(0,10) };
+  }
+  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null
+    : (customRange && customRange.since && customRange.until ? getCustomPrevRange(customRange) : getPrevDateRange(type, dateRange));
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
@@ -749,25 +771,25 @@ async function collectReportData(account, type, customRange, opts) {
     }
   }
 
-  return { data, prevData, period };
+  return { data, prevData, period, dateRange, prevRange, isCustom: !!(customRange && customRange.since && customRange.until) };
 }
 
 /**
  * 미리보기용 HTML 생성 (이메일 발송 없이)
  */
 async function generatePreview(account, type, customRange, opts) {
-  const { data, prevData, period } = await collectReportData(account, type, customRange, opts);
+  const r = await collectReportData(account, type, customRange, opts);
   const { buildHtmlReport } = require('../email/sender');
-  return buildHtmlReport({ type, period, accountName: account.name, data, prevData });
+  return buildHtmlReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom });
 }
 
 /**
  * Excel 버퍼 생성 (이메일 첨부와 동일한 파일을 다운로드용으로 반환)
  */
 async function generateExcelBuffer(account, type, customRange, opts) {
-  const { data, prevData, period } = await collectReportData(account, type, customRange, opts);
+  const r = await collectReportData(account, type, customRange, opts);
   const { buildExcelReport } = require('../email/excelReport');
-  return { buffer: await buildExcelReport({ type, period, accountName: account.name, data, prevData }), period };
+  return { buffer: await buildExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom }), period: r.period };
 }
 
 module.exports = { generateAndSend, generatePreview, generateExcelBuffer };

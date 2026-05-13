@@ -6388,8 +6388,8 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     email_pass: emailPass,
   };
   try {
-    // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (req.body.skipPrev=true 또는 type==='monthly' 기본 스킵)
-    const skipPrev = req.body.skipPrev === true || (type === 'monthly' && !customRange);
+    // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (단, 맞춤 기간은 비교 데이터 필수이므로 항상 prev 가져옴)
+    const skipPrev = customRange ? false : (req.body.skipPrev === true || (type === 'monthly' && !customRange));
     const ok = await generateAndSend(enriched, type, customRange, { skipPrev });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);

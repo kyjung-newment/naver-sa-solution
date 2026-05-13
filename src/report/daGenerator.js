@@ -262,8 +262,16 @@ async function collectDaReportData(account, type, customRange, opts) {
   );
   const data = await Promise.race([collectDaData(account, dateRange), timeoutPromise]);
 
+  function getCustomPrevRangeDa(dr) {
+    const since = new Date(dr.since); const until = new Date(dr.until);
+    const diffDays = Math.round((until - since) / 86400000) + 1;
+    const prevUntil = new Date(since); prevUntil.setDate(prevUntil.getDate() - 1);
+    const prevSince = new Date(prevUntil); prevSince.setDate(prevSince.getDate() - (diffDays - 1));
+    return { since: prevSince.toISOString().slice(0,10), until: prevUntil.toISOString().slice(0,10) };
+  }
   let prevData = null;
-  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null : getPrevDateRange(type, dateRange);
+  const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null
+    : (customRange && customRange.since && customRange.until ? getCustomPrevRangeDa(customRange) : getPrevDateRange(type, dateRange));
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
@@ -273,7 +281,7 @@ async function collectDaReportData(account, type, customRange, opts) {
       ]);
     } catch (e) { console.log('  ⚠️ DA 이전기간 스킵:', e.message); }
   }
-  return { data, prevData, period };
+  return { data, prevData, period, dateRange, prevRange, isCustom: !!(customRange && customRange.since && customRange.until) };
 }
 
 // ─── HTML 헬퍼 (sender.js와 같은 디자인 톤) ────────────────────────
@@ -340,8 +348,8 @@ function section(title, icon, content) {
 }
 
 // ─── HTML 리포트 빌더 ─────────────────────────────────────────────
-function buildDaHtmlReport({ type, period, accountName, data, prevData }) {
-  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+function buildDaHtmlReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
+  const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
   const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
   const t = data.total;
   const pt = prevData?.total || null;
@@ -494,11 +502,16 @@ function buildDaHtmlReport({ type, period, accountName, data, prevData }) {
     html += section('노출지면별 성과 (상위 15개)', '📍', `<div style="overflow-x:auto">${tableHtml}</div>`);
   }
 
-  // 8. 기간 비교 (주간/월간만)
-  if (prevData && type !== 'daily') {
-    const cmpLabel = { weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비';
-    const currLabel = { weekly: '금주', monthly: '당월' }[type] || '당기';
-    const prevLabelStr = { weekly: '전주', monthly: '전월' }[type] || '전기';
+  // 8. 기간 비교 (주간/월간/맞춤)
+  if (prevData && (type !== 'daily' || isCustom)) {
+    function fmtR(r) {
+      if (!r) return '';
+      const a = (r.since || '').replace(/-/g, '.'); const b = (r.until || '').replace(/-/g, '.');
+      return a === b ? a : `${a}~${b}`;
+    }
+    const cmpLabel = isCustom ? '전기 대비' : ({ weekly: '전주 대비', monthly: '전월 대비' }[type] || '전기 대비');
+    const currLabel = isCustom ? `당기 (${fmtR(dateRange)})` : ({ weekly: '금주', monthly: '당월' }[type] || '당기');
+    const prevLabelStr = isCustom ? `전기 (${fmtR(prevRange)})` : ({ weekly: '전주', monthly: '전월' }[type] || '전기');
     // 캠페인별 비교 (top 5 by current cost)
     const currMap = {}; data.byCampaign.forEach(c => { currMap[c._key] = c; });
     const prevMap = {}; prevData.byCampaign.forEach(c => { prevMap[c._key] = c; });
@@ -551,14 +564,14 @@ function buildDaHtmlReport({ type, period, accountName, data, prevData }) {
 }
 
 // ─── Excel 리포트 빌더 (SA 스타일 컬러/포맷) ───────────────────────
-async function buildDaExcelReport({ type, period, accountName, data, prevData }) {
+async function buildDaExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
   const ExcelJS = require('exceljs');
   const path = require('path');
   const fs = require('fs');
   const wb = new ExcelJS.Workbook();
   wb.creator = 'NEWMENT';
   wb.created = new Date();
-  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+  const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
 
   // 로고
   let logoId = null;
@@ -780,19 +793,20 @@ async function buildDaExcelReport({ type, period, accountName, data, prevData })
 
 // ─── Preview / Excel buffer / Send ──────────────────────────────────
 async function generateDaPreview(account, type, customRange, opts) {
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
-  return buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
+  const r = await collectDaReportData(account, type, customRange, opts);
+  return buildDaHtmlReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom });
 }
 async function generateDaExcelBuffer(account, type, customRange, opts) {
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
-  return { buffer: await buildDaExcelReport({ type, period, accountName: account.name, data, prevData }), period };
+  const r = await collectDaReportData(account, type, customRange, opts);
+  return { buffer: await buildDaExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom }), period: r.period };
 }
 async function generateAndSendDa(account, type, customRange, opts) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
   const { sendMailWithFallback } = require('../email/sender');
-  const { data, prevData, period } = await collectDaReportData(account, type, customRange, opts);
-  const html = buildDaHtmlReport({ type, period, accountName: account.name, data, prevData });
-  const excelBuffer = await buildDaExcelReport({ type, period, accountName: account.name, data, prevData });
+  const r = await collectDaReportData(account, type, customRange, opts);
+  const { data, prevData, period, dateRange, prevRange, isCustom } = r;
+  const html = buildDaHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
+  const excelBuffer = await buildDaExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
 
   const recipients = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
   if (!recipients.length) { console.warn(`⚠️ [${account.name}] DA 수신자 미설정`); return false; }
