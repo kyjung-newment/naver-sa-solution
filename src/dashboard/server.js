@@ -2364,7 +2364,7 @@ router.get('/api/da/summary', requireLogin, async (req, res) => {
   }
 });
 
-// ─── DA API: 일별 추이 (CAMPAIGN+DAY 집계 → 안정적 일자 분리) ───────
+// ─── DA API: 일별 추이 (reportPerformanceDetail + DAY) ──────────────
 router.get('/api/da/trend', requireLogin, async (req, res) => {
   try {
     const { accountId, period = 'yesterday' } = req.query;
@@ -2373,21 +2373,21 @@ router.get('/api/da/trend', requireLogin, async (req, res) => {
     if (!account.has_da) return res.status(400).json({ ok: false, error: 'DA 미활성' });
     if (!account.naver_cookie) return res.status(400).json({ ok: false, error: 'DA 쿠키 미등록' });
     const dr = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
-    const { fetchReportPerformance, normalizeRow } = require('../api/naverDaApi');
+    const { fetchReportPerformanceDetail, normalizeRow } = require('../api/naverDaApi');
     const adAccountNo = account.da_account_no || account.customer_id;
-    // CAMPAIGN 단위 + DAY로 호출 (AD_ACCOUNT+DAY는 응답이 비는 경우 있음)
-    const raw = await fetchReportPerformance({
+    // reportPerformanceDetail + reportDateUnit=DAY (계정 단위)
+    const raw = await fetchReportPerformanceDetail({
       adAccountNo,
       cookie: account.naver_cookie,
       startDate: dr.since, endDate: dr.until,
-      reportAdUnit: 'CAMPAIGN',
-      dateUnit: 'DAY',
+      reportAdUnit: 'AD_ACCOUNT',
+      reportDimension: 'TOTAL',
+      reportDateUnit: 'DAY',
     });
-    // 일자별 집계 (캠페인 합산)
+    // 일자별 집계 (응답 필드명 다양한 후보 대응)
     const byDate = {};
     raw.forEach(r => {
-      // 응답 필드 이름이 모를 수 있어 다양한 후보 시도
-      let date = r.targetDate || r.statDate || r.date || '';
+      let date = r.targetDate || r.statDate || r.date || r.targetDateString || '';
       if (!date && r.targetYear && r.targetMonth) {
         const day = r.targetDay || 1;
         date = `${r.targetYear}-${String(r.targetMonth).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
@@ -2407,7 +2407,14 @@ router.get('/api/da/trend', requireLogin, async (req, res) => {
       d.purchaseRoas = d.cost > 0 ? d.purchaseConvSales / d.cost * 100 : 0;
       return d;
     }).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    res.json({ ok: true, rows: out, _debug: out.length === 0 ? { rawCount: raw.length, sample: raw[0] } : undefined });
+    res.json({
+      ok: true, rows: out,
+      _debug: out.length === 0 ? {
+        rawCount: raw.length,
+        sample: raw[0],
+        sampleKeys: raw[0] ? Object.keys(raw[0]).filter(k => raw[0][k] !== null && raw[0][k] !== 0).slice(0, 30) : [],
+      } : undefined
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
