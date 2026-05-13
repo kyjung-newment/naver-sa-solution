@@ -418,6 +418,21 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   Object.keys(byHour).forEach(k => enrich(byHour[k], `hour:${parseInt(k)}`));
   Object.keys(byDate).forEach(k => enrich(byDate[k], `date:${k}`));
 
+  // 메모리/Excel 사이즈 절감: 노출 0인 키워드 제거 (전환도 없는 것)
+  // imp=0 AND clk=0 AND cost=0 AND purchaseCnt=0 AND cartCnt=0인 키워드는 의미 없음
+  const beforeKwCount = Object.keys(byKeyword).length;
+  for (const k of Object.keys(byKeyword)) {
+    const d = byKeyword[k];
+    if ((d.imp || 0) === 0 && (d.clk || 0) === 0 && (d.cost || 0) === 0
+        && (d.purchaseCnt || 0) === 0 && (d.cartCnt || 0) === 0) {
+      delete byKeyword[k];
+    }
+  }
+  const afterKwCount = Object.keys(byKeyword).length;
+  if (beforeKwCount !== afterKwCount) {
+    console.log(`  🧹 키워드 필터: ${beforeKwCount}개 → ${afterKwCount}개 (0 노출/전환 ${beforeKwCount-afterKwCount}개 제거)`);
+  }
+
   return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate };
 }
 
