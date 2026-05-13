@@ -145,7 +145,7 @@ async function fetchReportPerformance(args) {
  */
 async function fetchReportPerformanceDetail(args) {
   const {
-    adAccountNo, cookie,
+    adAccountNo, cookie, adUnitNo,
     startDate, endDate,
     reportAdUnit = 'AD_ACCOUNT',
     reportDimension = 'TOTAL',
@@ -160,8 +160,10 @@ async function fetchReportPerformanceDetail(args) {
   const xsrfToken = args.xsrfToken || extractXsrfFromCookie(cookie);
   if (!xsrfToken) throw new Error('쿠키에 XSRF-TOKEN이 포함되지 않았습니다.');
 
+  // AD_ACCOUNT 단위면 광고계정 번호, AD_SET/CAMPAIGN 단위면 해당 unit 번호 사용
+  const effectiveAdUnitNo = adUnitNo || adAccountNo;
   const params = {
-    adUnitNo: String(adAccountNo),
+    adUnitNo: String(effectiveAdUnitNo),
     startDate, endDate,
     reportAdUnit,
     reportDateUnit,

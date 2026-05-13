@@ -1869,6 +1869,8 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     daRegisterCols('creatives', DA_CREATIVE_COLS);
 
     var DA_BREAKDOWN_COLS = [
+      { key:'_campName', label:'캠페인', tp:'s', visible:true, render:function(r){return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(r._campName||'-')+'</td>';}},
+      { key:'_agName', label:'광고그룹', tp:'s', visible:true, render:function(r){return '<td style="white-space:nowrap;font-size:12px;color:#6b7280">'+(r._agName||'-')+'</td>';}},
       { key:'_label', label:'구분', tp:'s', visible:true, render:function(r){return '<td><strong>'+(r._label||r._key||'-')+'</strong></td>';}},
       { key:'imp', label:'노출', tp:'n', visible:true, render:function(r){return '<td style="text-align:right">'+daNum(r.imp)+'</td>';}},
       { key:'clk', label:'클릭', tp:'n', visible:true, render:function(r){return '<td style="text-align:right;color:#2563eb;font-weight:600">'+daNum(r.clk)+'</td>';}},
@@ -2246,12 +2248,18 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
     function daRenderBreakdown(wrap, rows, key, label, fmtKey, sortKeyFn, tabId){
       if (!rows || !rows.length) { wrap.innerHTML='<div class="empty">'+label+' 데이터가 없습니다.</div>'; return; }
       DA_RERENDER[tabId] = function(){ if (daRawData[tabId]) daRenderBreakdown(wrap, daRawData[tabId], key, label, fmtKey, sortKeyFn, tabId); };
-      // 사용자가 정렬을 지정하지 않았다면 디폴트 정렬 함수 사용
+      // 캠페인 + 광고그룹 + 세그먼트 단위로 집계 (캠페인/광고그룹 정보 보존)
       var arr = (function(){
         var byKey = {};
         rows.forEach(function(r){
-          var k = r[key] || '_unknown';
-          if (!byKey[k]) byKey[k] = { _key:k, _label:fmtKey(k), imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0 };
+          var seg = r[key] || '_unknown';
+          var k = (r._campId||'_nocamp') + '|' + (r._agId||'_noag') + '|' + seg;
+          if (!byKey[k]) byKey[k] = {
+            _key:seg, _label:fmtKey(seg),
+            _campId:r._campId, _campName:r._campName,
+            _agId:r._agId, _agName:r._agName,
+            imp:0, clk:0, cost:0, convCount:0, purchaseConvCount:0, purchaseConvSales:0
+          };
           byKey[k].imp += r.imp; byKey[k].clk += r.clk; byKey[k].cost += r.cost;
           byKey[k].convCount += r.convCount;
           byKey[k].purchaseConvCount += r.purchaseConvCount;
@@ -2265,10 +2273,16 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
         });
         var totalCost = a.reduce(function(s,r){return s+r.cost;},0) || 1;
         a.forEach(function(r){ r._costPct = r.cost/totalCost*100; });
-        // 사용자가 정렬 안 했으면 디폴트 (연령은 sortKeyFn, 나머지는 비용 내림)
+        // 디폴트 정렬: 캠페인 ↑ → 광고그룹 ↑ → 세그먼트 (연령은 나이순)
         if (!DA_SORT_STATE[tabId]) {
-          if (typeof sortKeyFn==='function') a.sort(function(x,y){return sortKeyFn(x._key)-sortKeyFn(y._key);});
-          else a.sort(function(x,y){return y.cost-x.cost;});
+          a.sort(function(x,y){
+            var c = (x._campName||'').localeCompare(y._campName||'');
+            if (c!==0) return c;
+            var g = (x._agName||'').localeCompare(y._agName||'');
+            if (g!==0) return g;
+            if (typeof sortKeyFn==='function') return sortKeyFn(x._key)-sortKeyFn(y._key);
+            return (x._label||'').localeCompare(y._label||'');
+          });
         }
         return a;
       })();
@@ -2425,29 +2439,35 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
       rows = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_SET' });
     } else if (tab === 'creatives') {
       rows = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'CREATIVE' });
-    } else if (tab === 'gender') {
-      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'GENDER' });
-    } else if (tab === 'age') {
-      rows = await fetchReportPerformanceDetail({ ...baseArgs, reportAdUnit: 'AD_ACCOUNT', reportDimension: 'AGE' });
-    } else if (tab === 'placement') {
-      // 매체 그룹은 AD_SET별로만 가져올 수 있음 → 모든 ad set 조회 후 집계
+    } else if (tab === 'gender' || tab === 'age' || tab === 'placement') {
+      // AD_SET 단위로 호출 (캠페인/광고그룹 정보 포함) → 클라이언트에서 집계
       const adSets = await fetchReportPerformance({ ...baseArgs, reportAdUnit: 'AD_SET' });
-      const adSetIds = [...new Set(adSets.map(a => a.adSetNo).filter(Boolean))];
-      // 각 ad set 병렬 호출 (최대 동시 5개로 제한)
+      const adSetMeta = {};
+      adSets.forEach(a => { if (a.adSetNo) adSetMeta[a.adSetNo] = { name: a.adSetName, campId: a.campaignNo, campName: a.campaignName }; });
+      const adSetIds = Object.keys(adSetMeta);
+      const dimMap = { gender: 'GENDER', age: 'AGE', placement: 'TOTAL' };
+      const placeMap = { placement: 'PLACEMENT_GROUP' };
       const allRows = [];
       const concurrency = 5;
       for (let i = 0; i < adSetIds.length; i += concurrency) {
         const batch = adSetIds.slice(i, i + concurrency);
         const results = await Promise.allSettled(batch.map(adSetNo =>
           fetchReportPerformanceDetail({
-            ...baseArgs,
-            reportAdUnit: 'AD_SET',
-            adUnitNo: adSetNo,
-            reportDimension: 'TOTAL',
-            placeUnit: 'PLACEMENT_GROUP',
+            ...baseArgs, reportAdUnit: 'AD_SET', adUnitNo: adSetNo,
+            reportDimension: dimMap[tab], placeUnit: placeMap[tab],
           })
         ));
-        results.forEach(r => { if (r.status === 'fulfilled' && Array.isArray(r.value)) allRows.push(...r.value); });
+        results.forEach((r, idx) => {
+          if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+            const aId = batch[idx]; const meta = adSetMeta[aId] || {};
+            r.value.forEach(row => {
+              const n = normalizeRow(row);
+              n._agId = aId; n._agName = meta.name;
+              n._campId = meta.campId; n._campName = meta.campName;
+              allRows.push(n);
+            });
+          }
+        });
       }
       rows = allRows;
     } else {

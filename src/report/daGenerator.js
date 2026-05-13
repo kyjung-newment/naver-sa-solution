@@ -131,29 +131,7 @@ async function collectDaData(account, dateRange) {
   const agNameMap = {};
   agRows.forEach(r => { if (r.adSetNo) agNameMap[r.adSetNo] = { name: r.adSetName || r.adSetNo, campId: r.campaignNo, campName: r.campaignName }; });
 
-  // 3) 캠페인별 성별/연령/지면 (병렬, 5개씩)
-  async function fetchPerCampaign(dimension, placeUnit) {
-    const out = [];
-    const concurrency = 5;
-    for (let i = 0; i < campIds.length; i += concurrency) {
-      const batch = campIds.slice(i, i + concurrency);
-      const results = await Promise.allSettled(batch.map(no => fetchReportPerformanceDetail({
-        ...baseArgs, reportAdUnit: 'CAMPAIGN', adUnitNo: no,
-        reportDimension: dimension, placeUnit,
-      })));
-      results.forEach((r, idx) => {
-        if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-          const cId = batch[idx];
-          r.value.forEach(row => {
-            const n = normalizeRow(row);
-            n._campId = cId; n._campName = campNameMap[cId] || cId;
-            out.push(n);
-          });
-        }
-      });
-    }
-    return out;
-  }
+  // 3) 광고그룹(AD_SET) 단위에서 성별/연령/지면 호출 → 캠페인 집계는 클라이언트에서 합산
   async function fetchPerAdgroup(dimension, placeUnit) {
     const out = [];
     const concurrency = 5;
@@ -178,18 +156,37 @@ async function collectDaData(account, dateRange) {
     return out;
   }
 
-  // 4) 모두 병렬 호출
-  const [
-    campGenderRows, campAgeRows, campPlaceRows,
-    agGenderRows, agAgeRows, agPlaceRows,
-  ] = await Promise.all([
-    fetchPerCampaign('GENDER', undefined).catch(() => []),
-    fetchPerCampaign('AGE', undefined).catch(() => []),
-    fetchPerCampaign('TOTAL', 'PLACEMENT_GROUP').catch(() => []),
+  // 4) AD_SET 단위로 모두 병렬 호출 (가능한 단일 호출 단위)
+  const [agGenderRows, agAgeRows, agPlaceRows] = await Promise.all([
     fetchPerAdgroup('GENDER', undefined).catch(() => []),
     fetchPerAdgroup('AGE', undefined).catch(() => []),
     fetchPerAdgroup('TOTAL', 'PLACEMENT_GROUP').catch(() => []),
   ]);
+
+  // 캠페인 단위 집계: AD_SET 데이터를 (campId, segment) 키로 합산
+  function aggregateToCamp(adgroupRows, segKey) {
+    const map = {};
+    adgroupRows.forEach(r => {
+      const seg = r[segKey] || (segKey === 'publisherGroupCode' ? (r.placementGroupCode || null) : null);
+      const k = (r._campId || '_noCamp') + '|' + (seg || '_unknown');
+      if (!map[k]) map[k] = { _campId: r._campId, _campName: r._campName, [segKey]: seg, imp: 0, clk: 0, cost: 0, convCount: 0, purchaseConvCount: 0, purchaseConvSales: 0, cartConvCount: 0, cartConvSales: 0 };
+      map[k].imp += r.imp; map[k].clk += r.clk; map[k].cost += r.cost;
+      map[k].convCount += r.convCount;
+      map[k].purchaseConvCount += r.purchaseConvCount;
+      map[k].purchaseConvSales += r.purchaseConvSales;
+      map[k].cartConvCount += (r.cartConvCount || 0);
+      map[k].cartConvSales += (r.cartConvSales || 0);
+    });
+    return Object.values(map).map(d => {
+      d.ctr = d.imp > 0 ? d.clk / d.imp * 100 : 0;
+      d.cpc = d.clk > 0 ? Math.round(d.cost / d.clk) : 0;
+      d.purchaseRoas = d.cost > 0 ? d.purchaseConvSales / d.cost * 100 : 0;
+      return d;
+    });
+  }
+  const campGenderRows = aggregateToCamp(agGenderRows, 'gender');
+  const campAgeRows = aggregateToCamp(agAgeRows, 'ageGroup');
+  const campPlaceRows = aggregateToCamp(agPlaceRows, 'publisherGroupCode');
 
   // 5) 일별 추이 (캠페인+DAY)
   let dailyRows = [];
@@ -219,8 +216,9 @@ async function collectDaData(account, dateRange) {
     byCampaign: groupBy(campRows, r => r.campaignNo, r => r.campaignName).sort((a, b) => b.cost - a.cost),
     byAdgroup: groupBy(agRows, r => r.adSetNo, r => r.adSetName).sort((a, b) => b.cost - a.cost),
     byCreative: groupBy(crRows, r => r.creativeNo, r => r.creativeName).sort((a, b) => b.cost - a.cost),
-    byGender: groupBy(accGenderRows, r => r.gender || '_unknown', r => genderLabel(r.gender)).sort((a, b) => b.cost - a.cost),
-    byAge: groupBy(accAgeRows, r => r.ageGroup || '_unknown', r => ageLabel(r.ageGroup)).sort((a, b) => ageSortKey(a._key) - ageSortKey(b._key)),
+    // 계정 단위 인구통계 (AD_SET 데이터에서 합산)
+    byGender: groupBy(agGenderRows, r => r.gender || '_unknown', r => genderLabel(r.gender)).sort((a, b) => b.cost - a.cost),
+    byAge: groupBy(agAgeRows, r => r.ageGroup || '_unknown', r => ageLabel(r.ageGroup)).sort((a, b) => ageSortKey(a._key) - ageSortKey(b._key)),
 
     // 캠페인+세그먼트 단위 (Excel 시트용 raw rows, _campName 포함)
     byCampaignGender: campGenderRows,
@@ -707,20 +705,60 @@ async function buildDaExcelReport({ type, period, accountName, data, prevData })
     ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
   }
 
-  // 캠페인+세그먼트 단위 시트 (캠페인 → 광고그룹 → 세그먼트 + 메트릭)
-  function addSegmentedSheet(sheetName, items, segHeader, segFn) {
+  // 캠페인 단위 세그먼트 시트 (캠페인 → 세그먼트 + 메트릭)
+  // 정렬: 캠페인명 ↑ → 세그먼트(연령/성별 등) 오름차순
+  function addCampSegmentSheet(sheetName, items, segHeader, segFn, segSortKeyFn) {
     if (!items || !items.length) return;
     const ws = wb.addWorksheet(sheetName);
     setupSheet(ws);
-    [28, 24, 14, ...M_HEADERS.map(() => 14)].forEach((w, i) => ws.getColumn(i + 2).width = w);
+    [28, 16, ...M_HEADERS.map(() => 14)].forEach((w, i) => ws.getColumn(i + 2).width = w);
+    // 정렬: 캠페인명 ↑, 세그먼트 ↑
+    const sorted = items.slice().sort((a, b) => {
+      const cn = (a._campName || '').localeCompare(b._campName || '');
+      if (cn !== 0) return cn;
+      if (segSortKeyFn) return segSortKeyFn(a) - segSortKeyFn(b);
+      return (segFn(a) || '').localeCompare(segFn(b) || '');
+    });
+    let rr = 1;
+    rr = sectionHeader(ws, rr, sheetName, 13);
+    rr = tableHeaderRow(ws, rr, ['캠페인', segHeader, ...M_HEADERS]);
+    let prevCamp = null;
+    sorted.forEach((d, i) => {
+      const isCampStart = d._campName !== prevCamp;
+      rr = dataRowMetric(ws, rr, d, {
+        labels: [isCampStart ? (d._campName || '-') : '', segFn(d)],
+        bold: isCampStart, stripe: i % 2 === 1,
+      });
+      prevCamp = d._campName;
+    });
+    ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
+  }
+  // 광고그룹 단위 세그먼트 시트 (캠페인 → 광고그룹 → 세그먼트 + 메트릭)
+  function addAgSegmentSheet(sheetName, items, segHeader, segFn, segSortKeyFn) {
+    if (!items || !items.length) return;
+    const ws = wb.addWorksheet(sheetName);
+    setupSheet(ws);
+    [24, 22, 14, ...M_HEADERS.map(() => 14)].forEach((w, i) => ws.getColumn(i + 2).width = w);
+    const sorted = items.slice().sort((a, b) => {
+      const cn = (a._campName || '').localeCompare(b._campName || '');
+      if (cn !== 0) return cn;
+      const an = (a._agName || '').localeCompare(b._agName || '');
+      if (an !== 0) return an;
+      if (segSortKeyFn) return segSortKeyFn(a) - segSortKeyFn(b);
+      return (segFn(a) || '').localeCompare(segFn(b) || '');
+    });
     let rr = 1;
     rr = sectionHeader(ws, rr, sheetName, 14);
     rr = tableHeaderRow(ws, rr, ['캠페인', '광고그룹', segHeader, ...M_HEADERS]);
-    items.forEach((d, i) => {
+    let prevCamp = null, prevAg = null;
+    sorted.forEach((d, i) => {
+      const isCampStart = d._campName !== prevCamp;
+      const isAgStart = isCampStart || d._agName !== prevAg;
       rr = dataRowMetric(ws, rr, d, {
-        labels: [d._campName || '-', d._agName || '-', segFn(d)],
-        stripe: i % 2 === 1,
+        labels: [isCampStart ? (d._campName || '-') : '', isAgStart ? (d._agName || '-') : '', segFn(d)],
+        bold: isCampStart, stripe: i % 2 === 1,
       });
+      prevCamp = d._campName; prevAg = d._agName;
     });
     ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
   }
@@ -728,13 +766,13 @@ async function buildDaExcelReport({ type, period, accountName, data, prevData })
   if (data.byAdgroup.length) addMetricSheet('광고그룹별', data.byAdgroup, '광고그룹');
   if (data.byCreative.length) addMetricSheet('소재별', data.byCreative, '소재');
   // 캠페인 단위 인구통계/지면
-  addSegmentedSheet('캠페인별_성별', data.byCampaignGender, '성별', d => genderLabel(d.gender));
-  addSegmentedSheet('캠페인별_연령', data.byCampaignAge, '연령대', d => ageLabel(d.ageGroup));
-  addSegmentedSheet('캠페인별_노출지면', data.byCampaignPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
+  addCampSegmentSheet('캠페인별_성별', data.byCampaignGender, '성별', d => genderLabel(d.gender));
+  addCampSegmentSheet('캠페인별_연령', data.byCampaignAge, '연령대', d => ageLabel(d.ageGroup), d => ageSortKey(d.ageGroup));
+  addCampSegmentSheet('캠페인별_노출지면', data.byCampaignPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
   // 광고그룹 단위
-  addSegmentedSheet('광고그룹별_성별', data.byAdgroupGender, '성별', d => genderLabel(d.gender));
-  addSegmentedSheet('광고그룹별_연령', data.byAdgroupAge, '연령대', d => ageLabel(d.ageGroup));
-  addSegmentedSheet('광고그룹별_노출지면', data.byAdgroupPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
+  addAgSegmentSheet('광고그룹별_성별', data.byAdgroupGender, '성별', d => genderLabel(d.gender));
+  addAgSegmentSheet('광고그룹별_연령', data.byAdgroupAge, '연령대', d => ageLabel(d.ageGroup), d => ageSortKey(d.ageGroup));
+  addAgSegmentSheet('광고그룹별_노출지면', data.byAdgroupPlacement, '매체/지면', d => d.publisherGroupCode || d.placementGroupCode || '알수없음');
 
   return await wb.xlsx.writeBuffer();
 }
