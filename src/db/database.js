@@ -245,6 +245,28 @@ async function initDb() {
       value TEXT,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`);
+
+    // 대행사 (마케터) API 자격증명 - 한 유저당 N개 (이관, 다중 법인 등)
+    await safeQuery(`CREATE TABLE IF NOT EXISTS agency_credentials (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      label TEXT DEFAULT '',
+      api_key TEXT NOT NULL,
+      secret_key TEXT NOT NULL,
+      manager_customer_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await safeQuery(`CREATE INDEX IF NOT EXISTS ix_agency_creds_user ON agency_credentials (user_id)`);
+    // 기존 users.api_key 자동 이전 (한 번만)
+    await safeQuery(`
+      INSERT INTO agency_credentials (user_id, label, api_key, secret_key, manager_customer_id)
+      SELECT id, '기본 대행사', api_key, secret_key, manager_customer_id
+      FROM users
+      WHERE api_key != '' AND secret_key != '' AND manager_customer_id != ''
+        AND NOT EXISTS (SELECT 1 FROM agency_credentials WHERE user_id = users.id)
+    `);
+    // ad_accounts에 사용할 대행사 자격증명 링크
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS agency_credential_id INTEGER`);
     // DA 자동 리포트 기능 플래그
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_daily_report INTEGER DEFAULT 0`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_da_weekly_report INTEGER DEFAULT 0`);
@@ -399,7 +421,48 @@ async function updateApiCredentials(userId, apiKey, secretKey, managerCustomerId
   );
 }
 
-async function getApiCredentials(userId) {
+// ─── 대행사 자격증명 다중 관리 ───────────────────────────────────
+async function listAgencyCredentials(userId) {
+  return all('SELECT id, label, manager_customer_id, api_key, secret_key, created_at FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC', [userId]);
+}
+async function addAgencyCredential(userId, { label, api_key, secret_key, manager_customer_id }) {
+  const r = await query(
+    'INSERT INTO agency_credentials (user_id, label, api_key, secret_key, manager_customer_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+    [userId, label || '', api_key, secret_key, manager_customer_id]
+  );
+  return r.rows[0]?.id;
+}
+async function updateAgencyCredential(id, userId, { label, api_key, secret_key, manager_customer_id }) {
+  return query(
+    'UPDATE agency_credentials SET label=$1, api_key=$2, secret_key=$3, manager_customer_id=$4 WHERE id=$5 AND user_id=$6',
+    [label || '', api_key, secret_key, manager_customer_id, id, userId]
+  );
+}
+async function deleteAgencyCredential(id, userId) {
+  return query('DELETE FROM agency_credentials WHERE id = $1 AND user_id = $2', [id, userId]);
+}
+async function getAgencyCredentialById(id, userId) {
+  return get('SELECT id, label, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND user_id = $2', [id, userId]);
+}
+
+async function getApiCredentials(userId, accountId) {
+  // accountId가 주어지면 해당 광고주가 연결된 agency_credential 우선 조회
+  if (accountId) {
+    const linked = await get(`
+      SELECT ac.id, ac.api_key, ac.secret_key, ac.manager_customer_id
+      FROM ad_accounts a
+      JOIN agency_credentials ac ON ac.id = a.agency_credential_id
+      WHERE a.id = $1 AND a.user_id = $2 AND ac.api_key != ''
+    `, [accountId, userId]);
+    if (linked) return linked;
+  }
+  // 폴백: 유저의 첫 번째 agency_credential
+  const first = await get('SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC LIMIT 1', [userId]);
+  if (first && first.api_key) return first;
+  // 레거시 폴백: users 테이블
+  return _getApiCredentialsLegacy(userId);
+}
+async function _getApiCredentialsLegacy(userId) {
   const row = await get(
     'SELECT api_key, secret_key, manager_customer_id FROM users WHERE id = $1',
     [userId]
@@ -423,14 +486,16 @@ async function getAccountByCustomerId(customerId, userId) {
 
 async function getAllAccountsWithFeature(feature) {
   const col = `feat_${feature}`;
+  // 광고주에 연결된 agency_credential 우선, 없으면 users 테이블 폴백
   return all(`
     SELECT ad_accounts.*,
            users.name AS user_name,
-           users.api_key,
-           users.secret_key,
-           users.manager_customer_id
+           COALESCE(ac.api_key, users.api_key) AS api_key,
+           COALESCE(ac.secret_key, users.secret_key) AS secret_key,
+           COALESCE(ac.manager_customer_id, users.manager_customer_id) AS manager_customer_id
     FROM ad_accounts
     JOIN users ON users.id = ad_accounts.user_id
+    LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
     WHERE ad_accounts.${col} = 1
       AND users.api_key != ''
   `);
@@ -967,6 +1032,7 @@ module.exports = Object.assign(module.exports, {
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
   getAllUsers, getPendingUsers, approveUser, rejectUser,
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
+  listAgencyCredentials, addAgencyCredential, updateAgencyCredential, deleteAgencyCredential, getAgencyCredentialById,
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount,
   resetAdminPassword, deleteAllUsers,

@@ -40,7 +40,7 @@ function requireAdmin(req, res, next) {
 
 // API 자격증명 등록 여부 체크 미들웨어
 async function requireApi(req, res, next) {
-  const creds = await db.getApiCredentials(req.session.userId);
+  const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
   if (!creds) return res.redirect('/smart-sa/api-settings?msg=need');
   req.apiCreds = creds;
   next();
@@ -795,41 +795,97 @@ function makeClient(creds, customerId) {
 // ─── API 설정 페이지 ───────────────────────────────────────────────
 router.get('/api-settings', requireLogin, async (req, res) => {
   const user = await getUser(req);
-  const creds = await db.getApiCredentials(user.id);
+  const agencies = await db.listAgencyCredentials(user.id);
   const msg = req.query.msg || '';
 
   const content = `
     ${msg === 'need' ? '<div class="alert alert-info">솔루션을 사용하려면 먼저 네이버 검색광고 API 계정을 등록해주세요.</div>' : ''}
-    ${msg === 'saved' ? '<div class="alert alert-ok">API 계정이 저장되었습니다.</div>' : ''}
+    ${msg === 'saved' ? '<div class="alert alert-ok">대행사 계정이 저장되었습니다.</div>' : ''}
+    ${msg === 'deleted' ? '<div class="alert alert-ok">삭제되었습니다.</div>' : ''}
     ${msg === 'invalid' ? '<div class="alert alert-err">API 인증에 실패했습니다. 입력 정보를 확인해주세요.</div>' : ''}
 
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <span class="card-title">🔑 네이버 검색광고 API 계정</span>
-        ${creds ? '<span class="badge badge-green">등록됨</span>' : '<span class="badge badge-gray">미등록</span>'}
+        <span class="card-title">🔑 등록된 대행사 API 계정 (${agencies.length}개)</span>
+        <button class="btn btn-primary btn-sm" onclick="document.getElementById('add-agency-form').style.display='block';this.style.display='none'">+ 대행사 추가</button>
       </div>
       <div class="card-body">
         <p style="color:#64748b;font-size:13px;margin-bottom:16px">
-          네이버 검색광고 시스템의 API 키를 등록하면, 해당 계정에 연결된 모든 광고주에 접근할 수 있습니다.<br>
+          여러 대행사 계정(매니저 Customer ID)을 등록할 수 있습니다. 광고주 등록 시 어느 대행사를 사용할지 선택하세요.<br>
+          이관/법인 변경 등으로 2개 이상의 대행사 계정을 가진 경우 활용하세요.
+        </p>
+        ${agencies.length === 0 ? '<div class="empty">등록된 대행사 계정이 없습니다. 우측 상단 "+ 대행사 추가" 버튼을 눌러 등록하세요.</div>' : `
+        <table>
+          <thead><tr><th>표시명</th><th>매니저 Customer ID</th><th>API Key</th><th>등록일</th><th style="text-align:center">관리</th></tr></thead>
+          <tbody>
+            ${agencies.map(a => `
+              <tr>
+                <td><strong>${a.label || '(이름 없음)'}</strong></td>
+                <td style="font-family:monospace;font-size:13px">${a.manager_customer_id}</td>
+                <td style="font-family:monospace;font-size:11px;color:#64748b">${(a.api_key||'').substring(0,16)}...</td>
+                <td style="font-size:12px;color:#94a3b8">${new Date(a.created_at).toLocaleDateString('ko-KR')}</td>
+                <td style="text-align:center">
+                  <button class="btn btn-outline btn-sm" onclick="editAgency(${a.id}, '${(a.label||'').replace(/'/g, '\\\'')}', '${a.api_key}', '${a.secret_key}', '${a.manager_customer_id}')">수정</button>
+                  <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAgency(${a.id}, '${(a.label||'').replace(/'/g, '\\\'')}')">삭제</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+
+    <div class="card" id="add-agency-form" style="margin-bottom:20px;display:${agencies.length === 0 ? 'block' : 'none'}">
+      <div class="card-header"><span class="card-title">➕ 대행사 계정 추가</span></div>
+      <div class="card-body">
+        <p style="color:#64748b;font-size:13px;margin-bottom:16px">
           <a href="https://searchad.naver.com" target="_blank" style="color:#6366f1">검색광고 시스템</a> → 도구 → API 사용 관리에서 발급받으세요.
         </p>
         <form method="POST" action="/smart-sa/api-settings">
+          <input type="hidden" name="agency_id" value="" id="ag-id-input">
+          <div class="form-group">
+            <label>표시명 (구분용 - 예: 민플래닝, 뉴먼트)</label>
+            <input name="label" id="ag-label-input" placeholder="대행사 이름 또는 구분" maxlength="40">
+          </div>
           <div class="form-group">
             <label>API Key (액세스라이선스) *</label>
-            <input name="api_key" required value="${creds?.api_key || ''}" placeholder="01000000-0000-0000-0000-000000000000">
+            <input name="api_key" id="ag-key-input" required placeholder="01000000-0000-0000-0000-000000000000">
           </div>
           <div class="form-group">
             <label>Secret Key (비밀키) *</label>
-            <input name="secret_key" required value="${creds?.secret_key || ''}" placeholder="AQAAAABk...">
+            <input name="secret_key" id="ag-secret-input" required placeholder="AQAAAABk...">
           </div>
           <div class="form-group">
             <label>매니저 Customer ID (내 계정 ID) *</label>
-            <input name="manager_customer_id" required value="${creds?.manager_customer_id || ''}" placeholder="1234567">
+            <input name="manager_customer_id" id="ag-cid-input" required placeholder="1234567">
           </div>
-          <button class="btn btn-primary">저장</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary">저장</button>
+            <button type="button" class="btn btn-outline" onclick="document.getElementById('add-agency-form').style.display='none'">취소</button>
+          </div>
         </form>
       </div>
     </div>
+
+    <script>
+      function editAgency(id, label, apiKey, secret, cid) {
+        document.getElementById('ag-id-input').value = id;
+        document.getElementById('ag-label-input').value = label;
+        document.getElementById('ag-key-input').value = apiKey;
+        document.getElementById('ag-secret-input').value = secret;
+        document.getElementById('ag-cid-input').value = cid;
+        document.getElementById('add-agency-form').style.display = 'block';
+        document.getElementById('add-agency-form').scrollIntoView({behavior:'smooth'});
+      }
+      function deleteAgency(id, label) {
+        if (!confirm('"' + label + '" 대행사 계정을 삭제하시겠습니까?\\n해당 대행사에 연결된 광고주는 다른 대행사로 변경 후 삭제하세요.')) return;
+        fetch('/smart-sa/api-settings/' + id, {method: 'DELETE'})
+          .then(r => r.json()).then(j => {
+            if (j.ok) location.href = '/smart-sa/api-settings?msg=deleted';
+            else alert('삭제 실패: ' + (j.error || ''));
+          });
+      }
+    </script>
 
     <div class="card">
       <div class="card-header"><span class="card-title">📖 설정 안내</span></div>
@@ -846,9 +902,8 @@ router.get('/api-settings', requireLogin, async (req, res) => {
 });
 
 router.post('/api-settings', requireLogin, async (req, res) => {
-  const { api_key, secret_key, manager_customer_id } = req.body;
-
-  // API 연결 테스트 (/ncc/campaigns로 검증 - 모든 계정 유형에서 작동)
+  const { agency_id, label, api_key, secret_key, manager_customer_id } = req.body;
+  // API 연결 테스트
   try {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
     await testClient.getCampaigns();
@@ -856,9 +911,24 @@ router.post('/api-settings', requireLogin, async (req, res) => {
     console.log('API 테스트 실패:', e.message);
     return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
   }
-
-  await db.updateApiCredentials(req.session.userId, api_key, secret_key, manager_customer_id);
+  if (agency_id) {
+    await db.updateAgencyCredential(parseInt(agency_id), req.session.userId, { label, api_key, secret_key, manager_customer_id });
+  } else {
+    await db.addAgencyCredential(req.session.userId, { label, api_key, secret_key, manager_customer_id });
+  }
+  // 레거시 users 테이블에도 첫 자격증명 동기화 (호환성)
+  const list = await db.listAgencyCredentials(req.session.userId);
+  if (list.length > 0) {
+    await db.updateApiCredentials(req.session.userId, list[0].api_key, list[0].secret_key, list[0].manager_customer_id);
+  }
   res.redirect(303, '/smart-sa/api-settings?msg=saved');
+});
+
+router.delete('/api-settings/:id', requireLogin, async (req, res) => {
+  try {
+    await db.deleteAgencyCredential(parseInt(req.params.id), req.session.userId);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // ─── 광고주 관리 (불러오기 + 선택 + 기능 설정) ──────────────────────
@@ -914,6 +984,13 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           <div style="flex:1;min-width:150px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">Customer ID</label>
             <input id="add-cid" placeholder="검색광고 Key에서 확인한 숫자" style="width:100%;height:42px">
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">대행사 계정</label>
+            <select id="add-agency" style="width:100%;height:42px;padding:0 10px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:13px">
+              <option value="">기본 대행사 사용</option>
+              ${(await db.listAgencyCredentials(user.id)).map(a => `<option value="${a.id}">${a.label || ('Customer '+a.manager_customer_id)} (${a.manager_customer_id})</option>`).join('')}
+            </select>
           </div>
           <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()" style="height:42px;white-space:nowrap">🔍 확인 및 추가</button>
         </div>
@@ -1003,10 +1080,12 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     async function testAndAddCustomer() {
       const nameEl = document.getElementById('add-name');
       const cidEl = document.getElementById('add-cid');
+      const agencyEl = document.getElementById('add-agency');
       const btn = document.getElementById('add-btn');
       const result = document.getElementById('add-result');
       const name = nameEl.value.trim();
       const customerId = cidEl.value.trim();
+      const agencyId = agencyEl ? agencyEl.value : '';
 
       if (!name || !customerId) {
         result.innerHTML = '<div class="alert alert-err">광고주명과 Customer ID를 모두 입력해주세요.</div>';
@@ -1020,7 +1099,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
         const res = await fetch('/smart-sa/api/test-customer', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ customerId })
+          body: JSON.stringify({ customerId, agencyId })
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error);
@@ -1029,7 +1108,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           const addRes = await fetch('/smart-sa/api/add-customer', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ customerId, name })
+            body: JSON.stringify({ customerId, name, agencyId })
           });
           const addJson = await addRes.json();
           if (!addJson.ok) throw new Error(addJson.error);
@@ -1079,7 +1158,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
 // API: 연결된 광고주 목록 불러오기
 router.get('/api/customer-links', requireLogin, async (req, res) => {
   try {
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     // 특정 Customer ID로 API 접근 가능 여부 테스트
@@ -1111,7 +1190,7 @@ router.post('/api/select-account', requireLogin, (req, res) => {
 // API: 연동 광고주 자동 조회 (customer-links + 마스터 리포트 기반 스캔)
 router.post('/api/list-customers', requireLogin, async (req, res) => {
   try {
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     const customers = [];
@@ -1188,10 +1267,14 @@ router.post('/api/list-customers', requireLogin, async (req, res) => {
 // API: 광고주 Customer ID 접근 권한 테스트
 router.post('/api/test-customer', requireLogin, async (req, res) => {
   try {
-    const { customerId } = req.body;
+    const { customerId, agencyId } = req.body;
     if (!customerId) return res.status(400).json({ ok: false, error: 'Customer ID를 입력해주세요.' });
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    let creds;
+    if (agencyId) {
+      creds = await db.getAgencyCredentialById(parseInt(agencyId), req.session.userId);
+    }
+    if (!creds) creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     // 해당 Customer ID로 캠페인 조회 시도
@@ -1220,7 +1303,7 @@ router.post('/api/sync-master', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다.' });
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정을 먼저 등록해주세요.' });
 
     // 동기화 상태 업데이트
@@ -1269,15 +1352,20 @@ router.post('/api/sync-master', requireLogin, async (req, res) => {
 // API: 광고주 선택(추가)
 router.post('/api/add-customer', requireLogin, async (req, res) => {
   try {
-    const { customerId, name } = req.body;
+    const { customerId, name, agencyId } = req.body;
     if (!customerId) return res.status(400).json({ ok: false, error: 'Customer ID 필요' });
     const id = await db.addSelectedAccount(req.session.userId, String(customerId), name || String(customerId));
+    // 대행사 연결
+    if (agencyId) {
+      await db.pool.query('UPDATE ad_accounts SET agency_credential_id = $1 WHERE id = $2 AND user_id = $3',
+        [parseInt(agencyId), id, req.session.userId]);
+    }
     res.json({ ok: true, id });
 
     // 백그라운드: 60일 데이터 + 마스터 데이터 동기화
     (async () => {
       try {
-        const creds = await db.getApiCredentials(req.session.userId);
+        const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
         if (!creds) return;
         const account = await db.getAccountById(id, req.session.userId);
         if (!account) return;
@@ -1651,7 +1739,7 @@ router.get('/api/account/check-sa-status', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     if (account.has_sa === false) return res.json({ ok: true, status: 'disabled', message: 'SA 비활성 계정' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.json({ ok: false, status: 'no_creds', message: 'API 자격증명 미등록' });
     if (!account.customer_id) return res.json({ ok: false, status: 'no_cid', message: 'Customer ID 미등록' });
     try {
@@ -4124,7 +4212,7 @@ router.get('/api/stats', requireLogin, async (req, res) => {
     }
 
     // Fallback: 실시간 API 호출
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -4199,7 +4287,7 @@ router.get('/api/keyword-stats', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주를 찾을 수 없습니다' });
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -4394,7 +4482,7 @@ router.get('/api/tab/keywords', requireLogin, async (req, res) => {
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
 
     // ─── 마스터 데이터 보장: 없으면 먼저 동기화 ───
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     const masterCheck = await db.get('SELECT COUNT(*)::int AS cnt FROM master_keywords WHERE account_id = $1', [account.id]);
     if (masterCheck.cnt === 0 && creds) {
       console.log(`📥 [${account.id}] 마스터 데이터 없음 → 자동 동기화 시작`);
@@ -4668,7 +4756,7 @@ router.get('/api/stats/trend', requireLogin, async (req, res) => {
     }
 
     // Fallback: API에서 일별 데이터 구성
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 미등록' });
     const client = makeClient(creds, account.customer_id);
 
@@ -4733,7 +4821,7 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
     }
 
     // Fallback: API
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
 
@@ -4805,7 +4893,7 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     }
 
     // Fallback: API
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
 
@@ -4851,7 +4939,7 @@ router.get('/api/tab/regional', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const dateRange = resolvePeriodDates(period, req.query.startDate, req.query.endDate);
@@ -4888,7 +4976,7 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     });
 
     // ─── 마스터 데이터 보장: 없으면 먼저 동기화 ───
-    const creds0 = await db.getApiCredentials(req.session.userId);
+    const creds0 = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     const masterCheckAg = await db.get('SELECT COUNT(*)::int AS cnt FROM master_adgroups WHERE account_id = $1', [account.id]);
     if (masterCheckAg.cnt === 0 && creds0) {
       try {
@@ -4914,7 +5002,7 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     }
 
     // Fallback: API
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
     const { agMap, campMap } = await getNameMaps(client, account.id);
@@ -4972,7 +5060,7 @@ router.get('/api/tab/campaigns', requireLogin, async (req, res) => {
     });
 
     // 마스터 데이터 보장
-    const creds0 = await db.getApiCredentials(req.session.userId);
+    const creds0 = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     const masterCheck = await db.get('SELECT COUNT(*)::int AS cnt FROM master_campaigns WHERE account_id = $1', [account.id]);
     if (masterCheck.cnt === 0 && creds0) {
       try {
@@ -4997,7 +5085,7 @@ router.get('/api/tab/campaigns', requireLogin, async (req, res) => {
     }
 
     // Fallback: API
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
     const client = makeClient(creds, account.customer_id);
     const { campMap } = await getNameMaps(client, account.id);
@@ -5399,7 +5487,7 @@ router.get('/api/autobid/keywords', requireLogin, async (req, res) => {
   try {
     const account = await db.getAccountById(req.query.accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -5449,7 +5537,7 @@ router.post('/api/autobid/save', requireLogin, async (req, res) => {
     // 백그라운드: 저장된 키워드 즉시 조회 (현재입찰가 + 참고입찰가 + 실시간순위)
     (async () => {
       try {
-        const creds = await db.getApiCredentials(req.session.userId);
+        const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
         if (!creds) return;
         const client = makeClient(creds, account.customer_id);
         const kwId = req.body.keyword_id;
@@ -5528,7 +5616,7 @@ router.post('/api/autobid/debug-rank', requireLogin, async (req, res) => {
   try {
     const account = await db.getAccountById(req.body.accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -5660,7 +5748,7 @@ router.post('/api/autobid/run', requireLogin, async (req, res) => {
   try {
     const account = await db.getAccountById(req.body.accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -5762,7 +5850,7 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
   try {
     const account = await db.getAccountById(req.body.accountId, req.session.userId);
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
     const client = makeClient(creds, account.customer_id);
@@ -6354,7 +6442,7 @@ router.get('/api/report/download-excel', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).send('광고주 없음');
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).send('API 계정 미등록');
 
     const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
@@ -6390,7 +6478,7 @@ router.get('/api/report/preview', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.status(404).send('광고주 없음');
 
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).send('API 계정 미등록');
 
     const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
@@ -6478,7 +6566,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   const account = await db.getAccountById(accountId, req.session.userId);
   if (!account) return res.status(404).json({ ok:false, error:'광고주 없음' });
 
-  const creds = await db.getApiCredentials(req.session.userId);
+  const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
   if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
   // account에 API 자격증명 + SMTP 자격증명 병합
@@ -7334,7 +7422,7 @@ router.get('/api/shopping-bid/campaigns', requireLogin, async (req, res) => {
     const { accountId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     const campaigns = await client.getCampaigns();
@@ -7358,7 +7446,7 @@ router.get('/api/shopping-bid/adgroups', requireLogin, async (req, res) => {
     const { accountId, campaignId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     const adgroups = await client.getAdGroups(campaignId);
@@ -7374,7 +7462,7 @@ router.get('/api/shopping-bid/ads', requireLogin, async (req, res) => {
     const { accountId, adgroupId } = req.query;
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     const ads = await client.getAds(adgroupId);
@@ -7419,7 +7507,7 @@ router.post('/api/shopping-bid/check-ranks', requireLogin, async (req, res) => {
     const account = await db.getAccountById(accountId, req.session.userId);
     let client = null;
     if (account) {
-      const creds = await db.getApiCredentials(req.session.userId);
+      const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
       if (creds) client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
     }
     const bidCache = {};
@@ -7466,7 +7554,7 @@ router.post('/api/shopping-bid/fetch-bids', requireLogin, async (req, res) => {
 
     const account = await db.getAccountById(accountId, req.session.userId);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const creds = await db.getApiCredentials(req.session.userId);
+    const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.json({ ok: false, error: 'API 계정 미등록' });
 
     const client = createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId: account.customer_id });
