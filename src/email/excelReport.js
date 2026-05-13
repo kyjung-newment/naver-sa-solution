@@ -564,17 +564,16 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
 
       // 미인식 키워드 패턴: 마스터 sync 누락으로 ID가 그대로 노출된 경우
       // nkw-... (NCC 키워드 ID), ncc-..., nad-... 등 + '-' (쇼핑검색 등 미인식)
+      // 주의: 쇼핑검색은 name이 한글 텍스트(예: '타임투런')라서 name===id여도 정상이므로
+      //       오직 UNRESOLVED_RE 패턴(nkw-/ncc-/nad-/nccad-)으로만 미인식 판정
       const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
-      const isUnresolved = (d, id) => {
+      const isUnresolved = (d) => {
         if (!d.name || d.name === '-') return true;
         if (UNRESOLVED_RE.test(d.name)) return true;
-        // name이 key(kw:ID)에서 ID부분과 같으면 미인식 (예: name === 'nkw-...')
-        const idPart = (id || '').replace(/^kw:/, '');
-        if (idPart && d.name === idPart) return true;
         return false;
       };
-      const validKw = list.filter(([k, d]) => !isUnresolved(d, k));
-      const unknownKw = list.filter(([k, d]) => isUnresolved(d, k));
+      const validKw = list.filter(([, d]) => !isUnresolved(d));
+      const unknownKw = list.filter(([, d]) => isUnresolved(d));
       const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
 
       let r = 3;
