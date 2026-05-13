@@ -562,9 +562,19 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       const kws = wb.addWorksheet(sheetName);
       setup(kws); setColWidths(kws, [22, 24]);
 
-      // '-' 키워드 필터 (쇼핑검색 등은 키워드 인식 불가)
-      const validKw = list.filter(([, d]) => d.name && d.name !== '-' && !d.name.match(/^ncc/));
-      const unknownKw = list.filter(([, d]) => !d.name || d.name === '-' || d.name.match(/^ncc/));
+      // 미인식 키워드 패턴: 마스터 sync 누락으로 ID가 그대로 노출된 경우
+      // nkw-... (NCC 키워드 ID), ncc-..., nad-... 등 + '-' (쇼핑검색 등 미인식)
+      const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
+      const isUnresolved = (d, id) => {
+        if (!d.name || d.name === '-') return true;
+        if (UNRESOLVED_RE.test(d.name)) return true;
+        // name이 key(kw:ID)에서 ID부분과 같으면 미인식 (예: name === 'nkw-...')
+        const idPart = (id || '').replace(/^kw:/, '');
+        if (idPart && d.name === idPart) return true;
+        return false;
+      };
+      const validKw = list.filter(([k, d]) => !isUnresolved(d, k));
+      const unknownKw = list.filter(([k, d]) => isUnresolved(d, k));
       const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
 
       let r = 3;
@@ -618,10 +628,16 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         r += 2;
         const showUnknown = unknownKw.length > KW_LIST_CAP ? unknownKw.slice(0, KW_LIST_CAP) : unknownKw;
         r = subTitle(kws, r, unknownKw.length > KW_LIST_CAP
-          ? `미인식 키워드 (총 ${unknownKw.length}개 중 비용 상위 ${KW_LIST_CAP}개)`
-          : `미인식 키워드 ${unknownKw.length}개`, 14);
+          ? `미인식 키워드 ⚠ (총 ${unknownKw.length}개 중 비용 상위 ${KW_LIST_CAP}개 — 삭제된 키워드/확장검색/마스터 누락)`
+          : `미인식 키워드 ⚠ ${unknownKw.length}개 (삭제된 키워드/확장검색/마스터 누락)`, 14);
         r = kwHeader(kws, r);
-        showUnknown.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1, labelColor: C.gray }); });
+        showUnknown.forEach(([k, d], idx) => {
+          // 키워드 컬럼에 '(미인식) ID끝부분' 표시
+          const kwId = (k || '').replace(/^kw:/, '');
+          const shortId = kwId.length > 14 ? '...' + kwId.slice(-12) : kwId;
+          const labelOverride = { ...d, name: `(미인식) ${shortId}` };
+          r = dataRow(kws, r, labelOverride, { labels: [d.adgroupName || '', `(미인식) ${shortId}`], stripe: idx % 2 === 1, labelColor: C.gray });
+        });
       }
     });
   }
