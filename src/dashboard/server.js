@@ -1448,16 +1448,41 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
           // 전역 도움말 이미지 (모든 광고주 공유)
           var images = ${JSON.stringify(JSON.parse(account._global_da_helper_images || '[]') || [])};
           var isAdmin = ${user?.is_admin ? 'true' : 'false'};
+          function openLightbox(src, name){
+            var existing = document.getElementById('da-img-lightbox');
+            if (existing) existing.remove();
+            var lb = document.createElement('div');
+            lb.id = 'da-img-lightbox';
+            lb.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:20px';
+            lb.innerHTML = '<div style="position:absolute;top:16px;right:24px;color:#fff;font-size:32px;cursor:pointer;line-height:1;font-weight:300" id="lb-close">×</div>'
+              + '<div style="position:absolute;top:20px;left:24px;color:#fff;font-size:13px;background:rgba(0,0,0,0.4);padding:6px 12px;border-radius:6px">'+ (name || '') +'</div>'
+              + '<img src="'+src+'" style="max-width:96vw;max-height:92vh;object-fit:contain;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.5);cursor:default" onclick="event.stopPropagation()">';
+            document.body.appendChild(lb);
+            var close = function(){ lb.remove(); document.removeEventListener('keydown', onKey); };
+            var onKey = function(e){ if (e.key === 'Escape') close(); };
+            lb.addEventListener('click', close);
+            document.getElementById('lb-close').addEventListener('click', close);
+            document.addEventListener('keydown', onKey);
+          }
+          window.__daOpenLightbox = openLightbox;
           function render(){
             var list = document.getElementById('da-helper-images-list');
             if (!list) return;
             if (!images.length) { list.innerHTML = '<div style="color:#94a3b8;font-size:12px;padding:12px;border:1px dashed #e5e7eb;border-radius:8px;width:100%">아직 등록된 도움말 이미지가 없습니다.</div>'; return; }
             list.innerHTML = images.map(function(img, i){
-              return '<div style="position:relative;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff;width:200px"><img src="'+img.src+'" alt="'+(img.name||'')+'" style="width:100%;height:140px;object-fit:cover;cursor:pointer" onclick="window.open(\\''+img.src+'\\', \\'_blank\\')"><div style="padding:6px 8px;font-size:11px;color:#475569;display:flex;justify-content:space-between;align-items:center"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+(img.name||'image_'+(i+1))+'</span>'+(isAdmin?'<button type="button" data-del="'+i+'" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0">×</button>':'')+'</div></div>';
+              return '<div style="position:relative;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff;width:200px"><img src="'+img.src+'" alt="'+(img.name||'')+'" data-lb-idx="'+i+'" style="width:100%;height:140px;object-fit:cover;cursor:zoom-in"><div style="padding:6px 8px;font-size:11px;color:#475569;display:flex;justify-content:space-between;align-items:center"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">'+(img.name||'image_'+(i+1))+'</span>'+(isAdmin?'<button type="button" data-del="'+i+'" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0">×</button>':'')+'</div></div>';
             }).join('');
+            // 이미지 클릭 → 라이트박스
+            list.querySelectorAll('[data-lb-idx]').forEach(function(im){
+              im.onclick = function(){
+                var idx = parseInt(im.dataset.lbIdx);
+                var it = images[idx]; if (it) openLightbox(it.src, it.name);
+              };
+            });
             if (isAdmin) {
               list.querySelectorAll('[data-del]').forEach(function(b){
-                b.onclick = function(){
+                b.onclick = function(e){
+                  e.stopPropagation();
                   var idx = parseInt(b.dataset.del);
                   if (!confirm('이미지를 삭제하시겠습니까?')) return;
                   images.splice(idx, 1); save();
