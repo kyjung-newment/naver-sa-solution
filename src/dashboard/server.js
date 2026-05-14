@@ -5938,14 +5938,24 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       </div>
     </div>
     <div class="card">
-      <div class="card-header"><span class="card-title">⏰ DA 자동 발송 스케줄</span></div>
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span class="card-title">⏰ DA 자동 발송 스케줄</span>
+        <button class="btn btn-outline btn-sm" onclick="openSchedEdit('da')" style="font-size:12px">⚙ 수정</button>
+      </div>
       <div class="card-body">
         <table>
           <thead><tr><th>리포트</th><th>발송 시각</th><th>자동 발송</th><th>최근 발송</th></tr></thead>
           <tbody>
             ${['daily','weekly','monthly'].map(t => {
               const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
-              const time = {daily:'매일 09:30 KST',weekly:'매주 월요일 09:30 KST',monthly:'매월 1일 09:30 KST'}[t];
+              const dowNames = ['일','월','화','수','목','금','토'];
+              const h = selAccount['sched_da_' + t + '_hour'] ?? 9;
+              const dow = selAccount.sched_da_weekly_dow ?? 1;
+              const day = selAccount.sched_da_monthly_day ?? 1;
+              const hStr = String(h).padStart(2, '0') + ':00 KST';
+              const time = t === 'daily' ? `매일 ${hStr}`
+                         : t === 'weekly' ? `매주 ${dowNames[dow]}요일 ${hStr}`
+                         : `매월 ${day}일 ${hStr}`;
               const featKey = 'feat_da_' + t + '_report';
               const isOn = !!selAccount[featKey];
               const col = 'last_da_' + t + '_report';
@@ -5991,14 +6001,24 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <div class="card">
-      <div class="card-header"><span class="card-title">⏰ 자동 발송 스케줄</span></div>
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span class="card-title">⏰ 자동 발송 스케줄</span>
+        <button class="btn btn-outline btn-sm" onclick="openSchedEdit('sa')" style="font-size:12px">⚙ 수정</button>
+      </div>
       <div class="card-body">
         <table>
           <thead><tr><th>리포트</th><th>발송 시각</th><th>자동 발송</th><th>최근 발송</th></tr></thead>
           <tbody>
             ${['daily','weekly','monthly'].map(t => {
               const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
-              const time = {daily:'매일 09:00 KST',weekly:'매주 월요일 09:00 KST',monthly:'매월 1일 09:00 KST'}[t];
+              const dowNames = ['일','월','화','수','목','금','토'];
+              const h = selAccount['sched_' + t + '_hour'] ?? 9;
+              const dow = selAccount.sched_weekly_dow ?? 1;
+              const day = selAccount.sched_monthly_day ?? 1;
+              const hStr = String(h).padStart(2, '0') + ':00 KST';
+              const time = t === 'daily' ? `매일 ${hStr}`
+                         : t === 'weekly' ? `매주 ${dowNames[dow]}요일 ${hStr}`
+                         : `매월 ${day}일 ${hStr}`;
               const featKey = 'feat_' + t + '_report';
               const isOn = !!selAccount[featKey];
               const col = 'last_' + t + '_report';
@@ -6029,6 +6049,79 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       document.querySelectorAll('[data-rep-tab]').forEach(function(b){
         if (b.dataset.repTab===name) b.classList.add('active'); else b.classList.remove('active');
       });
+    }
+
+    // ── 자동 발송 스케줄 수정 모달 ──
+    function openSchedEdit(kind){
+      // kind: 'sa' or 'da'
+      var prefix = kind === 'da' ? 'sched_da_' : 'sched_';
+      var current = ${JSON.stringify({
+        sched_daily_hour: selAccount?.sched_daily_hour ?? 9,
+        sched_weekly_hour: selAccount?.sched_weekly_hour ?? 9,
+        sched_weekly_dow: selAccount?.sched_weekly_dow ?? 1,
+        sched_monthly_hour: selAccount?.sched_monthly_hour ?? 9,
+        sched_monthly_day: selAccount?.sched_monthly_day ?? 1,
+        sched_da_daily_hour: selAccount?.sched_da_daily_hour ?? 9,
+        sched_da_weekly_hour: selAccount?.sched_da_weekly_hour ?? 9,
+        sched_da_weekly_dow: selAccount?.sched_da_weekly_dow ?? 1,
+        sched_da_monthly_hour: selAccount?.sched_da_monthly_hour ?? 9,
+        sched_da_monthly_day: selAccount?.sched_da_monthly_day ?? 1,
+      })};
+      var existing = document.getElementById('sched-modal');
+      if (existing) existing.remove();
+      var dowNames = ['일','월','화','수','목','금','토'];
+      function hourSelect(id, val){
+        var opts = [];
+        for (var i=0;i<24;i++) opts.push('<option value="'+i+'"'+(i===val?' selected':'')+'>'+String(i).padStart(2,'0')+':00 KST</option>');
+        return '<select id="'+id+'" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">'+opts.join('')+'</select>';
+      }
+      function dowSelect(id, val){
+        var opts = dowNames.map(function(n,i){return '<option value="'+i+'"'+(i===val?' selected':'')+'>'+n+'요일</option>';});
+        return '<select id="'+id+'" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">'+opts.join('')+'</select>';
+      }
+      function daySelect(id, val){
+        var opts = [];
+        for (var i=1;i<=31;i++) opts.push('<option value="'+i+'"'+(i===val?' selected':'')+'>'+i+'일</option>');
+        return '<select id="'+id+'" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">'+opts.join('')+'</select>';
+      }
+      var label = kind === 'da' ? 'DA' : 'SA';
+      var color = kind === 'da' ? '#9f1239' : '#6366f1';
+      var modal = document.createElement('div');
+      modal.id = 'sched-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99999;display:flex;align-items:center;justify-content:center';
+      modal.innerHTML = '<div style="background:#fff;width:520px;max-width:92vw;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
+        + '<div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><div style="font-size:16px;font-weight:700">⏰ '+label+' 자동 발송 스케줄 수정</div><button id="sched-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b">×</button></div>'
+        + '<div style="padding:20px 22px"><p style="color:#64748b;font-size:12px;margin:0 0 16px">계정별 발송 시각을 자유롭게 설정. KST 기준. (정시 단위 매시 정각/30분에 자동 호출)</p>'
+        + '<div style="display:grid;grid-template-columns:80px 1fr;gap:12px;align-items:center;font-size:13px">'
+        + '<label>일간</label><div style="display:flex;gap:8px;align-items:center">매일 ' + hourSelect('sed-d-hour', current[prefix+'daily_hour']) + '</div>'
+        + '<label>주간</label><div style="display:flex;gap:8px;align-items:center">매주 ' + dowSelect('sed-w-dow', current[prefix+'weekly_dow']) + ' ' + hourSelect('sed-w-hour', current[prefix+'weekly_hour']) + '</div>'
+        + '<label>월간</label><div style="display:flex;gap:8px;align-items:center">매월 ' + daySelect('sed-m-day', current[prefix+'monthly_day']) + ' ' + hourSelect('sed-m-hour', current[prefix+'monthly_hour']) + '</div>'
+        + '</div></div>'
+        + '<div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f8fafc">'
+        + '<button id="sched-cancel" class="btn btn-outline">취소</button>'
+        + '<button id="sched-save" class="btn btn-primary" style="background:'+color+'">저장</button>'
+        + '</div></div>';
+      document.body.appendChild(modal);
+      document.getElementById('sched-close').onclick = function(){ modal.remove(); };
+      document.getElementById('sched-cancel').onclick = function(){ modal.remove(); };
+      modal.addEventListener('click', function(e){ if (e.target===modal) modal.remove(); });
+      document.getElementById('sched-save').onclick = async function(){
+        var payload = {
+          accountId: reportAccountId, kind: kind,
+          daily_hour: parseInt(document.getElementById('sed-d-hour').value),
+          weekly_hour: parseInt(document.getElementById('sed-w-hour').value),
+          weekly_dow: parseInt(document.getElementById('sed-w-dow').value),
+          monthly_hour: parseInt(document.getElementById('sed-m-hour').value),
+          monthly_day: parseInt(document.getElementById('sed-m-day').value),
+        };
+        try {
+          var res = await fetch('/smart-sa/api/report/save-schedule', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          var json = await res.json();
+          if (!json.ok) throw new Error(json.error);
+          toast(label + ' 스케줄 저장됨');
+          setTimeout(function(){ location.reload(); }, 800);
+        } catch(e){ toast(e.message, true); }
+      };
     }
 
     // ── 맞춤 기간 리포트 모달 ──
@@ -6535,6 +6628,30 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   }
 });
 
+// 자동 발송 스케줄 저장 (계정별, SA/DA)
+router.post('/api/report/save-schedule', requireLogin, async (req, res) => {
+  try {
+    const { accountId, kind, daily_hour, weekly_hour, weekly_dow, monthly_hour, monthly_day } = req.body;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    const valHour = h => Math.max(0, Math.min(23, parseInt(h) || 0));
+    const valDow = d => Math.max(0, Math.min(6, parseInt(d) || 0));
+    const valDay = d => Math.max(1, Math.min(31, parseInt(d) || 1));
+    const prefix = kind === 'da' ? 'sched_da_' : 'sched_';
+    await db.pool.query(`UPDATE ad_accounts SET
+      ${prefix}daily_hour = $1,
+      ${prefix}weekly_hour = $2,
+      ${prefix}weekly_dow = $3,
+      ${prefix}monthly_hour = $4,
+      ${prefix}monthly_day = $5
+      WHERE id = $6 AND user_id = $7`,
+      [valHour(daily_hour), valHour(weekly_hour), valDow(weekly_dow), valHour(monthly_hour), valDay(monthly_day), accountId, req.session.userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── DA 리포트 API ─────────────────────────────────────────────────
 router.post('/api/da-report/toggle-feat', requireLogin, async (req, res) => {
   try {
@@ -6640,15 +6757,25 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
     }
     const startedAt = Date.now();
     const MAX_RUNTIME_MS = 700000;
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const curHour = nowKst.getUTCHours();
+    const curDow = nowKst.getUTCDay();
+    const curDay = nowKst.getUTCDate();
+    const force = req.query.force === '1';
     try {
       const allAccounts = await db.getAllAccountsWithFeature(`da_${type}_report`);
-      // 최근 6시간 내 발송 스킵
       const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
       const accounts = allAccounts.filter(a => {
         const last = a[`last_da_${type}_report`];
-        return !last || new Date(last).toISOString() < sixHoursAgo;
+        if (last && new Date(last).toISOString() >= sixHoursAgo) return false;
+        if (force) return true;
+        const h = a[`sched_da_${type}_hour`] ?? 9;
+        if (h !== curHour) return false;
+        if (type === 'weekly') { if ((a.sched_da_weekly_dow ?? 1) !== curDow) return false; }
+        else if (type === 'monthly') { if ((a.sched_da_monthly_day ?? 1) !== curDay) return false; }
+        return true;
       });
-      console.log(`🔄 DA Cron [${type}]: 대상 ${accounts.length}/${allAccounts.length}개 (최근 6h 발송 제외)`);
+      console.log(`🔄 DA Cron [${type}] KST ${curHour}시: 대상 ${accounts.length}/${allAccounts.length}개`);
 
       let sent = 0, failed = 0, skipped = 0;
       const concurrency = 3;
@@ -6701,25 +6828,41 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
     }
 
     const startedAt = Date.now();
-    const MAX_RUNTIME_MS = 700000; // 700s (함수 한도 800s 안전 마진)
+    const MAX_RUNTIME_MS = 700000;
+    // 현재 KST 시각/요일/일자 (UTC+9)
+    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const curHour = nowKst.getUTCHours(); // 0~23
+    const curDow = nowKst.getUTCDay();    // 0=일, 1=월, ...
+    const curDay = nowKst.getUTCDate();   // 1~31
+    // ?force=1 → 시간 매칭 무시하고 모두 처리 (수동 재시도)
+    const force = req.query.force === '1';
     try {
       const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`);
-      // 중복 발송 방지: 최근 6시간 내 이미 발송된 계정 스킵 (재시도 안전)
       const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
       const accounts = allAccounts.filter(a => {
         const last = a[`last_${type}_report`];
-        return !last || new Date(last).toISOString() < sixHoursAgo;
+        if (last && new Date(last).toISOString() >= sixHoursAgo) return false; // 최근 6h 발송 제외
+        if (force) return true;
+        // 계정별 스케줄 매칭 (NULL이면 기본 09:00 / Mon / 1일)
+        const h = a[`sched_${type}_hour`] ?? 9;
+        if (h !== curHour) return false;
+        if (type === 'weekly') {
+          const dow = a.sched_weekly_dow ?? 1;
+          if (dow !== curDow) return false;
+        } else if (type === 'monthly') {
+          const day = a.sched_monthly_day ?? 1;
+          if (day !== curDay) return false;
+        }
+        return true;
       });
-      console.log(`🔄 Cron [${type}]: 대상 ${accounts.length}/${allAccounts.length}개 계정 (최근 6h 발송 제외)`);
+      console.log(`🔄 Cron [${type}] KST ${curHour}시: 대상 ${accounts.length}/${allAccounts.length}개 (스케줄+6h 제외)`);
 
       let sent = 0, failed = 0, skipped = 0;
-      // 병렬 처리: 한번에 3개씩
       const concurrency = 3;
       for (let i = 0; i < accounts.length; i += concurrency) {
-        // 타임아웃 인지: 다음 배치 진입 전 한도 확인
         if (Date.now() - startedAt > MAX_RUNTIME_MS) {
           skipped = accounts.length - sent - failed;
-          console.warn(`⏰ Cron [${type}]: 타임아웃 임박, ${skipped}개 미처리 → 다음 호출에서 재시도`);
+          console.warn(`⏰ Cron [${type}]: 타임아웃 임박, ${skipped}개 미처리`);
           break;
         }
         const batch = accounts.slice(i, i + concurrency);
@@ -6730,7 +6873,6 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
             account.email_port = 465;
             account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
             account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-            // 월간은 prev 데이터 스킵 (메모리/타임아웃 안정화)
             const skipPrev = (type === 'monthly');
             const ok = await generateAndSend(account, type, null, { skipPrev }).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
             if (ok) {
@@ -6741,8 +6883,8 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
         }));
       }
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      console.log(`✅ Vercel Cron [${type}]: 발송 ${sent}, 실패 ${failed}, 미처리 ${skipped}, ${elapsed}s`);
-      res.json({ ok: true, type, sent, failed, skipped, total: allAccounts.length, elapsed });
+      console.log(`✅ Vercel Cron [${type}] KST ${curHour}시: 발송 ${sent}, 실패 ${failed}, 미처리 ${skipped}, ${elapsed}s`);
+      res.json({ ok: true, type, kstHour: curHour, sent, failed, skipped, total: allAccounts.length, elapsed });
     } catch (err) {
       console.error(`❌ Vercel Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });

@@ -239,6 +239,17 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_xsrf_token TEXT DEFAULT ''`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_account_no TEXT DEFAULT ''`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_helper_images TEXT DEFAULT '[]'`);
+    // 계정별 자동 발송 스케줄 (KST 기준)
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_daily_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_weekly_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_weekly_dow INTEGER DEFAULT 1`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_monthly_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_monthly_day INTEGER DEFAULT 1`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_daily_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_weekly_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_weekly_dow INTEGER DEFAULT 1`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_monthly_hour INTEGER DEFAULT 9`);
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_monthly_day INTEGER DEFAULT 1`);
     // 전역 설정 (DA 도움말 이미지 등 모든 광고주 공유)
     await safeQuery(`CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,

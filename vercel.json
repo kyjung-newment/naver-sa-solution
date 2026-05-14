@@ -37,43 +37,27 @@
     },
     {
       "path": "/smart-sa/api/cron/daily",
-      "schedule": "0 0 * * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/smart-sa/api/cron/weekly",
-      "schedule": "0 0 * * 1"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/smart-sa/api/cron/monthly",
-      "schedule": "0 0 1 * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/smart-sa/api/cron/da-daily",
-      "schedule": "30 0 * * *"
+      "schedule": "30 * * * *"
     },
     {
       "path": "/smart-sa/api/cron/da-weekly",
-      "schedule": "30 0 * * 1"
+      "schedule": "30 * * * *"
     },
     {
       "path": "/smart-sa/api/cron/da-monthly",
-      "schedule": "30 0 1 * *"
-    },
-    {
-      "path": "/smart-sa/api/cron/monthly",
-      "schedule": "0 3 1 * *"
-    },
-    {
-      "path": "/smart-sa/api/cron/da-monthly",
-      "schedule": "30 3 1 * *"
-    },
-    {
-      "path": "/smart-sa/api/cron/monthly",
-      "schedule": "0 6 1 * *"
-    },
-    {
-      "path": "/smart-sa/api/cron/da-monthly",
-      "schedule": "30 6 1 * *"
+      "schedule": "30 * * * *"
     }
   ]
 }
