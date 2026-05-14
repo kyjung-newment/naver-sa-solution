@@ -230,11 +230,11 @@ function getPrevDateRange(type, dateRange) {
     return { since: prevSince.toISOString().slice(0, 10), until: prevUntil.toISOString().slice(0, 10) };
   }
   if (type === 'monthly') {
-    // 전전월: 현재 리포트가 전월이므로 그 이전 달
-    const currStart = new Date(dateRange.since);
+    // 전전월: 현재 리포트가 전월이므로 그 이전 달 (UTC 기준 타임존 안전)
+    const currStart = new Date(dateRange.since + 'T00:00:00Z');
     const prevEnd = new Date(currStart);
-    prevEnd.setDate(prevEnd.getDate() - 1); // 전전월 마지막일
-    const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+    prevEnd.setUTCDate(prevEnd.getUTCDate() - 1); // 전전월 마지막일
+    const prevStart = new Date(Date.UTC(prevEnd.getUTCFullYear(), prevEnd.getUTCMonth(), 1));
     return { since: prevStart.toISOString().slice(0, 10), until: prevEnd.toISOString().slice(0, 10) };
   }
   return null;
