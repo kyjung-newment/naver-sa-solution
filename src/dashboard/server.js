@@ -795,97 +795,42 @@ function makeClient(creds, customerId) {
 // ─── API 설정 페이지 ───────────────────────────────────────────────
 router.get('/api-settings', requireLogin, async (req, res) => {
   const user = await getUser(req);
-  const agencies = await db.listAgencyCredentials(user.id);
+  const creds = await db.getApiCredentials(user.id);
   const msg = req.query.msg || '';
 
   const content = `
     ${msg === 'need' ? '<div class="alert alert-info">솔루션을 사용하려면 먼저 네이버 검색광고 API 계정을 등록해주세요.</div>' : ''}
-    ${msg === 'saved' ? '<div class="alert alert-ok">대행사 계정이 저장되었습니다.</div>' : ''}
-    ${msg === 'deleted' ? '<div class="alert alert-ok">삭제되었습니다.</div>' : ''}
+    ${msg === 'saved' ? '<div class="alert alert-ok">API 계정이 저장되었습니다.</div>' : ''}
     ${msg === 'invalid' ? '<div class="alert alert-err">API 인증에 실패했습니다. 입력 정보를 확인해주세요.</div>' : ''}
 
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <span class="card-title">🔑 등록된 대행사 API 계정 (${agencies.length}개)</span>
-        <button class="btn btn-primary btn-sm" onclick="document.getElementById('add-agency-form').style.display='block';this.style.display='none'">+ 대행사 추가</button>
+        <span class="card-title">🔑 네이버 검색광고 API 계정</span>
+        ${creds ? '<span class="badge badge-green">등록됨</span>' : '<span class="badge badge-gray">미등록</span>'}
       </div>
       <div class="card-body">
         <p style="color:#64748b;font-size:13px;margin-bottom:16px">
-          여러 대행사 계정(매니저 Customer ID)을 등록할 수 있습니다. 광고주 등록 시 어느 대행사를 사용할지 선택하세요.<br>
-          이관/법인 변경 등으로 2개 이상의 대행사 계정을 가진 경우 활용하세요.
-        </p>
-        ${agencies.length === 0 ? '<div class="empty">등록된 대행사 계정이 없습니다. 우측 상단 "+ 대행사 추가" 버튼을 눌러 등록하세요.</div>' : `
-        <table>
-          <thead><tr><th>표시명</th><th>매니저 Customer ID</th><th>API Key</th><th>등록일</th><th style="text-align:center">관리</th></tr></thead>
-          <tbody>
-            ${agencies.map(a => `
-              <tr>
-                <td><strong>${a.label || '(이름 없음)'}</strong></td>
-                <td style="font-family:monospace;font-size:13px">${a.manager_customer_id}</td>
-                <td style="font-family:monospace;font-size:11px;color:#64748b">${(a.api_key||'').substring(0,16)}...</td>
-                <td style="font-size:12px;color:#94a3b8">${new Date(a.created_at).toLocaleDateString('ko-KR')}</td>
-                <td style="text-align:center">
-                  <button class="btn btn-outline btn-sm" onclick="editAgency(${a.id}, '${(a.label||'').replace(/'/g, '\\\'')}', '${a.api_key}', '${a.secret_key}', '${a.manager_customer_id}')">수정</button>
-                  <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAgency(${a.id}, '${(a.label||'').replace(/'/g, '\\\'')}')">삭제</button>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`}
-      </div>
-    </div>
-
-    <div class="card" id="add-agency-form" style="margin-bottom:20px;display:${agencies.length === 0 ? 'block' : 'none'}">
-      <div class="card-header"><span class="card-title">➕ 대행사 계정 추가</span></div>
-      <div class="card-body">
-        <p style="color:#64748b;font-size:13px;margin-bottom:16px">
-          <a href="https://searchad.naver.com" target="_blank" style="color:#6366f1">검색광고 시스템</a> → 도구 → API 사용 관리에서 발급받으세요.
+          네이버 검색광고 시스템의 API 키를 등록하면, 해당 계정에 연결된 모든 광고주에 접근할 수 있습니다.<br>
+          <a href="https://searchad.naver.com" target="_blank" style="color:#6366f1">검색광고 시스템</a> → 도구 → API 사용 관리에서 발급받으세요.<br>
+          <strong style="color:#374151">⚠ 솔루션 계정 1개당 대행사 담당자 계정은 1개만 등록할 수 있습니다.</strong> 대행사가 여러 개라면 솔루션 계정을 별도로 생성하세요.
         </p>
         <form method="POST" action="/smart-sa/api-settings">
-          <input type="hidden" name="agency_id" value="" id="ag-id-input">
-          <div class="form-group">
-            <label>표시명 (구분용 - 예: 민플래닝, 뉴먼트)</label>
-            <input name="label" id="ag-label-input" placeholder="대행사 이름 또는 구분" maxlength="40">
-          </div>
           <div class="form-group">
             <label>API Key (액세스라이선스) *</label>
-            <input name="api_key" id="ag-key-input" required placeholder="01000000-0000-0000-0000-000000000000">
+            <input name="api_key" required value="${creds?.api_key || ''}" placeholder="01000000-0000-0000-0000-000000000000">
           </div>
           <div class="form-group">
             <label>Secret Key (비밀키) *</label>
-            <input name="secret_key" id="ag-secret-input" required placeholder="AQAAAABk...">
+            <input name="secret_key" required value="${creds?.secret_key || ''}" placeholder="AQAAAABk...">
           </div>
           <div class="form-group">
             <label>매니저 Customer ID (내 계정 ID) *</label>
-            <input name="manager_customer_id" id="ag-cid-input" required placeholder="1234567">
+            <input name="manager_customer_id" required value="${creds?.manager_customer_id || ''}" placeholder="1234567">
           </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-primary">저장</button>
-            <button type="button" class="btn btn-outline" onclick="document.getElementById('add-agency-form').style.display='none'">취소</button>
-          </div>
+          <button class="btn btn-primary">저장</button>
         </form>
       </div>
     </div>
-
-    <script>
-      function editAgency(id, label, apiKey, secret, cid) {
-        document.getElementById('ag-id-input').value = id;
-        document.getElementById('ag-label-input').value = label;
-        document.getElementById('ag-key-input').value = apiKey;
-        document.getElementById('ag-secret-input').value = secret;
-        document.getElementById('ag-cid-input').value = cid;
-        document.getElementById('add-agency-form').style.display = 'block';
-        document.getElementById('add-agency-form').scrollIntoView({behavior:'smooth'});
-      }
-      function deleteAgency(id, label) {
-        if (!confirm('"' + label + '" 대행사 계정을 삭제하시겠습니까?\\n해당 대행사에 연결된 광고주는 다른 대행사로 변경 후 삭제하세요.')) return;
-        fetch('/smart-sa/api-settings/' + id, {method: 'DELETE'})
-          .then(r => r.json()).then(j => {
-            if (j.ok) location.href = '/smart-sa/api-settings?msg=deleted';
-            else alert('삭제 실패: ' + (j.error || ''));
-          });
-      }
-    </script>
 
     <div class="card">
       <div class="card-header"><span class="card-title">📖 설정 안내</span></div>
@@ -902,7 +847,7 @@ router.get('/api-settings', requireLogin, async (req, res) => {
 });
 
 router.post('/api-settings', requireLogin, async (req, res) => {
-  const { agency_id, label, api_key, secret_key, manager_customer_id } = req.body;
+  const { api_key, secret_key, manager_customer_id } = req.body;
   // API 연결 테스트
   try {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
@@ -911,24 +856,14 @@ router.post('/api-settings', requireLogin, async (req, res) => {
     console.log('API 테스트 실패:', e.message);
     return res.redirect(303, '/smart-sa/api-settings?msg=invalid');
   }
-  if (agency_id) {
-    await db.updateAgencyCredential(parseInt(agency_id), req.session.userId, { label, api_key, secret_key, manager_customer_id });
-  } else {
-    await db.addAgencyCredential(req.session.userId, { label, api_key, secret_key, manager_customer_id });
-  }
-  // 레거시 users 테이블에도 첫 자격증명 동기화 (호환성)
-  const list = await db.listAgencyCredentials(req.session.userId);
-  if (list.length > 0) {
-    await db.updateApiCredentials(req.session.userId, list[0].api_key, list[0].secret_key, list[0].manager_customer_id);
-  }
-  res.redirect(303, '/smart-sa/api-settings?msg=saved');
-});
-
-router.delete('/api-settings/:id', requireLogin, async (req, res) => {
+  // users 테이블 + agency_credentials 둘 다 갱신 (1개 유지)
+  await db.updateApiCredentials(req.session.userId, api_key, secret_key, manager_customer_id);
+  // 기존 모든 agency_credentials 삭제 후 새로 1개 등록 (1대1 정책)
   try {
-    await db.deleteAgencyCredential(parseInt(req.params.id), req.session.userId);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+    await db.pool.query('DELETE FROM agency_credentials WHERE user_id = $1', [req.session.userId]);
+    await db.addAgencyCredential(req.session.userId, { label: '기본 대행사', api_key, secret_key, manager_customer_id });
+  } catch (e) { console.warn('agency_credentials 갱신 실패:', e.message); }
+  res.redirect(303, '/smart-sa/api-settings?msg=saved');
 });
 
 // ─── 광고주 관리 (불러오기 + 선택 + 기능 설정) ──────────────────────
@@ -984,13 +919,6 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
           <div style="flex:1;min-width:150px">
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">Customer ID</label>
             <input id="add-cid" placeholder="검색광고 Key에서 확인한 숫자" style="width:100%;height:42px">
-          </div>
-          <div style="flex:1;min-width:160px">
-            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:2px">대행사 계정</label>
-            <select id="add-agency" style="width:100%;height:42px;padding:0 10px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;font-size:13px">
-              <option value="">기본 대행사 사용</option>
-              ${(await db.listAgencyCredentials(user.id)).map(a => `<option value="${a.id}">${a.label || ('Customer '+a.manager_customer_id)} (${a.manager_customer_id})</option>`).join('')}
-            </select>
           </div>
           <button class="btn btn-primary" id="add-btn" onclick="testAndAddCustomer()" style="height:42px;white-space:nowrap">🔍 확인 및 추가</button>
         </div>
