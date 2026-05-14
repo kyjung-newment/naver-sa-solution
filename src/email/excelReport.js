@@ -159,7 +159,11 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   cr++;
   const sheetList = [['요약·캠페인','KPI 요약 + 캠페인별 성과']];
   if (prevData && type !== 'daily') sheetList.push(['기간비교','캠페인유형별·광고그룹별 전기간 비교']);
-  sheetList.push(['유형 및 기기별','캠페인유형별 + PC/모바일 성과'], ['광고그룹별','광고그룹별 성과 (TOP 10)'], ['키워드별','키워드별 전환/ROAS/비효율 TOP'], ['시간대별','구매전환매출 기준 시간대 분포'], ['일자별','일자별 성과 추이']);
+  const _hasQuery = data.byQuery && Object.keys(data.byQuery).length > 0
+    && Object.values(data.byQuery).some(d => (d.cost || 0) > 0 || (d.clk || 0) > 0);
+  const _kwIdxLabel = _hasQuery ? '검색어별' : '키워드별';
+  const _kwIdxDesc = _hasQuery ? '검색어별 성과 (AD_QUERY_DETAIL)' : '키워드별 전환/ROAS/비효율 TOP';
+  sheetList.push(['유형 및 기기별','캠페인유형별 + PC/모바일 성과'], ['광고그룹별','광고그룹별 성과 (TOP 10)'], [_kwIdxLabel, _kwIdxDesc], ['시간대별','구매전환매출 기준 시간대 분포'], ['일자별','일자별 성과 추이']);
   sheetList.forEach(([n, d], i) => {
     const row = cover.getRow(cr + i); row.height = 22;
     [{v:`sheet${i+1}`}, {v:n, bold:true}, {v:d}].forEach((item, j) => {
@@ -519,9 +523,16 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // 5. 키워드별 (캠페인 유형별 시트 분리)
+  // 5. 검색어별 (캠페인 유형별 시트 분리)
+  // AD_QUERY_DETAIL 기반(byQuery)을 우선 사용 — 마스터 sync 의존도 0
+  // (대용량 계정에서 마스터 동기화가 불완전해도 검색어 텍스트가 항상 표시됨)
+  // byQuery 데이터가 없을 때만 등록 키워드(byKeyword) 폴백
   // ══════════════════════════════════════════════════════════════════
-  const kwAll = Object.entries(data.byKeyword || {}).sort((a, b) => b[1].cost - a[1].cost);
+  const useQuery = data.byQuery && Object.keys(data.byQuery).length > 0
+    && Object.values(data.byQuery).some(d => (d.cost || 0) > 0 || (d.clk || 0) > 0);
+  const kwSource = useQuery ? data.byQuery : (data.byKeyword || {});
+  const kwLabel = useQuery ? '검색어별' : '키워드별';
+  const kwAll = Object.entries(kwSource).sort((a, b) => b[1].cost - a[1].cost);
   if (kwAll.length > 0) {
     // 캠페인 유형별 그룹화 (cost 합계 0이면 시트 미생성)
     const typeGroups = {};
@@ -540,7 +551,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
 
     function kwHeader(ws, row) {
       const hRow = ws.getRow(row); hRow.height = 26;
-      ['광고그룹', '키워드', ...mHeaders].forEach((h, i) => {
+      ['광고그룹', useQuery ? '검색어' : '키워드', ...mHeaders].forEach((h, i) => {
         const c = hRow.getCell(i + 2);
         c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
         c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } };
@@ -558,16 +569,16 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       const totalCost = list.reduce((s, [, d]) => s + (d.cost || 0), 0);
       if (totalCost <= 0) return;
 
-      const sheetName = `${tp}_키워드별`.slice(0, 31); // Excel 시트명 31자 제한
+      const sheetName = `${tp}_${kwLabel}`.slice(0, 31); // Excel 시트명 31자 제한
       const kws = wb.addWorksheet(sheetName);
       setup(kws); setColWidths(kws, [22, 24]);
 
       // 미인식 키워드 패턴: 마스터 sync 누락으로 ID가 그대로 노출된 경우
       // nkw-... (NCC 키워드 ID), ncc-..., nad-... 등 + '-' (쇼핑검색 등 미인식)
-      // 주의: 쇼핑검색은 name이 한글 텍스트(예: '타임투런')라서 name===id여도 정상이므로
-      //       오직 UNRESOLVED_RE 패턴(nkw-/ncc-/nad-/nccad-)으로만 미인식 판정
+      // useQuery=true (AD_QUERY_DETAIL 기반)면 항상 텍스트이므로 미인식 판정 X
       const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
       const isUnresolved = (d) => {
+        if (useQuery) return false;
         if (!d.name || d.name === '-') return true;
         if (UNRESOLVED_RE.test(d.name)) return true;
         return false;
@@ -577,9 +588,11 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
 
       let r = 3;
-      r = sectionTitle(kws, r, `${tp} · 키워드별 성과 (${period})`, 14);
+      r = sectionTitle(kws, r, `${tp} · ${kwLabel} 성과 (${period})`, 14);
       r++;
-      r = subTitle(kws, r, `전체 ${list.length}개 · 인식 ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' · 미인식 '+unknownKw.length+'개' : ''}`, 14);
+      r = subTitle(kws, r, useQuery
+        ? `전체 검색어 ${list.length}개 · 전환 발생 ${kwWithConv}개 (AD_QUERY_DETAIL 기반)`
+        : `전체 ${list.length}개 · 인식 ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' · 미인식 '+unknownKw.length+'개' : ''}`, 14);
       r++;
 
       // ── 구매전환매출 TOP 10 ──

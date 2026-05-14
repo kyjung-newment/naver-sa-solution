@@ -91,6 +91,7 @@ async function collectDetailData(client, dateRange) {
   const rawConvDetail = [];
   const rawShopKwDetail = [];
   const rawShopConvDetail = [];
+  const rawQueryDetail = [];
 
   // 날짜별 5개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
   const BATCH_SIZE = 5;
@@ -98,11 +99,12 @@ async function collectDetailData(client, dateRange) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
       batch.map(async (dt) => {
-        const [adResult, convResult, shopResult, shopConvResult] = await Promise.allSettled([
+        const [adResult, convResult, shopResult, shopConvResult, queryResult] = await Promise.allSettled([
           client.createAndDownloadStatReport('AD_DETAIL', dt),
           client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
+          client.createAndDownloadStatReport('AD_QUERY_DETAIL', dt),
         ]);
 
         // AD_DETAIL: 전체 성과 데이터 (파워링크+쇼핑 모두 포함, 필터 없음)
@@ -124,13 +126,17 @@ async function collectDetailData(client, dateRange) {
           shopConvRows = shopConvResult.value.map(remapShoppingRow);
         }
 
-        return { dt, adRows, convRows, shopKwRows, shopConvRows };
+        // AD_QUERY_DETAIL: 검색어 텍스트 포함 (마스터 sync 의존 X)
+        const queryRows = queryResult.status === 'fulfilled' ? queryResult.value : [];
+        if (queryResult.status === 'rejected') console.log(`AD_QUERY_DETAIL 실패 (${dt}):`, queryResult.reason?.message);
+
+        return { dt, adRows, convRows, shopKwRows, shopConvRows, queryRows };
       })
     );
 
     for (const result of batchResults) {
       if (result.status === 'fulfilled') {
-        const { dt, adRows, convRows, shopKwRows, shopConvRows } = result.value;
+        const { dt, adRows, convRows, shopKwRows, shopConvRows, queryRows } = result.value;
         // AD_DETAIL: imp+clk+cost 모두 0인 행은 메모리 절감 위해 즉시 제외
         // (전환은 별도 테이블에 있으므로 이 행들은 정말 의미 없는 노이즈)
         for (const r of adRows) {
@@ -149,13 +155,60 @@ async function collectDetailData(client, dateRange) {
           rawShopKwDetail.push({ date: dt, cols: r });
         }
         rawShopConvDetail.push(...shopConvRows.map(r => ({ date: dt, cols: r })));
+
+        // AD_QUERY_DETAIL: 검색어 텍스트 포함, 0 노출/클릭/비용 행 제외
+        // TSV 컬럼 위치는 환경마다 다를 수 있어 parseQueryRow에서 휴리스틱 파싱
+        for (const r of (queryRows || [])) {
+          if (!Array.isArray(r) || r.length < 6) continue;
+          const parsed = parseQueryRow(r);
+          if (!parsed) continue;
+          if (parsed.imp === 0 && parsed.clk === 0 && parsed.cost === 0) continue;
+          rawQueryDetail.push({ date: dt, ...parsed });
+        }
       } else {
         console.log(`배치 처리 실패:`, result.reason?.message);
       }
     }
   }
 
-  return { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail };
+  return { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail };
+}
+
+/**
+ * AD_QUERY_DETAIL TSV 파서 (휴리스틱)
+ * Naver SA에서 컬럼 구조가 변경될 가능성이 있어 안전하게 파싱:
+ * - 앞 5컬럼은 date/customerId/campaignId/adgroupId/keywordId 로 가정
+ * - 검색어(query)는 숫자/ID/날짜/단일문자가 아닌 텍스트 컬럼
+ * - imp/clk/cost는 query 컬럼 다음 3개 정수
+ */
+function parseQueryRow(cols) {
+  if (!cols || cols.length < 6) return null;
+  // 검색어 텍스트 컬럼 찾기 (오른쪽에서 왼쪽 스캔)
+  let queryCol = -1;
+  for (let i = cols.length - 1; i >= 5; i--) {
+    const v = (cols[i] || '').trim();
+    if (!v) continue;
+    if (/^-?\d+(\.\d+)?$/.test(v)) continue; // 숫자
+    if (/^(nkw|ncc|nad|nccad|cmp|adg|biz|cnv)[-_]/i.test(v)) continue; // ID
+    if (/^\d{8}$/.test(v)) continue; // 날짜
+    if (v.length === 1) continue; // 디바이스 코드(P/M)
+    queryCol = i;
+    break;
+  }
+  if (queryCol === -1) return null;
+  const query = (cols[queryCol] || '').trim();
+  if (!query) return null;
+  // imp/clk/cost는 query 다음 3개로 추정
+  const imp = parseInt(cols[queryCol + 1]) || 0;
+  const clk = parseInt(cols[queryCol + 2]) || 0;
+  const cost = parseInt(cols[queryCol + 3]) || 0;
+  return {
+    campaignId: cols[2],
+    adgroupId: cols[3],
+    keywordId: cols[4],
+    query,
+    imp, clk, cost,
+  };
 }
 
 /**
@@ -198,7 +251,7 @@ function getPrevDateRange(type, dateRange) {
  * 6:channelId, 7:hour, 8:code, 9:queryId, 10:device, 11:directFlag,
  * 12:convType, 13:convCnt, 14:convAmt
  */
-function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap) {
+function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail) {
   campTypeMap = campTypeMap || {};
   kwNameMap = kwNameMap || {};
   kwQiMap = kwQiMap || {};
@@ -447,7 +500,38 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     console.log(`  🧹 키워드 필터: ${beforeKwCount}개 → ${afterKwCount}개 (0 노출/전환 ${beforeKwCount-afterKwCount}개 제거)`);
   }
 
-  return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate };
+  // ─── byQuery: AD_QUERY_DETAIL 기반 검색어별 집계 (마스터 sync 의존 X) ───
+  const byQuery = {};
+  for (const item of (rawQueryDetail || [])) {
+    const { campaignId, adgroupId, query, imp, clk, cost } = item;
+    if (!query) continue;
+    const campType = getCampTypeLabel(campaignId);
+    const key = `q:${adgroupId}|${query}`;
+    if (!byQuery[key]) byQuery[key] = {
+      name: query,
+      campaignName: campNameMap[campaignId] || '',
+      adgroupName: agNameMap[adgroupId] || '',
+      campaignType: campType,
+      imp: 0, clk: 0, cost: 0,
+      purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0,
+      rankSum: 0, rankCount: 0,
+    };
+    byQuery[key].imp += imp;
+    byQuery[key].clk += clk;
+    byQuery[key].cost += cost;
+  }
+  Object.keys(byQuery).forEach(k => {
+    const d = byQuery[k];
+    d.cpc = d.clk > 0 ? Math.round(d.cost / d.clk) : 0;
+    d.ctr = d.imp > 0 ? (d.clk / d.imp * 100) : 0;
+    d.avgRank = 0;
+    d.roas = 0;
+  });
+  if (Object.keys(byQuery).length > 0) {
+    console.log(`  🔍 AD_QUERY_DETAIL 검색어별 ${Object.keys(byQuery).length}개 집계`);
+  }
+
+  return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate, byQuery };
 }
 
 /**
@@ -651,10 +735,10 @@ async function generateAndSend(account, type, customRange, opts) {
     }
 
     // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
-    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
+    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
 
     // 3. 다차원 집계
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail);
 
     // 3-1. Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
     await calibrateWithStatsApi(data, client, dateRange);
@@ -677,7 +761,7 @@ async function generateAndSend(account, type, customRange, opts) {
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
       try {
         const prev = await collectDetailData(client, prevRange);
-        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail);
+        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, prev.rawQueryDetail);
         // 이전 기간도 Stats API 보정 적용
         await calibrateWithStatsApi(prevData, client, prevRange);
         console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
@@ -765,8 +849,8 @@ async function collectReportData(account, type, customRange, opts) {
   );
 
   const collectMain = (async () => {
-    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, dateRange);
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap);
+    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail);
     await calibrateWithStatsApi(data, client, dateRange);
     return data;
   })();
@@ -792,7 +876,7 @@ async function collectReportData(account, type, customRange, opts) {
     try {
       const prevPromise = (async () => {
         const prev = await collectDetailData(client, prevRange);
-        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap);
+        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, prev.rawQueryDetail);
         await calibrateWithStatsApi(pd, client, prevRange);
         return pd;
       })();
