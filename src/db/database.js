@@ -626,9 +626,21 @@ async function upsertMasterKeywords(accountId, rows) {
     await client.query('DELETE FROM master_keywords WHERE account_id = $1', [accountId]);
     const BATCH = 500;
     let inserted = 0;
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const batch = rows.slice(i, i + BATCH).filter(r => r.length >= 4);
-      if (batch.length === 0) continue;
+    let dupSkipped = 0;
+    // 중복 keyword_id 사전 제거 (ON CONFLICT는 PostgreSQL 14+에서 단일 statement 내 중복도 처리하지만 안전 차원)
+    const seen = new Set();
+    const dedup = [];
+    for (const r of rows) {
+      if (r.length < 4) continue;
+      const kid = r[2];
+      if (!kid || seen.has(kid)) { dupSkipped++; continue; }
+      seen.add(kid);
+      dedup.push(r);
+    }
+    if (dupSkipped > 0) console.log(`  ⚠️ master_keywords 중복 keyword_id ${dupSkipped}개 사전 제거`);
+
+    for (let i = 0; i < dedup.length; i += BATCH) {
+      const batch = dedup.slice(i, i + BATCH);
       const values = [];
       const params = [];
       let pi = 1;
@@ -642,9 +654,13 @@ async function upsertMasterKeywords(accountId, rows) {
         );
         pi += 13;
       }
+      // ON CONFLICT DO UPDATE: 중복 시 갱신 (배치 안 깨짐)
       await client.query(
         `INSERT INTO master_keywords (account_id, customer_id, keyword_id, keyword, adgroup_id, bid_amt, use_group_bid, user_lock, inspect_status, status, reg_time, pc_landing_url, mo_landing_url)
-         VALUES ${values.join(',')}`,
+         VALUES ${values.join(',')}
+         ON CONFLICT (account_id, keyword_id) DO UPDATE SET
+           keyword = EXCLUDED.keyword, adgroup_id = EXCLUDED.adgroup_id,
+           bid_amt = EXCLUDED.bid_amt, status = EXCLUDED.status, reg_time = EXCLUDED.reg_time`,
         params
       );
       inserted += batch.length;
