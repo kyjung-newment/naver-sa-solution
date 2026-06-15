@@ -198,10 +198,16 @@ function downsellBudgetTarget(data, bench, opts) {
   for (const d of kws) {
     if (saved >= target) break;
     const it = kwItem(d);
-    it.cutSpend = d.cost || 0;
-    it.lostRevenue = d.purchaseAmt || 0;
-    it.action = (d.purchaseCnt || 0) === 0 ? '예산 OFF' : '예산 컷(우선순위)';
-    it.reason = `ROAS ${fmt(d.roas)}% — 감액 우선순위 상위 (절감 ${won(it.cutSpend)} / 매출손실 ${won(it.lostRevenue)})`;
+    const fullCost = d.cost || 0;
+    // 마지막 키워드는 목표 절감액까지만 부분 감액 제안 → achievedReduction이 목표를 넘지 않도록
+    const remaining = Math.max(0, target - saved);
+    const cut = Math.min(fullCost, remaining);
+    const partial = fullCost > 0 ? (cut / fullCost) : 0;
+    it.cutSpend = cut;
+    it.lostRevenue = Math.round((d.purchaseAmt || 0) * partial);
+    const isPartial = cut < fullCost;
+    it.action = (d.purchaseCnt || 0) === 0 ? '예산 OFF' : (isPartial ? '예산 부분 컷' : '예산 컷(우선순위)');
+    it.reason = `ROAS ${fmt(d.roas)}% — 감액 우선순위${isPartial ? ' (목표 도달분만 부분 감액)' : ' 상위'} (절감 ${won(it.cutSpend)} / 매출손실 ${won(it.lostRevenue)})`;
     items.push(it);
     saved += it.cutSpend; lostRev += it.lostRevenue;
   }

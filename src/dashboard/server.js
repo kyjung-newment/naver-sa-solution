@@ -7279,6 +7279,7 @@ async function loadStrategyAccount(req) {
   const account = await db.getAccountById(accountId, req.session.userId);
   if (!account) return { error: '광고주 없음', status: 404 };
   if (account.has_sa === false) return { error: 'SA 미활성 계정', status: 400 };
+  if (!account.customer_id) return { error: 'Customer ID 미등록 — 광고주 설정을 확인하세요', status: 400 };
   const creds = await db.getApiCredentials(req.session.userId, account.id);
   if (!creds) return { error: 'API 자격증명 미설정', status: 400 };
   return { account: { ...account, api_key: creds.api_key, secret_key: creds.secret_key } };

@@ -920,7 +920,11 @@ async function generateExcelBuffer(account, type, customRange, opts) {
 const _reportCache = new Map(); // key → { ts, value }
 const REPORT_CACHE_TTL = 10 * 60 * 1000;
 async function collectReportDataCached(account, type, customRange, opts) {
-  const key = `${account.id}:${type}:${customRange ? customRange.since + '~' + customRange.until : 'def'}:${opts && opts.skipPrev ? 'sp' : ''}`;
+  // 자격증명을 키에 포함 → API 키/Customer ID 변경 시 캐시 무효화(stale 방지)
+  const credHash = require('crypto').createHash('md5')
+    .update(String(account.api_key || '') + '|' + String(account.secret_key || '') + '|' + String(account.customer_id || ''))
+    .digest('hex').slice(0, 10);
+  const key = `${account.id}:${type}:${credHash}:${customRange ? customRange.since + '~' + customRange.until : 'def'}:${opts && opts.skipPrev ? 'sp' : ''}`;
   const now = Date.now();
   const hit = _reportCache.get(key);
   if (hit && (now - hit.ts) < REPORT_CACHE_TTL) return hit.value;
