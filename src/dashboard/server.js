@@ -8,6 +8,17 @@ const { generateAndSend } = require('../report/generator');
 
 const router = express.Router();
 
+// ─── 기능 플래그 ────────────────────────────────────────────────────
+// DA(GFA) 대시보드/리포트: 쿠키 세션 기반이라 자동 토큰 갱신이 불가능하여
+//   공식 GFA 마케팅 API가 연동될 때까지 비활성화. (코드는 보존 → 플래그만 true로 재활성화)
+// 자동입찰(파워링크/쇼핑): 자동 입찰 대신 '원클릭 계정분석 제안'의 증액/감액 제안으로 대체.
+//   auto_bid_keywords / shopping_bid_keywords 데이터는 보존되므로 재활성화 시 그대로 복구됨.
+const FEATURES = {
+  DA: false,        // DA 성과 대시보드 + DA 리포트
+  AUTOBID: false,   // 파워링크 자동입찰
+  SHOPPING_BID: false, // 쇼핑검색 자동입찰
+};
+
 // ─── 세션 미들웨어 (Supabase PostgreSQL에 세션 저장) ───────────────
 router.use(session({
   store: new pgSession({
@@ -160,13 +171,23 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
 
   const menuItems = [
     { id: 'dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label: 'SA 성과 대시보드', href: '/smart-sa' },
-    { id: 'da-dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 13 10 9 13 12 17 7"/></svg>', label: 'DA 성과 대시보드', href: '/smart-sa/da-dashboard' },
-    { id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' },
-    { id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' },
+  ];
+  // DA 성과 대시보드: 공식 GFA API 연동 전까지 비활성화
+  if (FEATURES.DA) {
+    menuItems.push({ id: 'da-dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 13 10 9 13 12 17 7"/></svg>', label: 'DA 성과 대시보드', href: '/smart-sa/da-dashboard' });
+  }
+  // 자동입찰: '원클릭 계정분석 제안'(증액/감액)으로 대체하여 비활성화
+  if (FEATURES.AUTOBID) {
+    menuItems.push({ id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' });
+  }
+  if (FEATURES.SHOPPING_BID) {
+    menuItems.push({ id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' });
+  }
+  menuItems.push(
     { id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: '자동리포트', href: '/smart-sa/reports' },
     { id: 'accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', label: '광고주 관리', href: '/smart-sa/accounts' },
     { id: 'api', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>', label: 'API 설정', href: '/smart-sa/api-settings' },
-  ];
+  );
   if (user?.is_admin) {
     menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
   }
@@ -1693,6 +1714,15 @@ router.delete('/accounts/:id', requireLogin, async (req, res) => {
 
 // ─── DA 성과 대시보드 ──────────────────────────────────────────────
 router.get('/da-dashboard', requireLogin, async (req, res) => {
+  if (!FEATURES.DA) {
+    const user = await getUser(req);
+    const layoutOpts = await getLayoutOpts(req);
+    return res.send(appLayout('DA 성과 대시보드', `
+      <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;padding:32px;text-align:center;color:#92400e;max-width:640px;margin:40px auto">
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px">DA 성과 대시보드는 현재 비활성화되어 있습니다</div>
+        <div style="font-size:14px;line-height:1.7">네이버 DA(GFA)는 로그인 세션 쿠키 기반이라 토큰 자동 갱신이 불가능해,<br>공식 GFA 마케팅 API 연동 완료 시까지 잠시 중단합니다.<br>대신 <b>자동리포트</b>와 <b>원클릭 계정분석 제안</b>을 이용해주세요.</div>
+      </div>`, user, '', layoutOpts));
+  }
   const user = await getUser(req);
   const layoutOpts = await getLayoutOpts(req);
   const selId = layoutOpts.selectedAccountId || '';
@@ -5055,6 +5085,15 @@ router.get('/api/tab/campaigns', requireLogin, async (req, res) => {
 // ─── 키워드 순위 ────────────────────────────────────────────────────
 // ─── 자동입찰 ──────────────────────────────────────────────────────
 router.get('/autobid', requireLogin, requireApi, async (req, res) => {
+  if (!FEATURES.AUTOBID) {
+    const user = await getUser(req);
+    const layoutOpts = await getLayoutOpts(req);
+    return res.send(appLayout('파워링크 자동입찰', `
+      <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;padding:32px;text-align:center;color:#92400e;max-width:640px;margin:40px auto">
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px">자동입찰은 '원클릭 계정분석 제안'으로 대체되었습니다</div>
+        <div style="font-size:14px;line-height:1.7">자동 입찰 대신, 데이터 기반 <b>증액·감액 제안</b>을 검토 후 직접 적용하는 방식으로 전환했습니다.<br><b>자동리포트 → 원클릭 계정분석 제안</b>에서 확인하세요.</div>
+      </div>`, user, '', layoutOpts));
+  }
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
   const selectedId = req.session.selectedAccountId || req.query.accountId || accounts[0]?.id || '';
@@ -5870,17 +5909,17 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
     <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${selAccount.name || ''}</strong>
       ${selAccount.has_sa === false ? '' : '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;margin-left:6px;padding:1px 6px">SA</span>'}
-      ${selAccount.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;margin-left:3px;padding:1px 6px">DA</span>' : ''}
+      ${FEATURES.DA && selAccount.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;margin-left:3px;padding:1px 6px">DA</span>' : ''}
     </p>
 
-    <!-- SA / DA 탭 -->
+    <!-- SA / DA 탭 (DA는 공식 GFA API 연동 전까지 비활성화) -->
     <div class="tab-bar" style="margin-bottom:16px">
-      <button class="tab-btn dash-tab ${selAccount.has_sa !== false ? 'active' : (!selAccount.has_da ? 'active' : '')}" data-rep-tab="sa" onclick="switchRepTab('sa')">🔍 SA 리포트</button>
-      <button class="tab-btn dash-tab ${selAccount.has_sa === false && selAccount.has_da ? 'active' : ''}" data-rep-tab="da" onclick="switchRepTab('da')">📺 DA 리포트</button>
+      <button class="tab-btn dash-tab active" data-rep-tab="sa" onclick="switchRepTab('sa')">🔍 SA 리포트</button>
+      ${FEATURES.DA ? `<button class="tab-btn dash-tab ${selAccount.has_sa === false && selAccount.has_da ? 'active' : ''}" data-rep-tab="da" onclick="switchRepTab('da')">📺 DA 리포트</button>` : ''}
     </div>
 
     <!-- SA 탭 -->
-    <div id="rep-tab-sa" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? 'style="display:none"' : ''}>
+    <div id="rep-tab-sa" class="rep-tab-content">
     ${selAccount.has_sa === false ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 SA가 활성화되지 않은 계정입니다. 광고주 설정에서 SA를 활성화하세요.</div>' : `
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
@@ -5909,8 +5948,8 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     </div>`}
     </div>
 
-    <!-- DA 탭 -->
-    <div id="rep-tab-da" class="rep-tab-content" ${selAccount.has_sa === false && selAccount.has_da ? '' : 'style="display:none"'}>
+    <!-- DA 탭 (FEATURES.DA off면 항상 숨김) -->
+    <div id="rep-tab-da" class="rep-tab-content" ${FEATURES.DA && selAccount.has_sa === false && selAccount.has_da ? '' : 'style="display:none"'}>
     ${!selAccount.has_da ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 DA가 활성화되지 않은 계정입니다. 광고주 설정에서 DA를 활성화하고 광고관리 쿠키를 등록하세요.</div>' : (!selAccount.naver_cookie ? '<div class="alert" style="background:#fee2e2;color:#7f1d1d;border:1px solid #fecaca;padding:16px;border-radius:8px">DA 광고관리 쿠키가 등록되지 않았습니다. <a href="/smart-sa/accounts/'+selAccount.id+'/edit" style="color:#0284c7;font-weight:600">광고주 설정</a>에서 등록해주세요.</div>' : `
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
@@ -6654,6 +6693,7 @@ router.post('/api/report/save-schedule', requireLogin, async (req, res) => {
 
 // ─── DA 리포트 API ─────────────────────────────────────────────────
 router.post('/api/da-report/toggle-feat', requireLogin, async (req, res) => {
+  if (!FEATURES.DA) return res.status(403).json({ ok: false, error: 'DA 기능 비활성화됨' });
   try {
     const { accountId, feat, enabled } = req.body;
     const valid = ['feat_da_daily_report','feat_da_weekly_report','feat_da_monthly_report'];
@@ -6688,6 +6728,7 @@ router.post('/api/da-report/toggle-feat', requireLogin, async (req, res) => {
 });
 
 router.get('/api/da-report/download-excel', requireLogin, async (req, res) => {
+  if (!FEATURES.DA) return res.status(403).send('DA 기능 비활성화됨');
   const { type = 'daily', accountId } = req.query;
   try {
     if (!['daily','weekly','monthly'].includes(type)) return res.status(400).send('잘못된 타입');
@@ -6712,6 +6753,7 @@ router.get('/api/da-report/download-excel', requireLogin, async (req, res) => {
 });
 
 router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
+  if (!FEATURES.DA) return res.status(403).json({ ok: false, error: 'DA 기능 비활성화됨' });
   const { type, accountId, custom, startDate, endDate } = req.body;
   if (!['daily','weekly','monthly'].includes(type)) return res.status(400).json({ ok: false, error: '잘못된 타입' });
   const customRange = (custom && startDate && endDate) ? { since: startDate, until: endDate } : null;
@@ -6751,6 +6793,7 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
 // ─── DA Cron (UTC 00:30 = KST 09:30) ──────────────────────────────
 ['daily', 'weekly', 'monthly'].forEach(type => {
   router.get(`/api/cron/da-${type}`, async (req, res) => {
+    if (!FEATURES.DA) return res.json({ ok: true, disabled: true, message: 'DA 리포트 비활성화됨' });
     const authHeader = req.headers.authorization;
     if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
@@ -7051,6 +7094,15 @@ router.get('/api/cron/sync-backfill', async (req, res) => {
 
 // ─── 쇼핑검색 자동입찰 페이지 ──────────────────────────────────────
 router.get('/shopping-bid', requireLogin, requireApi, async (req, res) => {
+  if (!FEATURES.SHOPPING_BID) {
+    const user = await getUser(req);
+    const layoutOpts = await getLayoutOpts(req);
+    return res.send(appLayout('쇼핑검색 자동입찰', `
+      <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;padding:32px;text-align:center;color:#92400e;max-width:640px;margin:40px auto">
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px">자동입찰은 '원클릭 계정분석 제안'으로 대체되었습니다</div>
+        <div style="font-size:14px;line-height:1.7">자동 입찰 대신, 데이터 기반 <b>증액·감액 제안</b>을 검토 후 직접 적용하는 방식으로 전환했습니다.<br><b>자동리포트 → 원클릭 계정분석 제안</b>에서 확인하세요.</div>
+      </div>`, user, '', layoutOpts));
+  }
   const user = await getUser(req);
   const accounts = await db.getAccountsByUser(user.id);
   const selectedId = req.session.selectedAccountId || req.query.accountId || accounts[0]?.id || '';
@@ -7691,6 +7743,7 @@ router.post('/api/shopping-bid/debug', requireLogin, async (req, res) => {
 
 // 5분마다 실행: 자동입찰
 router.get('/api/cron/autobid', async (req, res) => {
+  if (!FEATURES.AUTOBID) return res.json({ ok: true, disabled: true, message: '자동입찰 비활성화됨' });
   const authHeader = req.headers.authorization;
   if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
@@ -7723,6 +7776,7 @@ router.get('/api/cron/autobid', async (req, res) => {
 
 // ─── 쇼핑검색 자동입찰 Cron ──────────────────────────────────────────
 router.get('/api/cron/shopping-autobid', async (req, res) => {
+  if (!FEATURES.SHOPPING_BID) return res.json({ ok: true, disabled: true, message: '쇼핑 자동입찰 비활성화됨' });
   const authHeader = req.headers.authorization;
   if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
