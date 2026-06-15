@@ -8,7 +8,7 @@ const f = {
   won: n => `₩${Number(n || 0).toLocaleString('ko-KR')}`,
 };
 
-async function buildExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
+async function buildExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom, reportConfig, suggestions }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = '뉴먼트 솔루션';
   wb.created = new Date();
@@ -39,6 +39,37 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
 
   const mHeaders = ['총비용','노출수','평균순위','클릭수','CPC','CTR','구매완료','구매매출','ROAS','장바구니','장바구니매출'];
   const mFmts = [FMT.won, FMT.num, FMT.rank, FMT.num, FMT.won, FMT.pct, FMT.num, FMT.won, FMT.roas, FMT.num, FMT.won];
+
+  // ─── 리포트 커스터마이징 설정 ────────────────────────────────────
+  // reportConfig = { sheets: {summary:true,comparison:false,...}, customSheets:[{name,dimension,metrics,sortBy,limit}] }
+  const cfg = reportConfig || {};
+  const sheetOn = (k) => (cfg.sheets && cfg.sheets[k] === false) ? false : true; // 기본 on
+
+  // 지표 레지스트리 (커스텀 시트용)
+  const METRIC_DEFS = [
+    { key: 'cost', label: '총비용', fmt: FMT.won },
+    { key: 'imp', label: '노출수', fmt: FMT.num },
+    { key: 'avgRank', label: '평균순위', fmt: FMT.rank },
+    { key: 'clk', label: '클릭수', fmt: FMT.num },
+    { key: 'cpc', label: 'CPC', fmt: FMT.won },
+    { key: 'ctr', label: 'CTR', fmt: FMT.pct },
+    { key: 'purchaseCnt', label: '구매완료', fmt: FMT.num },
+    { key: 'purchaseAmt', label: '구매매출', fmt: FMT.won },
+    { key: 'roas', label: 'ROAS', fmt: FMT.roas },
+    { key: 'cartCnt', label: '장바구니', fmt: FMT.num },
+    { key: 'cartAmt', label: '장바구니매출', fmt: FMT.won },
+  ];
+  // 차원 레지스트리 (커스텀 시트용)
+  const DIMENSION_DEFS = {
+    byCampaign:     { label: '캠페인',     labelHeaders: ['캠페인'],            labels: (d, k) => [d.name || k] },
+    byCampaignType: { label: '캠페인유형', labelHeaders: ['캠페인유형'],        labels: (d, k) => [k] },
+    byAdgroup:      { label: '광고그룹',   labelHeaders: ['캠페인', '광고그룹'], labels: (d, k) => [d.campaignName || '', d.name || k] },
+    byKeyword:      { label: '키워드',     labelHeaders: ['광고그룹', '키워드'], labels: (d, k) => [d.adgroupName || '', d.name || k] },
+    byQuery:        { label: '검색어',     labelHeaders: ['광고그룹', '검색어'], labels: (d, k) => [d.adgroupName || '', d.name || k] },
+    byDevice:       { label: '디바이스',   labelHeaders: ['디바이스'],          labels: (d, k) => [k === 'P' || k === 'PC' ? 'PC' : '모바일'] },
+    byHour:         { label: '시간대',     labelHeaders: ['시간'],              labels: (d, k) => [parseInt(k) + '시'] },
+    byDate:         { label: '일자',       labelHeaders: ['일자'],              labels: (d, k) => [k] },
+  };
 
   // ─── 공통 헬퍼 ───────────────────────────────────────────────────
   function setup(ws) { ws.properties.defaultRowHeight = 20; ws.views = [{ showGridLines: false }]; ws.getColumn(1).width = 2; }
@@ -764,6 +795,136 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   }
 
   // 기간비교는 요약·캠페인 바로 다음(section 2-1)으로 이동 완료
+
+  // ══════════════════════════════════════════════════════════════════
+  // 9. 시트 on/off — 비활성 표준 시트 제거 (표지·요약은 항상 유지)
+  // ══════════════════════════════════════════════════════════════════
+  const STD_SHEET_NAMES = {
+    summary: ['요약·캠페인'],
+    comparison: ['기간비교'],
+    typeDevice: ['유형 및 기기별'],
+    adgroup: ['광고그룹별'],
+    hourly: ['시간대별'],
+    daily: ['일자별'],
+  };
+  const toRemove = [];
+  for (const [k, names] of Object.entries(STD_SHEET_NAMES)) {
+    if (k === 'summary') continue; // 요약은 항상 유지
+    if (!sheetOn(k)) names.forEach(n => { const ws = wb.getWorksheet(n); if (ws) toRemove.push(ws.id); });
+  }
+  if (!sheetOn('keyword')) {
+    wb.worksheets.filter(ws => /_(검색어별|키워드별)$/.test(ws.name)).forEach(ws => toRemove.push(ws.id));
+  }
+  toRemove.forEach(id => { try { wb.removeWorksheet(id); } catch (_) {} });
+
+  // ══════════════════════════════════════════════════════════════════
+  // 10. 커스텀 시트 (차원 + 지표 선택)
+  // ══════════════════════════════════════════════════════════════════
+  const usedNames = new Set(wb.worksheets.map(w => w.name));
+  function uniqueName(base) {
+    let n = String(base || '맞춤').slice(0, 31); let i = 2;
+    while (usedNames.has(n)) { const suf = ' (' + i + ')'; n = String(base).slice(0, 31 - suf.length) + suf; i++; }
+    usedNames.add(n); return n;
+  }
+  function buildCustomSheet(def) {
+    const dim = DIMENSION_DEFS[def.dimension]; if (!dim) return;
+    const src = data[def.dimension] || {};
+    const selKeys = (Array.isArray(def.metrics) && def.metrics.length) ? def.metrics : METRIC_DEFS.map(m => m.key);
+    const cols = METRIC_DEFS.filter(m => selKeys.includes(m.key));
+    if (cols.length === 0) return;
+    const sortKey = (def.sortBy && cols.some(c => c.key === def.sortBy)) ? def.sortBy : cols[0].key;
+    let entries = Object.entries(src).filter(([, d]) => ((d.imp || 0) + (d.clk || 0) + (d.cost || 0)) > 0);
+    if (def.dimension === 'byDate' || def.dimension === 'byHour') entries.sort((a, b) => a[0].localeCompare(b[0]));
+    else entries.sort((a, b) => (b[1][sortKey] || 0) - (a[1][sortKey] || 0));
+    const limit = (def.limit && def.limit > 0) ? def.limit : 200;
+    const truncated = entries.length > limit;
+    if (truncated) entries = entries.slice(0, limit);
+    const ws = wb.addWorksheet(uniqueName(def.name || (dim.label + ' 맞춤')));
+    setup(ws);
+    dim.labelHeaders.forEach((h, i) => ws.getColumn(i + 2).width = (i === dim.labelHeaders.length - 1 ? 26 : 20));
+    cols.forEach((c, i) => ws.getColumn(2 + dim.labelHeaders.length + i).width = 13);
+    const span = 1 + dim.labelHeaders.length + cols.length;
+    let r = 3;
+    r = sectionTitle(ws, r, (def.name || dim.label + ' 맞춤') + ` (${period})`, span);
+    r++;
+    r = subTitle(ws, r, `${dim.label} 기준 · ${cols.map(c => c.label).join(', ')}${truncated ? ` · 상위 ${limit}개` : ''}`, span);
+    r++;
+    const hRow = ws.getRow(r); hRow.height = 26;
+    [...dim.labelHeaders, ...cols.map(c => c.label)].forEach((h, i) => {
+      const c = hRow.getCell(i + 2); c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border;
+    });
+    r++;
+    if (entries.length === 0) { const c = ws.getRow(r).getCell(2); c.value = '데이터 없음'; c.font = { size: 10, color: { argb: C.gray } }; c.border = border; return; }
+    entries.forEach(([k, d], idx) => {
+      const row = ws.getRow(r); row.height = 22;
+      const labels = dim.labels(d, k);
+      labels.forEach((lb, li) => { const c = row.getCell(2 + li); c.value = lb; c.font = { size: 10, color: { argb: C.dark } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
+      cols.forEach((mc, ci) => { const c = row.getCell(2 + labels.length + ci); c.value = d[mc.key] || 0; c.numFmt = mc.fmt; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
+      r++;
+    });
+  }
+  (cfg.customSheets || []).forEach(def => { try { buildCustomSheet(def); } catch (e) { console.log('커스텀 시트 실패:', e.message); } });
+
+  // ══════════════════════════════════════════════════════════════════
+  // 11. 원클릭 계정분석 제안 시트 (suggestions 전달 시)
+  // ══════════════════════════════════════════════════════════════════
+  if (suggestions) {
+    function buildBidSuggestionSheet(name, items, accent, introLines) {
+      const ws = wb.addWorksheet(uniqueName(name)); setup(ws);
+      [22, 22, 24, 11, 10, 9, 13, 11, 10, 10, 9, 15, 22, 46].forEach((w, i) => ws.getColumn(i + 2).width = w);
+      let r = 3;
+      r = sectionTitle(ws, r, name + ` (${period})`, 15); r++;
+      introLines.forEach(line => { r = subTitle(ws, r, line, 15); }); r++;
+      const headers = ['캠페인', '광고그룹', '키워드', '노출수', '클릭수', 'CTR', '총비용', 'CPC', '평균순위', 'ROAS', '구매수', '구매매출', '추천 액션', '근거'];
+      const hRow = ws.getRow(r); hRow.height = 26;
+      headers.forEach((h, i) => { const c = hRow.getCell(i + 2); c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border; });
+      r++;
+      if (!items.length) { const c = ws.getRow(r).getCell(2); ws.mergeCells(r, 2, r, 15); c.value = '해당 조건의 제안이 없습니다.'; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = { horizontal: 'left', vertical: 'middle' }; c.border = border; return; }
+      const fmts = [null, null, null, FMT.num, FMT.num, FMT.pct, FMT.won, FMT.won, FMT.rank, FMT.roas, FMT.num, FMT.won, null, null];
+      items.forEach((it, idx) => {
+        const row = ws.getRow(r); row.height = 24;
+        const vals = [it.campaignName || '', it.adgroupName || '', it.name || '', it.imp || 0, it.clk || 0, it.ctr || 0, it.cost || 0, it.cpc || 0, it.avgRank || 0, it.roas || 0, it.purchaseCnt || 0, it.purchaseAmt || 0, it.action || '', it.reason || ''];
+        vals.forEach((v, i) => {
+          const c = row.getCell(i + 2); c.value = v; if (fmts[i]) c.numFmt = fmts[i];
+          const isAction = i === 12;
+          c.font = { size: 9, bold: isAction, color: { argb: isAction ? accent : (i < 3 ? C.dark : C.gray) } };
+          c.alignment = (i === 13 || i === 2) ? { horizontal: 'left', vertical: 'middle', wrapText: true } : cm;
+          c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+        });
+        r++;
+      });
+    }
+    function buildDiscoverySheet(name, items) {
+      const ws = wb.addWorksheet(uniqueName(name)); setup(ws);
+      [30, 14, 13, 11, 11, 10, 11, 11, 20, 46].forEach((w, i) => ws.getColumn(i + 2).width = w);
+      let r = 3;
+      r = sectionTitle(ws, r, name + ` (${period})`, 11); r++;
+      r = subTitle(ws, r, '① 전환 발생 미등록 검색어  ②키워드도구 연관 키워드(월 검색량 포함)', 11); r++;
+      const headers = ['발굴 키워드', '출처', '월검색량', 'PC', '모바일', '경쟁', '현재클릭', '현재구매', '추천 액션', '근거'];
+      const hRow = ws.getRow(r); hRow.height = 26;
+      headers.forEach((h, i) => { const c = hRow.getCell(i + 2); c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border; });
+      r++;
+      if (!items.length) { const c = ws.getRow(r).getCell(2); ws.mergeCells(r, 2, r, 11); c.value = '발굴된 키워드가 없습니다.'; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = { horizontal: 'left', vertical: 'middle' }; c.border = border; return; }
+      const fmts = [null, null, FMT.num, FMT.num, FMT.num, null, FMT.num, FMT.num, null, null];
+      items.forEach((it, idx) => {
+        const row = ws.getRow(r); row.height = 24;
+        const isTool = it.source === '키워드도구';
+        const vals = [it.keyword || '', it.source || '', it.monthlyTotal, it.monthlyPc, it.monthlyMobile, it.compIdx || '', it.currentClk || 0, it.currentPurchase || 0, it.action || '', it.reason || ''];
+        vals.forEach((v, i) => {
+          const c = row.getCell(i + 2); c.value = (v == null ? '-' : v); if (fmts[i] && v != null) c.numFmt = fmts[i];
+          const srcCol = i === 1;
+          c.font = { size: 9, bold: i === 0, color: { argb: i === 0 ? C.dark : (srcCol ? (isTool ? C.purple : C.green) : C.gray) } };
+          c.alignment = (i === 0 || i === 9) ? { horizontal: 'left', vertical: 'middle', wrapText: true } : cm;
+          c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
+        });
+        r++;
+      });
+    }
+    buildBidSuggestionSheet('증액 제안', suggestions.upsell || [], C.green, ['성과 우수 · 노출/순위 여력 → 입찰·예산 증액 추천', `대상 ${(suggestions.upsell || []).length}건`]);
+    buildBidSuggestionSheet('감액 제안', suggestions.downsell || [], C.red, ['비용 발생 대비 전환 없음/저효율 → 입찰 하향·OFF 추천', `대상 ${(suggestions.downsell || []).length}건`]);
+    buildDiscoverySheet('키워드 발굴', suggestions.expansion || []);
+  }
 
   return await wb.xlsx.writeBuffer();
 }

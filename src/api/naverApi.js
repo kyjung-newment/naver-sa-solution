@@ -471,6 +471,25 @@ function createApiClient(creds) {
       return lines.map(line => line.split('\t'));
     },
 
+    // ─── 키워드도구 (연관 키워드 + 월간 검색량) ──────────────────────
+    // hintKeywords: 최대 5개. 반환: keywordList[{relKeyword, monthlyPcQcCnt, monthlyMobileQcCnt, compIdx, ...}]
+    getRelatedKeywords: async (hintKeywords) => {
+      const hints = (hintKeywords || []).filter(Boolean).slice(0, 5);
+      if (hints.length === 0) return [];
+      // 검색어에 공백 포함 시 키워드도구가 거부 → 공백 제거 (네이버 규칙)
+      const cleaned = hints.map(k => String(k).replace(/\s+/g, ''));
+      try {
+        const r = await apiCall('GET', '/keywordstool', {
+          hintKeywords: cleaned.join(','),
+          showDetail: 1,
+        });
+        return r?.keywordList || [];
+      } catch (e) {
+        console.log('  ⚠️ 키워드도구 조회 실패:', e.message);
+        return [];
+      }
+    },
+
     // ─── Stat Report 직접 접근 ──────────────────────────────────────
     createAndDownloadStatReport,
     getPurchaseConversions,

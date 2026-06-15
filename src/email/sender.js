@@ -534,6 +534,15 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
 // ─── 엑셀 리포트 (외부 모듈) ─────────────────────────────────────────
 const { buildExcelReport } = require('./excelReport');
 
+// 계정의 report_config(JSON 문자열) 안전 파싱
+function parseAccountReportConfig(account) {
+  if (!account || !account.report_config) return null;
+  try {
+    const c = typeof account.report_config === 'string' ? JSON.parse(account.report_config) : account.report_config;
+    return { sheets: c.sheets || {}, customSheets: Array.isArray(c.customSheets) ? c.customSheets : [] };
+  } catch (_) { return null; }
+}
+
 // ─── 이메일 발송 ────────────────────────────────────────────────────
 async function sendReport({ account, type, period, data, prevData, dateRange, prevRange, isCustom }) {
   const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
@@ -551,10 +560,11 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
 
   const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
 
-  // 엑셀 리포트 생성
+  // 엑셀 리포트 생성 (계정별 시트 커스터마이징 적용)
   let excelBuffer = null;
   try {
-    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
+    const reportConfig = parseAccountReportConfig(account);
+    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom, reportConfig });
     console.log(`📊 [${account.name}] 엑셀 리포트 생성 완료 (${Math.round(excelBuffer.length / 1024)}KB)`);
   } catch (e) {
     console.warn(`⚠️ [${account.name}] 엑셀 리포트 생성 실패:`, e.message);

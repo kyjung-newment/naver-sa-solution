@@ -908,7 +908,38 @@ async function generatePreview(account, type, customRange, opts) {
 async function generateExcelBuffer(account, type, customRange, opts) {
   const r = await collectReportData(account, type, customRange, opts);
   const { buildExcelReport } = require('../email/excelReport');
-  return { buffer: await buildExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom }), period: r.period };
+  const reportConfig = db.parseReportConfig(account);
+  return { buffer: await buildExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom, reportConfig }), period: r.period };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer };
+/**
+ * 원클릭 계정분석 제안 번들 생성
+ * - 전체 리포트(시트 커스터마이징 적용) + 증액/감액/키워드발굴 제안 시트를 한 엑셀로 추출
+ * - 화면 표시용 요약(summary)과 제안 목록(suggestions)도 함께 반환
+ */
+async function generateAnalysisBundle(account, type, customRange, opts) {
+  const r = await collectReportData(account, type, customRange, opts);
+  const { analyzeAccount } = require('./suggestions');
+  const { buildExcelReport } = require('../email/excelReport');
+
+  // 키워드도구 보강 + 등록 키워드 목록(중복 제외용)
+  const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
+  let registeredKeywords = [];
+  try {
+    const kws = await db.getMasterKeywords(account.id);
+    registeredKeywords = (kws || []).map(k => k.keyword).filter(Boolean);
+  } catch (_) {}
+
+  const suggestions = await analyzeAccount(r.data, client, { registeredKeywords });
+
+  const reportConfig = db.parseReportConfig(account);
+  const buffer = await buildExcelReport({
+    type, period: r.period, accountName: account.name,
+    data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom,
+    reportConfig, suggestions,
+  });
+
+  return { buffer, period: r.period, suggestions };
+}
+
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle };

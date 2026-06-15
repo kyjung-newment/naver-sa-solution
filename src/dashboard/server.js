@@ -5904,6 +5904,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
   const accounts = await db.getAccountsByUser(user.id);
   const selId = req.session.selectedAccountId || (accounts[0]?.id || '');
   const selAccount = accounts.find(a => String(a.id) === String(selId)) || accounts[0] || {};
+  const repCfg = db.parseReportConfig(selAccount); // { sheets:{}, customSheets:[] }
 
   const content = `
     ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
@@ -6078,9 +6079,73 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         </table>
       </div>
     </div>
+
+    <!-- 원클릭 계정분석 제안 -->
+    <div class="card" style="border:2px solid #38ae49;margin-top:4px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span class="card-title">💡 원클릭 계정분석 제안</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <select id="oca-period" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
+            <option value="monthly">최근 30일</option>
+            <option value="weekly">최근 7일</option>
+            <option value="daily">어제</option>
+          </select>
+          <button class="btn btn-primary" style="background:#38ae49;border-color:#38ae49" onclick="runOneClickAnalysis()" id="oca-btn">🚀 분석 실행 + 엑셀 추출</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p style="color:#64748b;font-size:13px;margin:0 0 12px;line-height:1.6">데이터 기반으로 <b style="color:#16a34a">증액(업셀링)</b> · <b style="color:#dc2626">감액(다운셀링)</b> · <b style="color:#7c3aed">키워드 발굴</b> 제안을 자동 생성하고, <b>전체 리포트 + 제안 시트</b>를 한 엑셀로 일괄 추출합니다. <span style="color:#94a3b8">(대용량 계정은 1~3분 소요)</span></p>
+        <div id="oca-result"></div>
+      </div>
+    </div>
+
+    <!-- 리포트 시트 설정 -->
+    <div class="card">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span class="card-title">🧩 리포트 시트 설정 <span style="font-size:12px;color:#94a3b8;font-weight:400">(이 광고주 전용)</span></span>
+        <button class="btn btn-primary btn-sm" onclick="saveReportConfig()" id="rcfg-save" style="font-size:12px">💾 설정 저장</button>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;color:#64748b;margin-bottom:10px">자동/다운로드 엑셀 리포트에 포함할 시트를 선택하세요. <b>표지·요약</b>은 항상 포함됩니다.</div>
+        <div id="rcfg-sheets" style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:18px">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;opacity:.55"><input type="checkbox" checked disabled style="width:16px;height:16px"> 요약·캠페인 (항상)</label>
+          ${[['comparison','기간비교'],['typeDevice','유형 및 기기별'],['adgroup','광고그룹별'],['keyword','검색어별'],['hourly','시간대별'],['daily','일자별']].map(([k,lbl]) => {
+            const on = repCfg.sheets[k] !== false;
+            return '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="rcfg-sheet" data-key="'+k+'" '+(on?'checked':'')+' style="width:16px;height:16px;accent-color:#38ae49"> '+lbl+'</label>';
+          }).join('')}
+        </div>
+        <div style="border-top:1px solid #f1f5f9;padding-top:14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:10px">커스텀 시트 <span style="color:#94a3b8;font-weight:400">— 차원 1개 + 지표 다중 선택으로 표를 직접 구성</span></div>
+          <div id="rcfg-custom-list" style="margin-bottom:12px"></div>
+          <div style="background:#f8fafc;border:1px solid #eef2f7;padding:12px;border-radius:8px">
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px">
+              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">시트명</label><input id="cs-name" placeholder="예: 키워드 ROAS 분석" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:160px"></div>
+              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">차원</label>
+                <select id="cs-dim" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
+                  ${[['byCampaign','캠페인별'],['byCampaignType','캠페인유형별'],['byAdgroup','광고그룹별'],['byKeyword','키워드별'],['byQuery','검색어별'],['byDevice','디바이스별'],['byHour','시간대별'],['byDate','일자별']].map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')}
+                </select>
+              </div>
+              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">정렬 기준</label>
+                <select id="cs-sort" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
+                  ${[['cost','총비용'],['imp','노출수'],['clk','클릭수'],['ctr','CTR'],['cpc','CPC'],['purchaseCnt','구매완료'],['purchaseAmt','구매매출'],['roas','ROAS']].map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')}
+                </select>
+              </div>
+              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">행수</label><input id="cs-limit" type="number" value="50" min="1" max="500" style="width:70px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"></div>
+              <button class="btn btn-outline btn-sm" onclick="addCustomSheet()" style="font-size:12px">+ 시트 추가</button>
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-bottom:4px">지표 선택 (미선택 시 전체)</div>
+            <div id="cs-metrics" style="display:flex;flex-wrap:wrap;gap:10px">
+              ${[['cost','총비용'],['imp','노출수'],['avgRank','평균순위'],['clk','클릭수'],['cpc','CPC'],['ctr','CTR'],['purchaseCnt','구매완료'],['purchaseAmt','구매매출'],['roas','ROAS'],['cartCnt','장바구니'],['cartAmt','장바구니매출']].map(([k,l])=>'<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="checkbox" class="cs-metric" value="'+k+'" style="width:14px;height:14px;accent-color:#6366f1"> '+l+'</label>').join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     `}
     <script>
     const reportAccountId = '${selId}';
+    var customSheets = ${JSON.stringify(repCfg.customSheets || [])};
+    var DIM_LABELS = {byCampaign:'캠페인별',byCampaignType:'캠페인유형별',byAdgroup:'광고그룹별',byKeyword:'키워드별',byQuery:'검색어별',byDevice:'디바이스별',byHour:'시간대별',byDate:'일자별'};
 
     function switchRepTab(name){
       document.querySelectorAll('.rep-tab-content').forEach(function(el){el.style.display='none';});
@@ -6089,6 +6154,113 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         if (b.dataset.repTab===name) b.classList.add('active'); else b.classList.remove('active');
       });
     }
+
+    // ── 공통 유틸 ──
+    function ocaToast(m,e){ if(typeof toast==='function') toast(m,e); else if(e) alert(m); }
+    function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function ocaWon(n){ return '₩'+Number(n||0).toLocaleString('ko-KR'); }
+    function ocaNum(n){ return Number(n||0).toLocaleString('ko-KR'); }
+
+    // ── 리포트 시트 설정 ──
+    function renderCustomSheetList(){
+      var wrap=document.getElementById('rcfg-custom-list'); if(!wrap) return;
+      if(!customSheets.length){ wrap.innerHTML='<div style="font-size:12px;color:#94a3b8">등록된 커스텀 시트가 없습니다.</div>'; return; }
+      wrap.innerHTML=customSheets.map(function(cs,idx){
+        var mlabel=(cs.metrics&&cs.metrics.length)?(cs.metrics.length+'개 지표'):'전체 지표';
+        return '<div style="display:inline-flex;align-items:center;gap:8px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:6px 10px;margin:0 8px 8px 0;font-size:12px">'
+          +'<b>'+escapeHtml(cs.name)+'</b><span style="color:#64748b">'+(DIM_LABELS[cs.dimension]||cs.dimension)+' · '+mlabel+'</span>'
+          +'<span style="cursor:pointer;color:#dc2626;font-weight:700" onclick="removeCustomSheet('+idx+')">×</span></div>';
+      }).join('');
+    }
+    function addCustomSheet(){
+      var name=(document.getElementById('cs-name').value||'').trim();
+      var dim=document.getElementById('cs-dim').value;
+      var sort=document.getElementById('cs-sort').value;
+      var limit=parseInt(document.getElementById('cs-limit').value)||50;
+      var metrics=Array.prototype.slice.call(document.querySelectorAll('.cs-metric:checked')).map(function(c){return c.value;});
+      if(!name){ ocaToast('시트명을 입력하세요.',true); return; }
+      if(customSheets.length>=10){ ocaToast('커스텀 시트는 최대 10개입니다.',true); return; }
+      customSheets.push({ name:name.slice(0,28), dimension:dim, metrics:metrics, sortBy:sort, limit:Math.max(1,Math.min(500,limit)) });
+      document.getElementById('cs-name').value='';
+      document.querySelectorAll('.cs-metric:checked').forEach(function(c){c.checked=false;});
+      renderCustomSheetList();
+    }
+    function removeCustomSheet(idx){ customSheets.splice(idx,1); renderCustomSheetList(); }
+    async function saveReportConfig(){
+      if(!reportAccountId){ ocaToast('광고주를 먼저 선택하세요.',true); return; }
+      var sheets={};
+      document.querySelectorAll('.rcfg-sheet').forEach(function(c){ sheets[c.dataset.key]=c.checked; });
+      var btn=document.getElementById('rcfg-save'); btn.disabled=true; var old=btn.textContent; btn.textContent='저장 중...';
+      try{
+        var r=await fetch('/smart-sa/api/report/save-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:reportAccountId,sheets:sheets,customSheets:customSheets})});
+        var j=await r.json(); if(!j.ok) throw new Error(j.error||'저장 실패');
+        ocaToast('리포트 시트 설정이 저장되었습니다.');
+      }catch(e){ ocaToast(e.message,true); }
+      finally{ btn.disabled=false; btn.textContent=old; }
+    }
+
+    // ── 원클릭 계정분석 제안 ──
+    function ocaDownload(b64, filename){
+      var bin=atob(b64); var len=bin.length; var bytes=new Uint8Array(len);
+      for(var i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+      var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a'); a.href=url; a.download=filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); },2000);
+    }
+    function ocaCard(title,color,count,sub){
+      return '<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eef2f7;border-left:4px solid '+color+';border-radius:8px;padding:12px">'
+        +'<div style="font-size:12px;color:#64748b">'+title+'</div>'
+        +'<div style="font-size:24px;font-weight:700;color:'+color+'">'+ocaNum(count)+'<span style="font-size:13px;color:#94a3b8">건</span></div>'
+        +'<div style="font-size:11px;color:#94a3b8">'+sub+'</div></div>';
+    }
+    function ocaListBlock(title,color,items,kind){
+      var head='<div style="font-weight:600;font-size:13px;color:'+color+';margin:10px 0 4px">'+title+'</div>';
+      if(!items||!items.length) return head+'<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">해당 없음</div>';
+      var rows=items.slice(0,5).map(function(it){
+        if(kind==='exp'){
+          var vol=(it.monthlyTotal!=null)?(' · 월'+ocaNum(it.monthlyTotal)):'';
+          return '<tr><td style="padding:3px 8px;font-size:12px">'+escapeHtml(it.keyword)+'</td>'
+            +'<td style="padding:3px 8px;font-size:11px;color:#94a3b8">'+escapeHtml(it.source)+vol+'</td>'
+            +'<td style="padding:3px 8px;font-size:11px;color:#64748b">'+escapeHtml(it.reason)+'</td></tr>';
+        }
+        return '<tr><td style="padding:3px 8px;font-size:12px">'+escapeHtml(it.name)+'</td>'
+          +'<td style="padding:3px 8px;font-size:11px;text-align:right;white-space:nowrap">ROAS '+ocaNum(it.roas)+'% / '+ocaWon(it.cost)+'</td>'
+          +'<td style="padding:3px 8px;font-size:11px;color:'+color+'">'+escapeHtml(it.action)+'</td></tr>';
+      }).join('');
+      return head+'<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #f1f5f9;border-radius:6px">'+rows+'</table>';
+    }
+    function renderOcaSummary(s, sug, period){
+      s=s||{}; sug=sug||{};
+      var html='<div style="font-size:12px;color:#94a3b8;margin-bottom:8px">분석 기간: '+escapeHtml(period||'')+'</div>';
+      html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">';
+      html+=ocaCard('증액 제안','#16a34a',s.upsellCount||0,'현재비용 '+ocaWon(s.upsellCurrentCost||0));
+      html+=ocaCard('감액 제안','#dc2626',s.downsellCount||0,'비효율 '+ocaWon(s.downsellWasteCost||0));
+      html+=ocaCard('키워드 발굴','#7c3aed',s.expansionCount||0,'전환검색어 '+(s.expansionConvertingQueries||0)+' · 도구 '+(s.expansionToolIdeas||0));
+      html+='</div>';
+      html+=ocaListBlock('증액(업셀링) TOP','#16a34a',sug.upsell,'bid');
+      html+=ocaListBlock('감액(다운셀링) TOP','#dc2626',sug.downsell,'bid');
+      html+=ocaListBlock('키워드 발굴 TOP','#7c3aed',sug.expansion,'exp');
+      html+='<div style="font-size:11px;color:#94a3b8;margin-top:8px">📥 전체 리포트 + 제안 시트가 엑셀로 다운로드되었습니다.</div>';
+      return html;
+    }
+    async function runOneClickAnalysis(){
+      if(!reportAccountId){ ocaToast('광고주를 먼저 선택하세요.',true); return; }
+      var btn=document.getElementById('oca-btn'); var type=document.getElementById('oca-period').value;
+      var res=document.getElementById('oca-result');
+      btn.disabled=true; var old=btn.textContent; btn.textContent='분석 중...';
+      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 데이터 수집 + 제안 생성 중입니다. 대용량 계정은 1~3분 걸릴 수 있어요...</div>';
+      try{
+        var r=await fetch('/smart-sa/api/report/one-click-analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:reportAccountId,type:type})});
+        var j=await r.json(); if(!j.ok) throw new Error(j.error||'분석 실패');
+        if(j.excelBase64) ocaDownload(j.excelBase64, j.filename||'계정분석.xlsx');
+        res.innerHTML=renderOcaSummary(j.summary, j.suggestions, j.period);
+        ocaToast('분석 완료 — 엑셀이 다운로드되었습니다.');
+      }catch(e){ res.innerHTML='<div style="padding:12px;color:#dc2626;font-size:13px">오류: '+escapeHtml(e.message)+'</div>'; ocaToast(e.message,true); }
+      finally{ btn.disabled=false; btn.textContent=old; }
+    }
+    if(document.getElementById('rcfg-custom-list')) renderCustomSheetList();
 
     // ── 자동 발송 스케줄 수정 모달 ──
     function openSchedEdit(kind){
@@ -6687,6 +6859,73 @@ router.post('/api/report/save-schedule', requireLogin, async (req, res) => {
       [valHour(daily_hour), valHour(weekly_hour), valDow(weekly_dow), valHour(monthly_hour), valDay(monthly_day), accountId, req.session.userId]);
     res.json({ ok: true });
   } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── 리포트 커스터마이징 설정 저장 (시트 on/off + 커스텀 시트) ──────────
+router.post('/api/report/save-config', requireLogin, async (req, res) => {
+  try {
+    const { accountId, sheets, customSheets } = req.body;
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+
+    // 검증/정제
+    const allowedSheets = ['summary', 'comparison', 'typeDevice', 'adgroup', 'keyword', 'hourly', 'daily'];
+    const cleanSheets = {};
+    for (const k of allowedSheets) {
+      if (sheets && typeof sheets[k] === 'boolean') cleanSheets[k] = sheets[k];
+    }
+    const allowedDims = ['byCampaign','byCampaignType','byAdgroup','byKeyword','byQuery','byDevice','byHour','byDate'];
+    const allowedMetrics = ['cost','imp','avgRank','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas','cartCnt','cartAmt'];
+    const cleanCustom = (Array.isArray(customSheets) ? customSheets : []).slice(0, 10).map(cs => ({
+      name: String(cs.name || '맞춤').slice(0, 28),
+      dimension: allowedDims.includes(cs.dimension) ? cs.dimension : 'byKeyword',
+      metrics: Array.isArray(cs.metrics) ? cs.metrics.filter(m => allowedMetrics.includes(m)) : [],
+      sortBy: allowedMetrics.includes(cs.sortBy) ? cs.sortBy : 'cost',
+      limit: Math.max(1, Math.min(500, parseInt(cs.limit) || 50)),
+    })).filter(cs => cs.name);
+
+    await db.saveReportConfig(accountId, req.session.userId, { sheets: cleanSheets, customSheets: cleanCustom });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── 원클릭 계정분석 제안 (전체 리포트 + 증액/감액/키워드발굴 일괄 추출) ──
+router.post('/api/report/one-click-analysis', requireLogin, async (req, res) => {
+  try {
+    const { accountId, type } = req.body;
+    const t = ['daily', 'weekly', 'monthly'].includes(type) ? type : 'monthly';
+    const account = await db.getAccountById(accountId, req.session.userId);
+    if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
+    if (account.has_sa === false) return res.status(400).json({ ok: false, error: 'SA 미활성 계정' });
+
+    // 자격증명 주입 (계정→대행사 연결 우선)
+    const creds = await db.getApiCredentials(req.session.userId, account.id);
+    if (!creds) return res.status(400).json({ ok: false, error: 'API 자격증명 미설정' });
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+
+    const { generateAnalysisBundle } = require('../report/generator');
+    // 월간 대용량 계정은 전기 데이터 스킵으로 타임아웃/OOM 방지 (제안은 당기 데이터만 사용)
+    const { buffer, period, suggestions } = await generateAnalysisBundle(enriched, t, null, { skipPrev: t === 'monthly' });
+
+    const filename = `${account.name}_계정분석제안_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.xlsx`;
+    res.json({
+      ok: true,
+      period,
+      filename,
+      summary: suggestions.summary,
+      suggestions: {
+        upsell: (suggestions.upsell || []).slice(0, 5),
+        downsell: (suggestions.downsell || []).slice(0, 5),
+        expansion: (suggestions.expansion || []).slice(0, 5),
+      },
+      excelBase64: Buffer.from(buffer).toString('base64'),
+    });
+  } catch (err) {
+    console.error('원클릭 분석 오류:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

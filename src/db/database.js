@@ -250,6 +250,8 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_weekly_dow INTEGER DEFAULT 1`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_monthly_hour INTEGER DEFAULT 9`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sched_da_monthly_day INTEGER DEFAULT 1`);
+    // 계정별 리포트 커스터마이징 (시트 on/off + 커스텀 시트 정의) - JSON 문자열
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS report_config TEXT DEFAULT ''`);
     // 전역 설정 (DA 도움말 이미지 등 모든 광고주 공유)
     await safeQuery(`CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,
@@ -563,6 +565,25 @@ async function updateAccount(id, userId, data) {
 
 async function deleteAccount(id, userId) {
   return query('DELETE FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, userId]);
+}
+
+// ─── 리포트 커스터마이징 설정 (시트 on/off + 커스텀 시트) ───────────────
+// config: { sheets: {summary:true,...}, customSheets: [{id,name,dimension,metrics,sortBy,limit}] }
+async function saveReportConfig(id, userId, config) {
+  const json = JSON.stringify(config || {});
+  return query('UPDATE ad_accounts SET report_config = $1 WHERE id = $2 AND user_id = $3', [json, id, userId]);
+}
+
+// 계정 객체(또는 raw 문자열)에서 report_config 안전 파싱
+function parseReportConfig(account) {
+  const raw = account && typeof account === 'object' ? account.report_config : account;
+  if (!raw) return { sheets: {}, customSheets: [] };
+  try {
+    const c = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return { sheets: c.sheets || {}, customSheets: Array.isArray(c.customSheets) ? c.customSheets : [] };
+  } catch (_) {
+    return { sheets: {}, customSheets: [] };
+  }
 }
 
 // 관리자 비밀번호 초기화 (CRON_SECRET으로 보호)
@@ -1083,7 +1104,7 @@ module.exports = Object.assign(module.exports, {
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
   listAgencyCredentials, addAgencyCredential, updateAgencyCredential, deleteAgencyCredential, getAgencyCredentialById,
   getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
-  addSelectedAccount, updateAccount, deleteAccount,
+  addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   resetAdminPassword, deleteAllUsers,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords, upsertMasterQi,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
