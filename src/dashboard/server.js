@@ -192,6 +192,14 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
   }
 
+  // ─── 성과개선 전략 메뉴 그룹 ──────────────────────────────────────
+  const strategyItems = [
+    { id: 'strategy-upsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>', label: '증액 (Upselling)', href: '/smart-sa/strategy/upsell' },
+    { id: 'strategy-downsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>', label: '감액 (Downselling)', href: '/smart-sa/strategy/downsell' },
+    { id: 'strategy-discovery', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>', label: '키워드 발굴 (Discovery)', href: '/smart-sa/strategy/discovery' },
+    { id: 'strategy-oneclick', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>', label: '원클릭 계정분석 제안', href: '/smart-sa/strategy/analysis' },
+  ];
+
   // 광고 유형 라벨: [SA   ] / [   DA] / [SA·DA] (5자 고정으로 정렬)
   function typeBadge(a) {
     var sa = a.has_sa !== false; // 기본 true
@@ -228,8 +236,16 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     </div>
     ${accountSelector}
     <div class="sidebar-section">메뉴</div>
-    <div style="padding:0 6px;flex:1">
+    <div style="padding:0 6px">
       ${menuItems.map(m => `
+        <a href="${m.href}" class="sidebar-link ${activeMenu === m.id ? 'active' : ''}">
+          <span class="sidebar-icon">${m.icon}</span><span>${m.label}</span>
+        </a>
+      `).join('')}
+    </div>
+    <div class="sidebar-section">성과개선 전략</div>
+    <div style="padding:0 6px;flex:1">
+      ${strategyItems.map(m => `
         <a href="${m.href}" class="sidebar-link ${activeMenu === m.id ? 'active' : ''}">
           <span class="sidebar-icon">${m.icon}</span><span>${m.label}</span>
         </a>
@@ -5898,6 +5914,208 @@ router.post('/api/autobid/check-ranks', requireLogin, async (req, res) => {
   }
 });
 
+// ─── 성과개선 전략 페이지 ───────────────────────────────────────────
+const STRATEGY_META = {
+  upsell:    { kind: 'upsell',    active: 'strategy-upsell',    title: '증액 (Upselling)',        color: '#16a34a', desc: '성과 우수 키워드의 증액 제안 예산 · 예상 상승 매출 · 예상 ROAS를 산출합니다.' },
+  downsell:  { kind: 'downsell',  active: 'strategy-downsell',  title: '감액 (Downselling)',      color: '#dc2626', desc: '비효율 예산 감액, 또는 재정 목표 절감액에 맞춰 매출 손실 최소 컷을 제안합니다.' },
+  discovery: { kind: 'discovery', active: 'strategy-discovery', title: '키워드 발굴 (Discovery)', color: '#7c3aed', desc: '전환 검색어 + 키워드도구 연관 키워드로 신규 키워드를 발굴합니다. (채널·성격 필터)' },
+  oneclick:  { kind: 'oneclick',  active: 'strategy-oneclick',  title: '원클릭 계정분석 제안',     color: '#0ea5e9', desc: '증액·감액·발굴을 한 번에 요약한 월간 제안 리포트를 빠르게 생성합니다. (통화용)' },
+};
+
+function strategyControls(kind) {
+  if (kind === 'upsell') {
+    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:12px;color:#64748b">증액 트랙:</span>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-track" value="hold_roas" checked> ROAS 유지 증액</label>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-track" value="grow_volume"> 볼륨 성장(ROAS 최소화)</label>
+    </div>`;
+  }
+  if (kind === 'downsell') {
+    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:12px;color:#64748b">감액 모드:</span>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-mode" value="inefficiency" checked onchange="stToggleMode()"> 비효율 감액</label>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-mode" value="budget_target" onchange="stToggleMode()"> 재정 목표 감액</label>
+      <div id="st-target-box" style="display:none;gap:8px;align-items:center;font-size:13px">
+        <label>목표 절감 <input id="st-target-pct" type="number" value="10" min="1" max="90" style="width:56px;padding:4px 6px;border:1px solid #e2e8f0;border-radius:6px">%</label>
+        <span style="color:#94a3b8">또는</span>
+        <label>금액 <input id="st-target-amt" type="number" value="0" min="0" style="width:110px;padding:4px 6px;border:1px solid #e2e8f0;border-radius:6px">원</label>
+      </div>
+    </div>`;
+  }
+  if (kind === 'discovery') {
+    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:12px;color:#64748b">채널:</span>
+      <select id="st-channel" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"><option value="all">전체</option><option value="powerlink">파워링크</option><option value="shopping">쇼핑검색</option></select>
+      <span style="font-size:12px;color:#64748b">키워드 성격:</span>
+      <select id="st-character" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"><option value="all">전체</option><option value="related">연관</option><option value="functional">기능성</option><option value="seasonal">시즌성</option><option value="local">지역성</option></select>
+    </div>`;
+  }
+  return ''; // oneclick: 기간만
+}
+
+function strategyPageContent(kind, selAccount) {
+  const meta = STRATEGY_META[kind];
+  if (!selAccount || !selAccount.id) {
+    return `<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>`;
+  }
+  const runLabel = kind === 'oneclick' ? '🚀 분석 실행 (월간 제안 폼)' : '🔎 분석 실행';
+  return `
+    <div class="card" style="border-left:4px solid ${meta.color}">
+      <div class="card-body">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+          <div>
+            <div style="font-size:16px;font-weight:700">${meta.title}</div>
+            <div style="font-size:13px;color:#64748b;margin-top:2px">${meta.desc}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:4px">광고주: <b>${(selAccount.name||'').replace(/</g,'&lt;')}</b></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:12px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;color:#64748b">기간</span>
+            <select id="st-period" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
+              <option value="monthly">최근 30일</option>
+              <option value="weekly">최근 7일</option>
+              <option value="daily">어제</option>
+            </select>
+          </div>
+          ${strategyControls(kind)}
+          <button class="btn btn-primary" id="st-run" onclick="stRun()" style="background:${meta.color};border-color:${meta.color}">${runLabel}</button>
+        </div>
+        <div id="st-result" style="margin-top:16px"></div>
+      </div>
+    </div>
+    <script>
+    var ST_KIND='${kind}'; var ST_ACCOUNT='${selAccount.id}'; var ST_COLOR='${meta.color}'; var ST_LAST=null;
+    function stToast(m,e){ if(typeof toast==='function') toast(m,e); else if(e) alert(m); }
+    function stEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function stWon(n){ return '₩'+Number(n||0).toLocaleString('ko-KR'); }
+    function stNum(n){ return Number(n||0).toLocaleString('ko-KR'); }
+    function stToggleMode(){ var m=document.querySelector('input[name=st-mode]:checked'); var box=document.getElementById('st-target-box'); if(box) box.style.display=(m&&m.value==='budget_target')?'flex':'none'; }
+    function stEndpoint(){ return ST_KIND==='oneclick' ? '/smart-sa/api/strategy/oneclick' : '/smart-sa/api/strategy/'+ST_KIND; }
+    function stBody(){
+      var b={ accountId:ST_ACCOUNT, type:document.getElementById('st-period').value };
+      if(ST_KIND==='upsell'){ var t=document.querySelector('input[name=st-track]:checked'); b.track=t?t.value:'hold_roas'; }
+      if(ST_KIND==='downsell'){ var m=document.querySelector('input[name=st-mode]:checked'); b.mode=m?m.value:'inefficiency'; if(b.mode==='budget_target'){ b.targetPct=parseInt(document.getElementById('st-target-pct').value)||10; var amt=parseInt(document.getElementById('st-target-amt').value)||0; if(amt>0) b.targetAmt=amt; } }
+      if(ST_KIND==='discovery'){ b.channel=document.getElementById('st-channel').value; b.character=document.getElementById('st-character').value; }
+      return b;
+    }
+    async function stRun(){
+      if(!ST_ACCOUNT){ stToast('광고주를 먼저 선택하세요.',true); return; }
+      var btn=document.getElementById('st-run'); var res=document.getElementById('st-result');
+      btn.disabled=true; var old=btn.textContent; btn.textContent='분석 중...';
+      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 데이터 수집 + 분석 중... 대용량 계정은 1~3분 걸릴 수 있어요. (이후 같은 계정·기간은 캐시로 빠르게 재분석)</div>';
+      try{
+        var r=await fetch(stEndpoint(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(stBody())});
+        var j=await r.json(); if(!j.ok) throw new Error(j.error||'분석 실패');
+        ST_LAST=j; res.innerHTML=stRender(j);
+      }catch(e){ res.innerHTML='<div style="padding:12px;color:#dc2626;font-size:13px">오류: '+stEsc(e.message)+'</div>'; stToast(e.message,true); }
+      finally{ btn.disabled=false; btn.textContent=old; }
+    }
+    function stHead(period, cards, note){
+      var h='<div style="font-size:12px;color:#94a3b8;margin-bottom:8px">분석 기간: '+stEsc(period||'')+(note?' · '+stEsc(note):'')+'</div>';
+      h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
+      h+=cards.map(function(c){ return '<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eef2f7;border-left:4px solid '+ST_COLOR+';border-radius:8px;padding:12px"><div style="font-size:12px;color:#64748b">'+stEsc(c[0])+'</div><div style="font-size:20px;font-weight:700;color:'+ST_COLOR+'">'+c[1]+'</div></div>'; }).join('');
+      h+='</div>'; return h;
+    }
+    function stTable(headers, rows){
+      var h='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+      h+='<thead><tr>'+headers.map(function(x){return '<th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0;white-space:nowrap">'+stEsc(x)+'</th>';}).join('')+'</tr></thead><tbody>';
+      h+=rows.map(function(r,idx){ return '<tr style="background:'+(idx%2?'#fafafa':'#fff')+'">'+r.map(function(c){return '<td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top">'+c+'</td>';}).join('')+'</tr>'; }).join('');
+      h+='</tbody></table></div>'; return h;
+    }
+    function stCsvBtn(){ return '<div style="margin-top:10px"><button class="btn btn-outline btn-sm" onclick="stDownloadCsv()" style="font-size:12px">📥 CSV 다운로드</button></div>'; }
+    function stRender(j){
+      if(ST_KIND==='upsell') return stRenderUpsell(j);
+      if(ST_KIND==='downsell') return stRenderDownsell(j);
+      if(ST_KIND==='discovery') return stRenderDiscovery(j);
+      return stRenderOneclick(j);
+    }
+    function stRenderUpsell(j){
+      var s=j.summary||{}; var items=j.items||[];
+      var html=stHead(j.period,[['대상',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['예상 블렌디드 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||''));
+      var rows=items.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b">'+stEsc(it.reason)+'</span>']; });
+      html+=stTable(['키워드','캠페인','현재비용','현재ROAS','증액제안예산','추가투입','예상상승매출','예상ROAS','근거'],rows);
+      return html+stCsvBtn();
+    }
+    function stRenderDownsell(j){
+      var s=j.summary||{}; var items=j.items||[];
+      var cards = s.mode==='budget_target'
+        ? [['목표 절감액',stWon(s.targetReduction)],['달성 절감액',stWon(s.achievedReduction)],['예상 매출손실',stWon(s.estRevenueLoss)],['대상',stNum(s.count)+'건']]
+        : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],['전환0 키워드',stNum(s.zeroConvCount)+'건']];
+      var html=stHead(j.period,cards, s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액');
+      var rows=items.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b">'+stEsc(it.reason)+'</span>']; });
+      html+=stTable(['키워드','캠페인','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows);
+      return html+stCsvBtn();
+    }
+    function stRenderDiscovery(j){
+      var s=j.summary||{}; var items=j.items||[]; var cm={functional:'기능성',seasonal:'시즌성',local:'지역성'};
+      var chL=(s.channel==='all'?'전체':(s.channel==='shopping'?'쇼핑검색':'파워링크')); var caL=(s.character==='all'?'전체':(cm[s.character]||(s.character==='related'?'연관':s.character)));
+      var html=stHead(j.period,[['대상',stNum(s.count)+'건'],['전환검색어',stNum(s.convertingQueries)+'건'],['키워드도구',stNum(s.toolIdeas)+'건'],['채널/성격',chL+' / '+caL]],'');
+      var rows=items.map(function(it){ var chars=(it.characters||[]).map(function(c){return cm[c]||c;}).join(',')||'-'; var ch=it.channel==='shopping'?'쇼핑':(it.channel==='powerlink'?'파워링크':'-');
+        return ['<b>'+stEsc(it.keyword)+'</b>',stEsc(it.source),chars,ch,(it.monthlyTotal==null?'-':stNum(it.monthlyTotal)),(it.monthlyPc==null?'-':stNum(it.monthlyPc)),(it.monthlyMobile==null?'-':stNum(it.monthlyMobile)),stNum(it.currentClk),stNum(it.currentPurchase),'<span style="color:#64748b">'+stEsc(it.reason)+'</span>']; });
+      html+=stTable(['발굴키워드','출처','성격','채널','월검색량','PC','MO','현재클릭','현재구매','근거'],rows);
+      return html+stCsvBtn();
+    }
+    function stOcSection(title,color,sub,lines){
+      var h='<div style="margin-bottom:14px"><div style="font-weight:700;font-size:14px;color:'+color+'">'+title+'</div><div style="font-size:12px;color:#64748b;margin:2px 0 6px">'+sub+'</div>';
+      if(!lines.length) h+='<div style="font-size:12px;color:#94a3b8">해당 없음</div>';
+      else h+='<ul style="margin:0;padding-left:18px;font-size:12px;color:#334155">'+lines.map(function(l){return '<li style="margin:3px 0">'+l+'</li>';}).join('')+'</ul>';
+      return h+'</div>';
+    }
+    function stRenderOneclick(j){
+      var s=j.summary||{}; var sug=j.suggestions||{}; var k=j.kpi||{};
+      var html='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px">';
+      html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;border-bottom:2px solid '+ST_COLOR+';padding-bottom:10px;margin-bottom:14px">';
+      html+='<div><div style="font-size:18px;font-weight:800">'+stEsc(j.accountName||'')+' 월간 제안 리포트</div><div style="font-size:12px;color:#94a3b8">'+stEsc(j.period||'')+'</div></div>';
+      html+='<button class="btn btn-outline btn-sm" onclick="window.print()" style="font-size:12px">🖨 인쇄</button></div>';
+      html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;font-size:13px"><div>총비용 <b>'+stWon(k.cost)+'</b></div><div>구매매출 <b>'+stWon(k.purchaseAmt)+'</b></div><div>ROAS <b>'+stNum(k.roas)+'%</b></div><div>클릭 <b>'+stNum(k.clk)+'</b></div></div>';
+      html+=stOcSection('① 증액(업셀링) 제안','#16a34a','대상 '+stNum(s.upsellCount)+'건 · 추가투입 '+stWon(s.upsellAddSpend)+' → 예상 상승매출 '+stWon(s.upsellExpUplift),(sug.upsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.recBudget)+' 증액 시 매출 +'+stWon(it.expRevenueUplift)+' (ROAS '+stNum(it.expRoas)+'%)';}));
+      html+=stOcSection('② 감액(다운셀링) 제안','#dc2626','대상 '+stNum(s.downsellCount)+'건 · 비효율 절감 '+stWon(s.downsellWasteCost),(sug.downsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.cost)+' (ROAS '+stNum(it.roas)+'%) → '+stEsc(it.action);}));
+      html+=stOcSection('③ 키워드 발굴(Discovery)','#7c3aed','대상 '+stNum(s.expansionCount)+'건 (전환검색어 '+stNum(s.expansionConvertingQueries)+' · 도구 '+stNum(s.expansionToolIdeas)+')',(sug.expansion||[]).slice(0,8).map(function(it){return stEsc(it.keyword)+(it.monthlyTotal?(' (월 '+stNum(it.monthlyTotal)+')'):'')+' — '+stEsc(it.source);}));
+      html+='</div>';
+      html+='<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="stFullExcel()" id="st-fullx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 전체 리포트+제안 엑셀 추출</button></div>';
+      return html;
+    }
+    async function stFullExcel(){
+      var btn=document.getElementById('st-fullx'); btn.disabled=true; var old=btn.textContent; btn.textContent='엑셀 생성 중...';
+      try{
+        var r=await fetch('/smart-sa/api/report/one-click-analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:ST_ACCOUNT,type:document.getElementById('st-period').value})});
+        var j=await r.json(); if(!j.ok) throw new Error(j.error||'실패');
+        if(j.excelBase64){ var bin=atob(j.excelBase64); var bytes=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=j.filename||'계정분석.xlsx'; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},2000); }
+        stToast('전체 엑셀이 다운로드되었습니다.');
+      }catch(e){ stToast(e.message,true); }
+      finally{ btn.disabled=false; btn.textContent=old; }
+    }
+    function stDownloadCsv(){
+      if(!ST_LAST||!ST_LAST.items||!ST_LAST.items.length){ stToast('데이터가 없습니다.',true); return; }
+      var headers, rows;
+      if(ST_KIND==='upsell'){ headers=['키워드','캠페인','광고그룹','현재비용','현재ROAS','증액제안예산','추가투입','예상상승매출','예상ROAS','근거'];
+        rows=ST_LAST.items.map(function(it){return [it.name,it.campaignName,it.adgroupName,it.cost,it.roas,it.recBudget,it.addSpend,it.expRevenueUplift,it.expRoas,it.reason];}); }
+      else if(ST_KIND==='downsell'){ headers=['키워드','캠페인','광고그룹','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'];
+        rows=ST_LAST.items.map(function(it){return [it.name,it.campaignName,it.adgroupName,it.cost,it.roas,it.purchaseCnt,it.cutSpend,it.lostRevenue,it.reason];}); }
+      else { headers=['발굴키워드','출처','성격','채널','월검색량','PC','모바일','현재클릭','현재구매','근거'];
+        rows=ST_LAST.items.map(function(it){return [it.keyword,it.source,(it.characters||[]).join('|'),it.channel,it.monthlyTotal,it.monthlyPc,it.monthlyMobile,it.currentClk,it.currentPurchase,it.reason];}); }
+      var bom=String.fromCharCode(0xFEFF); var nl=String.fromCharCode(10);
+      var csv=bom+headers.join(',')+nl;
+      rows.forEach(function(r){ csv+=r.map(function(v){ var sv=String(v==null?'':v); if(sv.indexOf(',')>=0||sv.indexOf('"')>=0||sv.indexOf(nl)>=0) return '"'+sv.replace(/"/g,'""')+'"'; return sv; }).join(',')+nl; });
+      var blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); var url=URL.createObjectURL(blob);
+      var a=document.createElement('a'); a.href=url; a.download=ST_KIND+'_'+ST_ACCOUNT+'.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},2000);
+    }
+    </script>`;
+}
+
+['upsell', 'downsell', 'discovery', 'analysis'].forEach(seg => {
+  const kind = seg === 'analysis' ? 'oneclick' : seg;
+  router.get('/strategy/' + seg, requireLogin, requireApi, async (req, res) => {
+    const user = await getUser(req);
+    const layoutOpts = await getLayoutOpts(req);
+    const selId = layoutOpts.selectedAccountId || '';
+    const selAccount = selId ? (layoutOpts.accounts || []).find(a => String(a.id) === String(selId)) : null;
+    const meta = STRATEGY_META[kind];
+    res.send(appLayout(meta.title, strategyPageContent(kind, selAccount), user, meta.active, layoutOpts));
+  });
+});
+
 // ─── 리포트 ─────────────────────────────────────────────────────────
 router.get('/reports', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
@@ -6080,22 +6298,11 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       </div>
     </div>
 
-    <!-- 원클릭 계정분석 제안 -->
-    <div class="card" style="border:2px solid #38ae49;margin-top:4px">
-      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span class="card-title">💡 원클릭 계정분석 제안</span>
-        <div style="display:flex;align-items:center;gap:8px">
-          <select id="oca-period" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
-            <option value="monthly">최근 30일</option>
-            <option value="weekly">최근 7일</option>
-            <option value="daily">어제</option>
-          </select>
-          <button class="btn btn-primary" style="background:#38ae49;border-color:#38ae49" onclick="runOneClickAnalysis()" id="oca-btn">🚀 분석 실행 + 엑셀 추출</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <p style="color:#64748b;font-size:13px;margin:0 0 12px;line-height:1.6">데이터 기반으로 <b style="color:#16a34a">증액(업셀링)</b> · <b style="color:#dc2626">감액(다운셀링)</b> · <b style="color:#7c3aed">키워드 발굴</b> 제안을 자동 생성하고, <b>전체 리포트 + 제안 시트</b>를 한 엑셀로 일괄 추출합니다. <span style="color:#94a3b8">(대용량 계정은 1~3분 소요)</span></p>
-        <div id="oca-result"></div>
+    <!-- 성과개선 전략 안내 (전용 메뉴로 이동) -->
+    <div class="card" style="border-left:4px solid #38ae49;margin-top:4px">
+      <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="font-size:13px;color:#475569">💡 <b>증액·감액·키워드 발굴·원클릭 계정분석</b>은 좌측 <b>성과개선 전략</b> 메뉴로 이동했습니다.</div>
+        <a class="btn btn-outline btn-sm" href="/smart-sa/strategy/analysis" style="font-size:12px">원클릭 계정분석 제안 →</a>
       </div>
     </div>
 
@@ -6928,6 +7135,71 @@ router.post('/api/report/one-click-analysis', requireLogin, async (req, res) => 
     console.error('원클릭 분석 오류:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ─── 성과개선 전략 공통: 계정 + 자격증명 로드 ─────────────────────────
+async function loadStrategyAccount(req) {
+  const { accountId } = req.body;
+  const account = await db.getAccountById(accountId, req.session.userId);
+  if (!account) return { error: '광고주 없음', status: 404 };
+  if (account.has_sa === false) return { error: 'SA 미활성 계정', status: 400 };
+  const creds = await db.getApiCredentials(req.session.userId, account.id);
+  if (!creds) return { error: 'API 자격증명 미설정', status: 400 };
+  return { account: { ...account, api_key: creds.api_key, secret_key: creds.secret_key } };
+}
+function strategyType(t) { return ['daily', 'weekly', 'monthly'].includes(t) ? t : 'monthly'; }
+
+// 증액 (Upselling)
+router.post('/api/strategy/upsell', requireLogin, async (req, res) => {
+  try {
+    const { account, error, status } = await loadStrategyAccount(req);
+    if (error) return res.status(status).json({ ok: false, error });
+    const track = req.body.track === 'grow_volume' ? 'grow_volume' : 'hold_roas';
+    const { runStrategy } = require('../report/generator');
+    const r = await runStrategy(account, strategyType(req.body.type), 'upsell', { track });
+    res.json({ ok: true, period: r.period, items: r.items, summary: r.summary });
+  } catch (err) { console.error('증액 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 감액 (Downselling)
+router.post('/api/strategy/downsell', requireLogin, async (req, res) => {
+  try {
+    const { account, error, status } = await loadStrategyAccount(req);
+    if (error) return res.status(status).json({ ok: false, error });
+    const mode = req.body.mode === 'budget_target' ? 'budget_target' : 'inefficiency';
+    const opts = { mode };
+    if (mode === 'budget_target') {
+      opts.targetPct = Math.max(1, Math.min(90, parseInt(req.body.targetPct) || 10));
+      const amt = parseInt(req.body.targetAmt) || 0; if (amt > 0) opts.targetAmt = amt;
+    }
+    const { runStrategy } = require('../report/generator');
+    const r = await runStrategy(account, strategyType(req.body.type), 'downsell', opts);
+    res.json({ ok: true, period: r.period, items: r.items, summary: r.summary });
+  } catch (err) { console.error('감액 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 키워드 발굴 (Discovery)
+router.post('/api/strategy/discovery', requireLogin, async (req, res) => {
+  try {
+    const { account, error, status } = await loadStrategyAccount(req);
+    if (error) return res.status(status).json({ ok: false, error });
+    const channel = ['powerlink', 'shopping'].includes(req.body.channel) ? req.body.channel : 'all';
+    const character = ['related', 'functional', 'seasonal', 'local'].includes(req.body.character) ? req.body.character : 'all';
+    const { runStrategy } = require('../report/generator');
+    const r = await runStrategy(account, strategyType(req.body.type), 'discovery', { channel, character });
+    res.json({ ok: true, period: r.period, items: r.items, summary: r.summary });
+  } catch (err) { console.error('발굴 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 원클릭 간략 분석 (월간 제안 폼, 통화용 — 엑셀 미생성)
+router.post('/api/strategy/oneclick', requireLogin, async (req, res) => {
+  try {
+    const { account, error, status } = await loadStrategyAccount(req);
+    if (error) return res.status(status).json({ ok: false, error });
+    const { generateAnalysisBrief } = require('../report/generator');
+    const r = await generateAnalysisBrief(account, strategyType(req.body.type));
+    res.json({ ok: true, ...r });
+  } catch (err) { console.error('원클릭 간략분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // ─── DA 리포트 API ─────────────────────────────────────────────────

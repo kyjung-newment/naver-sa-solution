@@ -870,31 +870,57 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   // 11. 원클릭 계정분석 제안 시트 (suggestions 전달 시)
   // ══════════════════════════════════════════════════════════════════
   if (suggestions) {
-    function buildBidSuggestionSheet(name, items, accent, introLines) {
+    // 컬럼 스펙 기반 제안 시트 렌더러 (증액=투영컬럼 / 감액=감액컬럼)
+    function buildBidSuggestionSheet(name, items, accent, introLines, specs) {
       const ws = wb.addWorksheet(uniqueName(name)); setup(ws);
-      [22, 22, 24, 11, 10, 9, 13, 11, 10, 10, 9, 15, 22, 46].forEach((w, i) => ws.getColumn(i + 2).width = w);
+      specs.forEach((s, i) => ws.getColumn(i + 2).width = s.w || 12);
+      const span = 1 + specs.length;
       let r = 3;
-      r = sectionTitle(ws, r, name + ` (${period})`, 15); r++;
-      introLines.forEach(line => { r = subTitle(ws, r, line, 15); }); r++;
-      const headers = ['캠페인', '광고그룹', '키워드', '노출수', '클릭수', 'CTR', '총비용', 'CPC', '평균순위', 'ROAS', '구매수', '구매매출', '추천 액션', '근거'];
+      r = sectionTitle(ws, r, name + ` (${period})`, span); r++;
+      introLines.forEach(line => { r = subTitle(ws, r, line, span); }); r++;
       const hRow = ws.getRow(r); hRow.height = 26;
-      headers.forEach((h, i) => { const c = hRow.getCell(i + 2); c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border; });
+      specs.forEach((s, i) => { const c = hRow.getCell(i + 2); c.value = s.h; c.font = { bold: true, size: 10, color: { argb: C.dark } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border; });
       r++;
-      if (!items.length) { const c = ws.getRow(r).getCell(2); ws.mergeCells(r, 2, r, 15); c.value = '해당 조건의 제안이 없습니다.'; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = { horizontal: 'left', vertical: 'middle' }; c.border = border; return; }
-      const fmts = [null, null, null, FMT.num, FMT.num, FMT.pct, FMT.won, FMT.won, FMT.rank, FMT.roas, FMT.num, FMT.won, null, null];
+      if (!items.length) { const c = ws.getRow(r).getCell(2); ws.mergeCells(r, 2, r, span); c.value = '해당 조건의 제안이 없습니다.'; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = { horizontal: 'left', vertical: 'middle' }; c.border = border; return; }
       items.forEach((it, idx) => {
         const row = ws.getRow(r); row.height = 24;
-        const vals = [it.campaignName || '', it.adgroupName || '', it.name || '', it.imp || 0, it.clk || 0, it.ctr || 0, it.cost || 0, it.cpc || 0, it.avgRank || 0, it.roas || 0, it.purchaseCnt || 0, it.purchaseAmt || 0, it.action || '', it.reason || ''];
-        vals.forEach((v, i) => {
-          const c = row.getCell(i + 2); c.value = v; if (fmts[i]) c.numFmt = fmts[i];
-          const isAction = i === 12;
-          c.font = { size: 9, bold: isAction, color: { argb: isAction ? accent : (i < 3 ? C.dark : C.gray) } };
-          c.alignment = (i === 13 || i === 2) ? { horizontal: 'left', vertical: 'middle', wrapText: true } : cm;
+        specs.forEach((s, i) => {
+          const c = row.getCell(i + 2); const v = s.v(it); c.value = v; if (s.fmt && typeof v === 'number') c.numFmt = s.fmt;
+          c.font = { size: 9, bold: !!s.bold || !!s.accent, color: { argb: s.accent ? accent : (i < 3 ? C.dark : C.gray) } };
+          c.alignment = s.wrap ? { horizontal: 'left', vertical: 'middle', wrapText: true } : cm;
           c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
         });
         r++;
       });
     }
+    const UPSELL_SPECS = [
+      { h: '캠페인', v: it => it.campaignName || '', w: 18 },
+      { h: '광고그룹', v: it => it.adgroupName || '', w: 18 },
+      { h: '키워드', v: it => it.name || '', w: 22, wrap: true, bold: true },
+      { h: '클릭수', v: it => it.clk || 0, w: 9, fmt: FMT.num },
+      { h: '총비용', v: it => it.cost || 0, w: 13, fmt: FMT.won },
+      { h: 'ROAS', v: it => it.roas || 0, w: 9, fmt: FMT.roas },
+      { h: '구매매출', v: it => it.purchaseAmt || 0, w: 14, fmt: FMT.won },
+      { h: '증액제안예산', v: it => it.recBudget || 0, w: 14, fmt: FMT.won, accent: true },
+      { h: '추가투입', v: it => it.addSpend || 0, w: 13, fmt: FMT.won },
+      { h: '예상상승매출', v: it => it.expRevenueUplift || 0, w: 14, fmt: FMT.won, accent: true },
+      { h: '예상ROAS', v: it => it.expRoas || 0, w: 10, fmt: FMT.roas },
+      { h: '추천 액션', v: it => it.action || '', w: 20, accent: true },
+      { h: '근거', v: it => it.reason || '', w: 52, wrap: true },
+    ];
+    const DOWNSELL_SPECS = [
+      { h: '캠페인', v: it => it.campaignName || '', w: 18 },
+      { h: '광고그룹', v: it => it.adgroupName || '', w: 18 },
+      { h: '키워드', v: it => it.name || '', w: 22, wrap: true, bold: true },
+      { h: '클릭수', v: it => it.clk || 0, w: 9, fmt: FMT.num },
+      { h: '총비용', v: it => it.cost || 0, w: 13, fmt: FMT.won },
+      { h: 'ROAS', v: it => it.roas || 0, w: 9, fmt: FMT.roas },
+      { h: '구매수', v: it => it.purchaseCnt || 0, w: 9, fmt: FMT.num },
+      { h: '감액 제안액', v: it => it.cutSpend || 0, w: 14, fmt: FMT.won, accent: true },
+      { h: '예상 매출손실', v: it => it.lostRevenue || 0, w: 14, fmt: FMT.won },
+      { h: '추천 액션', v: it => it.action || '', w: 18, accent: true },
+      { h: '근거', v: it => it.reason || '', w: 52, wrap: true },
+    ];
     function buildDiscoverySheet(name, items) {
       const ws = wb.addWorksheet(uniqueName(name)); setup(ws);
       [30, 14, 13, 11, 11, 10, 11, 11, 20, 46].forEach((w, i) => ws.getColumn(i + 2).width = w);
@@ -921,8 +947,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         r++;
       });
     }
-    buildBidSuggestionSheet('증액 제안', suggestions.upsell || [], C.green, ['성과 우수 · 노출/순위 여력 → 입찰·예산 증액 추천', `대상 ${(suggestions.upsell || []).length}건`]);
-    buildBidSuggestionSheet('감액 제안', suggestions.downsell || [], C.red, ['비용 발생 대비 전환 없음/저효율 → 입찰 하향·OFF 추천', `대상 ${(suggestions.downsell || []).length}건`]);
+    buildBidSuggestionSheet('증액 제안', suggestions.upsell || [], C.green, ['성과 우수 키워드 → 증액 제안 예산·예상 상승 매출·예상 ROAS', `대상 ${(suggestions.upsell || []).length}건`], UPSELL_SPECS);
+    buildBidSuggestionSheet('감액 제안', suggestions.downsell || [], C.red, ['비효율 예산 → 감액 제안액·예상 매출손실', `대상 ${(suggestions.downsell || []).length}건`], DOWNSELL_SPECS);
     buildDiscoverySheet('키워드 발굴', suggestions.expansion || []);
   }
 

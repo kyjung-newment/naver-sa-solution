@@ -913,22 +913,48 @@ async function generateExcelBuffer(account, type, customRange, opts) {
 }
 
 /**
+ * 리포트 데이터 캐시 — 성과개선 전략 페이지(증액/감액/발굴)가 짧은 시간 내
+ * 같은 계정·기간을 반복 분석할 때 collectReportData(라이브 네이버 API)를 재사용.
+ * 서버리스 warm 인스턴스 내에서만 유효(콜드 스타트 시 재수집). TTL 10분, 최대 3개.
+ */
+const _reportCache = new Map(); // key → { ts, value }
+const REPORT_CACHE_TTL = 10 * 60 * 1000;
+async function collectReportDataCached(account, type, customRange, opts) {
+  const key = `${account.id}:${type}:${customRange ? customRange.since + '~' + customRange.until : 'def'}:${opts && opts.skipPrev ? 'sp' : ''}`;
+  const now = Date.now();
+  const hit = _reportCache.get(key);
+  if (hit && (now - hit.ts) < REPORT_CACHE_TTL) return hit.value;
+  const value = await collectReportData(account, type, customRange, opts);
+  _reportCache.set(key, { ts: now, value });
+  // 메모리 보호: 오래된 항목 정리 (최대 3개 유지)
+  if (_reportCache.size > 3) {
+    const oldest = [..._reportCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+    if (oldest) _reportCache.delete(oldest[0]);
+  }
+  return value;
+}
+
+// 등록 키워드 텍스트 목록 (디스커버리 중복 제외용)
+async function getRegisteredKeywords(accountId) {
+  try {
+    const kws = await db.getMasterKeywords(accountId);
+    return (kws || []).map(k => k.keyword).filter(Boolean);
+  } catch (_) { return []; }
+}
+
+/**
  * 원클릭 계정분석 제안 번들 생성
  * - 전체 리포트(시트 커스터마이징 적용) + 증액/감액/키워드발굴 제안 시트를 한 엑셀로 추출
  * - 화면 표시용 요약(summary)과 제안 목록(suggestions)도 함께 반환
  */
 async function generateAnalysisBundle(account, type, customRange, opts) {
-  const r = await collectReportData(account, type, customRange, opts);
+  const r = await collectReportDataCached(account, type, customRange, opts);
   const { analyzeAccount } = require('./suggestions');
   const { buildExcelReport } = require('../email/excelReport');
 
   // 키워드도구 보강 + 등록 키워드 목록(중복 제외용)
   const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
-  let registeredKeywords = [];
-  try {
-    const kws = await db.getMasterKeywords(account.id);
-    registeredKeywords = (kws || []).map(k => k.keyword).filter(Boolean);
-  } catch (_) {}
+  const registeredKeywords = await getRegisteredKeywords(account.id);
 
   const suggestions = await analyzeAccount(r.data, client, { registeredKeywords });
 
@@ -942,4 +968,47 @@ async function generateAnalysisBundle(account, type, customRange, opts) {
   return { buffer, period: r.period, suggestions };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle };
+/**
+ * 원클릭 '간략 분석' (통화용) — 증액·감액·발굴을 요약한 월간 제안 폼 데이터.
+ * 엑셀을 만들지 않아 빠르고, 키워드도구는 생략(전환검색어 중심).
+ */
+async function generateAnalysisBrief(account, type) {
+  const r = await collectReportDataCached(account, type, null, { skipPrev: type === 'monthly' });
+  const { analyzeAccount } = require('./suggestions');
+  const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
+  const registeredKeywords = await getRegisteredKeywords(account.id);
+  const suggestions = await analyzeAccount(r.data, client, { registeredKeywords, skipTool: true });
+  const t = r.data.total || {};
+  return {
+    period: r.period,
+    accountName: account.name,
+    kpi: { cost: t.cost || 0, purchaseAmt: t.purchaseAmt || 0, roas: t.roas || 0, clk: t.clk || 0 },
+    summary: suggestions.summary,
+    suggestions: {
+      upsell: (suggestions.upsell || []).slice(0, 5),
+      downsell: (suggestions.downsell || []).slice(0, 5),
+      expansion: (suggestions.expansion || []).slice(0, 8),
+    },
+  };
+}
+
+/**
+ * 성과개선 전략 단건 실행 (증액/감액/발굴) — 캐시된 데이터로 빠르게 분석
+ * kind: 'upsell' | 'downsell' | 'discovery'
+ * opts: 증액 {track}, 감액 {mode,targetPct,targetAmt}, 발굴 {channel,character}
+ */
+async function runStrategy(account, type, kind, opts = {}) {
+  const r = await collectReportDataCached(account, type, null, { skipPrev: type === 'monthly' });
+  const { analyzeUpsell, analyzeDownsell, analyzeDiscovery } = require('./suggestions');
+  if (kind === 'upsell') return { ...analyzeUpsell(r.data, opts), period: r.period };
+  if (kind === 'downsell') return { ...analyzeDownsell(r.data, opts), period: r.period };
+  if (kind === 'discovery') {
+    const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
+    const registeredKeywords = await getRegisteredKeywords(account.id);
+    const d = await analyzeDiscovery(r.data, client, { ...opts, registeredKeywords });
+    return { ...d, period: r.period };
+  }
+  throw new Error('알 수 없는 전략: ' + kind);
+}
+
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy };
