@@ -6322,37 +6322,71 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
           }).join('')}
         </div>
         <div style="border-top:1px solid #f1f5f9;padding-top:14px">
-          <div style="font-weight:600;font-size:13px;margin-bottom:10px">커스텀 시트 <span style="color:#94a3b8;font-weight:400">— 차원 1개 + 지표 다중 선택으로 표를 직접 구성</span></div>
-          <div id="rcfg-custom-list" style="margin-bottom:12px"></div>
-          <div style="background:#f8fafc;border:1px solid #eef2f7;padding:12px;border-radius:8px">
-            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px">
-              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">시트명</label><input id="cs-name" placeholder="예: 키워드 ROAS 분석" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:160px"></div>
-              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">차원</label>
-                <select id="cs-dim" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
-                  ${[['byCampaign','캠페인별'],['byCampaignType','캠페인유형별'],['byAdgroup','광고그룹별'],['byKeyword','키워드별'],['byQuery','검색어별'],['byDevice','디바이스별'],['byHour','시간대별'],['byDate','일자별']].map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')}
-                </select>
-              </div>
-              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">정렬 기준</label>
-                <select id="cs-sort" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
-                  ${[['cost','총비용'],['imp','노출수'],['clk','클릭수'],['ctr','CTR'],['cpc','CPC'],['purchaseCnt','구매완료'],['purchaseAmt','구매매출'],['roas','ROAS']].map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')}
-                </select>
-              </div>
-              <div><label style="font-size:11px;color:#64748b;display:block;margin-bottom:3px">행수</label><input id="cs-limit" type="number" value="50" min="1" max="500" style="width:70px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"></div>
-              <button class="btn btn-outline btn-sm" onclick="addCustomSheet()" style="font-size:12px">+ 시트 추가</button>
-            </div>
-            <div style="font-size:11px;color:#64748b;margin-bottom:4px">지표 선택 (미선택 시 전체)</div>
-            <div id="cs-metrics" style="display:flex;flex-wrap:wrap;gap:10px">
-              ${[['cost','총비용'],['imp','노출수'],['avgRank','평균순위'],['clk','클릭수'],['cpc','CPC'],['ctr','CTR'],['purchaseCnt','구매완료'],['purchaseAmt','구매매출'],['roas','ROAS'],['cartCnt','장바구니'],['cartAmt','장바구니매출']].map(([k,l])=>'<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"><input type="checkbox" class="cs-metric" value="'+k+'" style="width:14px;height:14px;accent-color:#6366f1"> '+l+'</label>').join('')}
-            </div>
-          </div>
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">커스텀 시트 <span style="color:#94a3b8;font-weight:400">— 네이버 다차원보고서처럼 항목/지표를 선택·정렬</span></div>
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">왼쪽 <b>항목 목록</b>에서 항목을 클릭(또는 드래그)해 추가하고, 오른쪽 <b>보고서 설정하기</b>에서 칩을 드래그해 순서를 바꾸세요. 시트마다 차원·지표를 자유롭게 조합합니다.</div>
+          <div id="rcfg-panels"></div>
+          <button class="btn btn-outline btn-sm" onclick="addPanel()" style="font-size:12px;margin-top:4px">＋ 시트 추가</button>
         </div>
       </div>
     </div>
     `}
     <script>
     const reportAccountId = '${selId}';
-    var customSheets = ${JSON.stringify(repCfg.customSheets || [])};
-    var DIM_LABELS = {byCampaign:'캠페인별',byCampaignType:'캠페인유형별',byAdgroup:'광고그룹별',byKeyword:'키워드별',byQuery:'검색어별',byDevice:'디바이스별',byHour:'시간대별',byDate:'일자별'};
+    var savedCustomSheets = ${JSON.stringify(repCfg.customSheets || [])};
+    // 네이버 다차원보고서 항목 (sup:true만 추가 가능, key 없으면 현재 데이터 범위 미지원)
+    var FIELD_DEFS = [
+      {cat:'광고 정보', key:'byCampaign', label:'캠페인', type:'dim', sup:true},
+      {cat:'광고 정보', key:'byCampaignType', label:'캠페인 유형', type:'dim', sup:true},
+      {cat:'광고 정보', key:'byAdgroup', label:'광고그룹', type:'dim', sup:true},
+      {cat:'광고 정보', key:null, label:'광고그룹 유형', type:'dim', sup:false},
+      {cat:'광고 정보', key:'byKeyword', label:'키워드', type:'dim', sup:true},
+      {cat:'광고 정보', key:null, label:'소재', type:'dim', sup:false},
+      {cat:'광고 정보', key:null, label:'확장 소재 유형', type:'dim', sup:false},
+      {cat:'광고 정보', key:null, label:'확장 소재', type:'dim', sup:false},
+      {cat:'광고 정보', key:null, label:'검색 유형', type:'dim', sup:false},
+      {cat:'광고 정보', key:'byQuery', label:'검색어', type:'dim', sup:true},
+      {cat:'타겟팅 구분', key:null, label:'지역', type:'dim', sup:false},
+      {cat:'타겟팅 구분', key:null, label:'상세 지역', type:'dim', sup:false},
+      {cat:'타겟팅 구분', key:null, label:'성별', type:'dim', sup:false},
+      {cat:'타겟팅 구분', key:null, label:'연령대', type:'dim', sup:false},
+      {cat:'타겟팅 구분', key:'byDevice', label:'PC/모바일', type:'dim', sup:true},
+      {cat:'광고 성과', key:'imp', label:'노출수', type:'metric', sup:true},
+      {cat:'광고 성과', key:'clk', label:'클릭수', type:'metric', sup:true},
+      {cat:'광고 성과', key:'ctr', label:'클릭률(%)', type:'metric', sup:true},
+      {cat:'광고 성과', key:'cpc', label:'평균 CPC', type:'metric', sup:true},
+      {cat:'광고 성과', key:'cost', label:'총비용', type:'metric', sup:true},
+      {cat:'광고 성과', key:'avgRank', label:'평균노출순위', type:'metric', sup:true},
+      {cat:'전환 성과', key:null, label:'총 전환수', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'직접전환수', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'간접전환수', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'총 전환율(%)', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'총 전환매출액', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'직접전환매출액', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'간접전환매출액', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'총 전환당비용', type:'metric', sup:false},
+      {cat:'전환 성과', key:null, label:'총 광고수익률(%)', type:'metric', sup:false},
+      {cat:'전환 성과', key:'purchaseCnt', label:'구매완료 전환수', type:'metric', sup:true},
+      {cat:'전환 성과', key:'purchaseAmt', label:'구매완료 전환매출액', type:'metric', sup:true},
+      {cat:'전환 성과', key:'roas', label:'구매완료 광고수익률(%)', type:'metric', sup:true},
+      {cat:'전환 성과', key:'cartCnt', label:'장바구니 전환수', type:'metric', sup:true},
+      {cat:'전환 성과', key:'cartAmt', label:'장바구니 전환매출액', type:'metric', sup:true},
+      {cat:'전환 성과', key:null, label:'전환 유형', type:'dim', sup:false},
+      {cat:'시간구분', key:'byDate', label:'일별', type:'dim', sup:true},
+      {cat:'시간구분', key:null, label:'주별', type:'dim', sup:false},
+      {cat:'시간구분', key:null, label:'요일별', type:'dim', sup:false},
+      {cat:'시간구분', key:'byHour', label:'시간대별', type:'dim', sup:true},
+    ];
+    var FIELD_BY_KEY={}; FIELD_DEFS.forEach(function(f){ if(f.key) FIELD_BY_KEY[f.key]=f; });
+    var FIELD_CATS=['광고 정보','타겟팅 구분','광고 성과','전환 성과','시간구분'];
+    function migratePanel(cs){
+      var fields = (Array.isArray(cs.fields)&&cs.fields.length) ? cs.fields.slice() : [];
+      if(!fields.length){ if(cs.dimension) fields.push(cs.dimension); if(Array.isArray(cs.metrics)) fields=fields.concat(cs.metrics); }
+      fields=fields.filter(function(k){ return FIELD_BY_KEY[k]; });
+      return { name: cs.name||'', fields: fields, sortBy: cs.sortBy||'', limit: parseInt(cs.limit)||50 };
+    }
+    var customPanels=(savedCustomSheets||[]).map(migratePanel);
+    if(!customPanels.length) customPanels=[{name:'',fields:[],sortBy:'',limit:50}];
+    var csDrag=null; // 드래그 상태
 
     function switchRepTab(name){
       document.querySelectorAll('.rep-tab-content').forEach(function(el){el.style.display='none';});
@@ -6369,39 +6403,124 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     function ocaNum(n){ return Number(n||0).toLocaleString('ko-KR'); }
 
     // ── 리포트 시트 설정 ──
-    function renderCustomSheetList(){
-      var wrap=document.getElementById('rcfg-custom-list'); if(!wrap) return;
-      if(!customSheets.length){ wrap.innerHTML='<div style="font-size:12px;color:#94a3b8">등록된 커스텀 시트가 없습니다.</div>'; return; }
-      wrap.innerHTML=customSheets.map(function(cs,idx){
-        var mlabel=(cs.metrics&&cs.metrics.length)?(cs.metrics.length+'개 지표'):'전체 지표';
-        return '<div style="display:inline-flex;align-items:center;gap:8px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:6px 10px;margin:0 8px 8px 0;font-size:12px">'
-          +'<b>'+escapeHtml(cs.name)+'</b><span style="color:#64748b">'+(DIM_LABELS[cs.dimension]||cs.dimension)+' · '+mlabel+'</span>'
-          +'<span style="cursor:pointer;color:#dc2626;font-weight:700" onclick="removeCustomSheet('+idx+')">×</span></div>';
+    // ── 커스텀 시트 빌더 (네이버 다차원보고서 스타일, 다중 패널) ──
+    function syncPanelsFromDom(){
+      document.querySelectorAll('.cs-panel').forEach(function(el){
+        var pi=parseInt(el.dataset.pi); if(isNaN(pi)||!customPanels[pi]) return;
+        var nm=el.querySelector('.cs-pname'); if(nm) customPanels[pi].name=nm.value;
+        var st=el.querySelector('.cs-psort'); if(st) customPanels[pi].sortBy=st.value;
+        var lm=el.querySelector('.cs-plimit'); if(lm) customPanels[pi].limit=Math.max(1,Math.min(500,parseInt(lm.value)||50));
+      });
+    }
+    function csFieldChip(pi, key, idx){
+      var f=FIELD_BY_KEY[key]; if(!f) return '';
+      var col = f.type==='dim' ? '#2563eb' : '#16a34a';
+      var bg = f.type==='dim' ? '#eff6ff' : '#ecfdf5';
+      return '<div class="cs-chip" draggable="true" data-pi="'+pi+'" data-idx="'+idx+'"'
+        +' ondragstart="csChipDragStart(event,'+pi+','+idx+')" ondragover="event.preventDefault()" ondrop="csChipDrop(event,'+pi+','+idx+')"'
+        +' style="display:inline-flex;align-items:center;gap:6px;background:'+bg+';border:1px solid '+col+'33;border-radius:6px;padding:6px 9px;margin:0 8px 8px 0;font-size:12px;cursor:grab">'
+        +'<span style="color:'+col+';font-weight:700">⋮⋮</span>'
+        +'<span style="font-weight:600;color:#1e293b">'+escapeHtml(f.label)+'</span>'
+        +'<span style="cursor:pointer;color:#dc2626;font-weight:700" onclick="csRemoveField('+pi+','+idx+')">×</span></div>';
+    }
+    function csListItem(pi, f){
+      if(!f.sup){
+        return '<div title="현재 데이터 범위에서 미지원" style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;font-size:13px;color:#cbd5e1;cursor:not-allowed">'
+          +'<span style="font-size:11px">○</span>'+escapeHtml(f.label)+'<span style="font-size:10px;margin-left:auto;color:#cbd5e1">준비중</span></div>';
+      }
+      var sel=(customPanels[pi].fields.indexOf(f.key)>=0);
+      return '<div class="cs-listitem" draggable="true" ondragstart="csAddDragStart(event,'+pi+",'"+f.key+"'"+')" onclick="csToggleField('+pi+",'"+f.key+"'"+')"'
+        +' style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;font-size:13px;cursor:pointer;'+(sel?'background:#f1f5f9;color:#94a3b8':'color:#334155')+'">'
+        +'<span style="font-size:11px;color:'+(sel?'#16a34a':'#cbd5e1')+'">'+(sel?'✓':'＋')+'</span>'+escapeHtml(f.label)+'</div>';
+    }
+    function renderPanel(pi){
+      var p=customPanels[pi];
+      var metricsSel=p.fields.filter(function(k){ return FIELD_BY_KEY[k] && FIELD_BY_KEY[k].type==='metric'; });
+      var sortOpts=metricsSel.map(function(k){ return '<option value="'+k+'"'+(p.sortBy===k?' selected':'')+'>'+escapeHtml(FIELD_BY_KEY[k].label)+'</option>'; }).join('');
+      if(!sortOpts) sortOpts='<option value="">지표 선택 시</option>';
+      // 왼쪽 항목 목록 (카테고리별)
+      var listHtml=FIELD_CATS.map(function(cat){
+        var items=FIELD_DEFS.filter(function(f){ return f.cat===cat; });
+        return '<div style="font-size:10px;color:#94a3b8;font-weight:700;letter-spacing:.04em;margin:8px 0 2px">'+cat+'</div>'
+          +items.map(function(f){ return csListItem(pi,f); }).join('');
       }).join('');
+      // 오른쪽 선택 칩
+      var chips=p.fields.map(function(k,idx){ return csFieldChip(pi,k,idx); }).join('');
+      if(!chips) chips='<div style="font-size:12px;color:#cbd5e1;padding:20px;text-align:center">왼쪽에서 항목을 클릭/드래그해 추가하세요</div>';
+      return '<div class="cs-panel" data-pi="'+pi+'" style="border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+          +'<input class="cs-pname" value="'+escapeHtml(p.name||'')+'" placeholder="시트명 (예: 키워드 ROAS 분석)" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:240px">'
+          +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b">'
+            +'정렬 <select class="cs-psort" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">'+sortOpts+'</select>'
+            +'행수 <input class="cs-plimit" type="number" value="'+(p.limit||50)+'" min="1" max="500" style="width:64px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">'
+            +'<button class="btn btn-outline btn-sm" onclick="removePanel('+pi+')" style="font-size:11px;color:#dc2626;border-color:#fecaca">시트 삭제</button>'
+          +'</div>'
+        +'</div>'
+        +'<div style="display:grid;grid-template-columns:230px 1fr;gap:12px">'
+          +'<div style="border:1px solid #eef2f7;border-radius:8px;padding:8px;max-height:340px;overflow:auto">'
+            +'<div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:4px">보고서 항목 목록</div>'
+            +'<input class="cs-search" oninput="csFilterList(this,'+pi+')" placeholder="항목 검색" style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;margin-bottom:4px">'
+            +'<div class="cs-listwrap">'+listHtml+'</div>'
+          +'</div>'
+          +'<div ondragover="event.preventDefault()" ondrop="csPanelDrop(event,'+pi+')" style="border:1px dashed #cbd5e1;border-radius:8px;padding:10px;min-height:120px;background:#fafbfc">'
+            +'<div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px">보고서 설정하기 <span style="font-weight:400;color:#94a3b8">(칩을 드래그해 순서 변경)</span></div>'
+            +'<div>'+chips+'</div>'
+          +'</div>'
+        +'</div>'
+      +'</div>';
     }
-    function addCustomSheet(){
-      var name=(document.getElementById('cs-name').value||'').trim();
-      var dim=document.getElementById('cs-dim').value;
-      var sort=document.getElementById('cs-sort').value;
-      var limit=parseInt(document.getElementById('cs-limit').value)||50;
-      var metrics=Array.prototype.slice.call(document.querySelectorAll('.cs-metric:checked')).map(function(c){return c.value;});
-      if(!name){ ocaToast('시트명을 입력하세요.',true); return; }
-      if(customSheets.length>=10){ ocaToast('커스텀 시트는 최대 10개입니다.',true); return; }
-      customSheets.push({ name:name.slice(0,28), dimension:dim, metrics:metrics, sortBy:sort, limit:Math.max(1,Math.min(500,limit)) });
-      document.getElementById('cs-name').value='';
-      document.querySelectorAll('.cs-metric:checked').forEach(function(c){c.checked=false;});
-      renderCustomSheetList();
+    function renderPanels(){
+      var wrap=document.getElementById('rcfg-panels'); if(!wrap) return;
+      wrap.innerHTML=customPanels.map(function(p,pi){ return renderPanel(pi); }).join('');
     }
-    function removeCustomSheet(idx){ customSheets.splice(idx,1); renderCustomSheetList(); }
+    function csToggleField(pi, key){
+      syncPanelsFromDom();
+      var arr=customPanels[pi].fields; var i=arr.indexOf(key);
+      if(i>=0) arr.splice(i,1);
+      else { if(arr.length>=12){ ocaToast('항목은 시트당 최대 12개입니다.',true); return; } arr.push(key); }
+      // sortBy가 더 이상 없으면 초기화
+      if(customPanels[pi].sortBy && arr.indexOf(customPanels[pi].sortBy)<0) customPanels[pi].sortBy='';
+      renderPanels();
+    }
+    function csRemoveField(pi, idx){ syncPanelsFromDom(); customPanels[pi].fields.splice(idx,1); renderPanels(); }
+    function csChipDragStart(e,pi,idx){ csDrag={pi:pi,idx:idx,mode:'reorder'}; e.dataTransfer.effectAllowed='move'; }
+    function csAddDragStart(e,pi,key){ csDrag={pi:pi,key:key,mode:'add'}; e.dataTransfer.effectAllowed='copy'; }
+    function csChipDrop(e,pi,toIdx){
+      e.preventDefault(); e.stopPropagation(); if(!csDrag||csDrag.pi!==pi) { csDrag=null; return; }
+      syncPanelsFromDom(); var arr=customPanels[pi].fields;
+      if(csDrag.mode==='reorder'){ var item=arr.splice(csDrag.idx,1)[0]; arr.splice(toIdx,0,item); }
+      else if(csDrag.mode==='add'){ if(arr.indexOf(csDrag.key)<0 && arr.length<12) arr.splice(toIdx,0,csDrag.key); }
+      csDrag=null; renderPanels();
+    }
+    function csPanelDrop(e,pi){
+      e.preventDefault(); if(!csDrag||csDrag.pi!==pi){ csDrag=null; return; }
+      syncPanelsFromDom(); var arr=customPanels[pi].fields;
+      if(csDrag.mode==='add'){ if(arr.indexOf(csDrag.key)<0 && arr.length<12) arr.push(csDrag.key); }
+      else if(csDrag.mode==='reorder'){ var item=arr.splice(csDrag.idx,1)[0]; arr.push(item); }
+      csDrag=null; renderPanels();
+    }
+    function csFilterList(input,pi){
+      var q=(input.value||'').toLowerCase();
+      var wrap=input.parentElement.querySelector('.cs-listwrap');
+      wrap.querySelectorAll('.cs-listitem,[title]').forEach(function(el){
+        var t=el.textContent.toLowerCase(); el.style.display=(!q||t.indexOf(q)>=0)?'':'none';
+      });
+    }
+    function addPanel(){ syncPanelsFromDom(); if(customPanels.length>=10){ ocaToast('커스텀 시트는 최대 10개입니다.',true); return; } customPanels.push({name:'',fields:[],sortBy:'',limit:50}); renderPanels(); }
+    function removePanel(pi){ syncPanelsFromDom(); customPanels.splice(pi,1); if(!customPanels.length) customPanels.push({name:'',fields:[],sortBy:'',limit:50}); renderPanels(); }
     async function saveReportConfig(){
       if(!reportAccountId){ ocaToast('광고주를 먼저 선택하세요.',true); return; }
+      syncPanelsFromDom();
       var sheets={};
       document.querySelectorAll('.rcfg-sheet').forEach(function(c){ sheets[c.dataset.key]=c.checked; });
+      var customSheets=customPanels
+        .filter(function(p){ return (p.name||'').trim() && p.fields.length; })
+        .map(function(p){ return { name:(p.name||'').trim().slice(0,28), fields:p.fields.slice(0,12), sortBy:p.sortBy||'', limit:Math.max(1,Math.min(500,parseInt(p.limit)||50)) }; });
       var btn=document.getElementById('rcfg-save'); btn.disabled=true; var old=btn.textContent; btn.textContent='저장 중...';
       try{
         var r=await fetch('/smart-sa/api/report/save-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:reportAccountId,sheets:sheets,customSheets:customSheets})});
         var j=await r.json(); if(!j.ok) throw new Error(j.error||'저장 실패');
-        ocaToast('리포트 시트 설정이 저장되었습니다.');
+        ocaToast('리포트 시트 설정이 저장되었습니다.'+(customSheets.length?(' (커스텀 '+customSheets.length+'개)'):''));
       }catch(e){ ocaToast(e.message,true); }
       finally{ btn.disabled=false; btn.textContent=old; }
     }
@@ -6467,7 +6586,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       }catch(e){ res.innerHTML='<div style="padding:12px;color:#dc2626;font-size:13px">오류: '+escapeHtml(e.message)+'</div>'; ocaToast(e.message,true); }
       finally{ btn.disabled=false; btn.textContent=old; }
     }
-    if(document.getElementById('rcfg-custom-list')) renderCustomSheetList();
+    if(document.getElementById('rcfg-panels')) renderPanels();
 
     // ── 자동 발송 스케줄 수정 모달 ──
     function openSchedEdit(kind){
@@ -7085,13 +7204,21 @@ router.post('/api/report/save-config', requireLogin, async (req, res) => {
     }
     const allowedDims = ['byCampaign','byCampaignType','byAdgroup','byKeyword','byQuery','byDevice','byHour','byDate'];
     const allowedMetrics = ['cost','imp','avgRank','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas','cartCnt','cartAmt'];
-    const cleanCustom = (Array.isArray(customSheets) ? customSheets : []).slice(0, 10).map(cs => ({
-      name: String(cs.name || '맞춤').slice(0, 28),
-      dimension: allowedDims.includes(cs.dimension) ? cs.dimension : 'byKeyword',
-      metrics: Array.isArray(cs.metrics) ? cs.metrics.filter(m => allowedMetrics.includes(m)) : [],
-      sortBy: allowedMetrics.includes(cs.sortBy) ? cs.sortBy : 'cost',
-      limit: Math.max(1, Math.min(500, parseInt(cs.limit) || 50)),
-    })).filter(cs => cs.name);
+    const allowedFields = new Set([...allowedDims, ...allowedMetrics]);
+    const cleanCustom = (Array.isArray(customSheets) ? customSheets : []).slice(0, 10).map(cs => {
+      // 신규: fields[] (차원/지표 혼합 순서), 레거시: {dimension, metrics}
+      let fields = Array.isArray(cs.fields) ? cs.fields.filter(f => allowedFields.has(f)) : [];
+      if (!fields.length && cs.dimension) {
+        fields = [cs.dimension, ...(Array.isArray(cs.metrics) ? cs.metrics : [])].filter(f => allowedFields.has(f));
+      }
+      fields = fields.slice(0, 12);
+      return {
+        name: String(cs.name || '맞춤').slice(0, 28),
+        fields,
+        sortBy: allowedMetrics.includes(cs.sortBy) ? cs.sortBy : '',
+        limit: Math.max(1, Math.min(500, parseInt(cs.limit) || 50)),
+      };
+    }).filter(cs => cs.name && cs.fields.length);
 
     await db.saveReportConfig(accountId, req.session.userId, { sheets: cleanSheets, customSheets: cleanCustom });
     res.json({ ok: true });

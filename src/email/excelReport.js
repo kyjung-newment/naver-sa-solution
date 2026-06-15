@@ -59,17 +59,6 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     { key: 'cartCnt', label: '장바구니', fmt: FMT.num },
     { key: 'cartAmt', label: '장바구니매출', fmt: FMT.won },
   ];
-  // 차원 레지스트리 (커스텀 시트용)
-  const DIMENSION_DEFS = {
-    byCampaign:     { label: '캠페인',     labelHeaders: ['캠페인'],            labels: (d, k) => [d.name || k] },
-    byCampaignType: { label: '캠페인유형', labelHeaders: ['캠페인유형'],        labels: (d, k) => [k] },
-    byAdgroup:      { label: '광고그룹',   labelHeaders: ['캠페인', '광고그룹'], labels: (d, k) => [d.campaignName || '', d.name || k] },
-    byKeyword:      { label: '키워드',     labelHeaders: ['광고그룹', '키워드'], labels: (d, k) => [d.adgroupName || '', d.name || k] },
-    byQuery:        { label: '검색어',     labelHeaders: ['광고그룹', '검색어'], labels: (d, k) => [d.adgroupName || '', d.name || k] },
-    byDevice:       { label: '디바이스',   labelHeaders: ['디바이스'],          labels: (d, k) => [k === 'P' || k === 'PC' ? 'PC' : '모바일'] },
-    byHour:         { label: '시간대',     labelHeaders: ['시간'],              labels: (d, k) => [parseInt(k) + '시'] },
-    byDate:         { label: '일자',       labelHeaders: ['일자'],              labels: (d, k) => [k] },
-  };
 
   // ─── 공통 헬퍼 ───────────────────────────────────────────────────
   function setup(ws) { ws.properties.defaultRowHeight = 20; ws.views = [{ showGridLines: false }]; ws.getColumn(1).width = 2; }
@@ -826,31 +815,77 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     while (usedNames.has(n)) { const suf = ' (' + i + ')'; n = String(base).slice(0, 31 - suf.length) + suf; i++; }
     usedNames.add(n); return n;
   }
+  // 커스텀 시트 차원 레지스트리 (네이버 다차원보고서 스타일: 차원 다중 + 지표 다중 + 순서)
+  const DIM_FIELD = {
+    byCampaignType: { label: '캠페인유형' },
+    byCampaign:     { label: '캠페인' },
+    byAdgroup:      { label: '광고그룹' },
+    byKeyword:      { label: '키워드' },
+    byQuery:        { label: '검색어' },
+    byDevice:       { label: 'PC/모바일', standalone: true },
+    byDate:         { label: '일별', standalone: true },
+    byHour:         { label: '시간대', standalone: true },
+  };
+  const METRIC_MAP = {}; METRIC_DEFS.forEach(m => METRIC_MAP[m.key] = m);
+  // 가장 granular한 차원을 base 집계로 선택 (상위 차원 라벨은 base row가 보유)
+  function pickBaseAgg(dimKeys) {
+    if (dimKeys.includes('byKeyword')) return 'byKeyword';
+    if (dimKeys.includes('byQuery')) return 'byQuery';
+    if (dimKeys.includes('byAdgroup')) return 'byAdgroup';
+    if (dimKeys.includes('byCampaign')) return 'byCampaign';
+    if (dimKeys.includes('byCampaignType')) return 'byCampaignType';
+    if (dimKeys.includes('byDate')) return 'byDate';
+    if (dimKeys.includes('byHour')) return 'byHour';
+    if (dimKeys.includes('byDevice')) return 'byDevice';
+    return null;
+  }
+  function dimLabelOf(fieldKey, baseAgg, key, d) {
+    switch (fieldKey) {
+      case 'byCampaignType': return baseAgg === 'byCampaignType' ? key : (d.campaignType || '-');
+      case 'byCampaign':     return baseAgg === 'byCampaign' ? (d.name || key) : (d.campaignName || '-');
+      case 'byAdgroup':      return baseAgg === 'byAdgroup' ? (d.name || key) : (d.adgroupName || '-');
+      case 'byKeyword':      return baseAgg === 'byKeyword' ? (d.name || key) : '-';
+      case 'byQuery':        return baseAgg === 'byQuery' ? (d.name || key) : '-';
+      case 'byDevice':       return baseAgg === 'byDevice' ? (key === 'PC' ? 'PC' : '모바일') : '-';
+      case 'byDate':         return baseAgg === 'byDate' ? key : '-';
+      case 'byHour':         return baseAgg === 'byHour' ? (parseInt(key) + '시') : '-';
+    }
+    return '-';
+  }
   function buildCustomSheet(def) {
-    const dim = DIMENSION_DEFS[def.dimension]; if (!dim) return;
-    const src = data[def.dimension] || {};
-    const selKeys = (Array.isArray(def.metrics) && def.metrics.length) ? def.metrics : METRIC_DEFS.map(m => m.key);
-    const cols = METRIC_DEFS.filter(m => selKeys.includes(m.key));
-    if (cols.length === 0) return;
-    const sortKey = (def.sortBy && cols.some(c => c.key === def.sortBy)) ? def.sortBy : cols[0].key;
+    // fields[] (신규: 차원/지표 혼합 순서 보존) 우선, 레거시 {dimension,metrics} 호환
+    const fields = (Array.isArray(def.fields) && def.fields.length)
+      ? def.fields.slice()
+      : [def.dimension, ...(Array.isArray(def.metrics) ? def.metrics : [])].filter(Boolean);
+    const dimKeys = fields.filter(f => DIM_FIELD[f]);
+    let metricKeys = fields.filter(f => METRIC_MAP[f]);
+    if (metricKeys.length === 0) metricKeys = METRIC_DEFS.map(m => m.key);
+    const metricCols = metricKeys.map(k => METRIC_MAP[k]).filter(Boolean);
+    if (metricCols.length === 0) return;
+
+    const baseAgg = pickBaseAgg(dimKeys) || 'byCampaign';
+    const src = data[baseAgg] || {};
+    const sortKey = (def.sortBy && metricCols.some(c => c.key === def.sortBy)) ? def.sortBy : metricCols[0].key;
     let entries = Object.entries(src).filter(([, d]) => ((d.imp || 0) + (d.clk || 0) + (d.cost || 0)) > 0);
-    if (def.dimension === 'byDate' || def.dimension === 'byHour') entries.sort((a, b) => a[0].localeCompare(b[0]));
+    if (baseAgg === 'byDate' || baseAgg === 'byHour') entries.sort((a, b) => a[0].localeCompare(b[0]));
     else entries.sort((a, b) => (b[1][sortKey] || 0) - (a[1][sortKey] || 0));
     const limit = (def.limit && def.limit > 0) ? def.limit : 200;
     const truncated = entries.length > limit;
     if (truncated) entries = entries.slice(0, limit);
-    const ws = wb.addWorksheet(uniqueName(def.name || (dim.label + ' 맞춤')));
+
+    const effDimKeys = dimKeys.length ? dimKeys : [baseAgg];
+    const dimHeaders = effDimKeys.map(k => (DIM_FIELD[k] ? DIM_FIELD[k].label : '구분'));
+
+    const ws = wb.addWorksheet(uniqueName(def.name || '맞춤 시트'));
     setup(ws);
-    dim.labelHeaders.forEach((h, i) => ws.getColumn(i + 2).width = (i === dim.labelHeaders.length - 1 ? 26 : 20));
-    cols.forEach((c, i) => ws.getColumn(2 + dim.labelHeaders.length + i).width = 13);
-    const span = 1 + dim.labelHeaders.length + cols.length;
+    dimHeaders.forEach((h, i) => ws.getColumn(i + 2).width = (i === dimHeaders.length - 1 ? 26 : 18));
+    metricCols.forEach((c, i) => ws.getColumn(2 + dimHeaders.length + i).width = 13);
+    const span = 1 + dimHeaders.length + metricCols.length;
     let r = 3;
-    r = sectionTitle(ws, r, (def.name || dim.label + ' 맞춤') + ` (${period})`, span);
-    r++;
-    r = subTitle(ws, r, `${dim.label} 기준 · ${cols.map(c => c.label).join(', ')}${truncated ? ` · 상위 ${limit}개` : ''}`, span);
-    r++;
+    r = sectionTitle(ws, r, (def.name || '맞춤 시트') + ` (${period})`, span); r++;
+    r = subTitle(ws, r, `${dimHeaders.join(' · ')} 기준 · ${metricCols.map(c => c.label).join(', ')}${truncated ? ` · 상위 ${limit}개` : ''}`, span); r++;
     const hRow = ws.getRow(r); hRow.height = 26;
-    [...dim.labelHeaders, ...cols.map(c => c.label)].forEach((h, i) => {
+    [...dimHeaders, ...metricCols.map(c => c.label)].forEach((h, i) => {
       const c = hRow.getCell(i + 2); c.value = h; c.font = { bold: true, size: 10, color: { argb: C.dark } };
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.headerBg } }; c.alignment = cm; c.border = border;
     });
@@ -858,9 +893,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     if (entries.length === 0) { const c = ws.getRow(r).getCell(2); c.value = '데이터 없음'; c.font = { size: 10, color: { argb: C.gray } }; c.border = border; return; }
     entries.forEach(([k, d], idx) => {
       const row = ws.getRow(r); row.height = 22;
-      const labels = dim.labels(d, k);
-      labels.forEach((lb, li) => { const c = row.getCell(2 + li); c.value = lb; c.font = { size: 10, color: { argb: C.dark } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
-      cols.forEach((mc, ci) => { const c = row.getCell(2 + labels.length + ci); c.value = d[mc.key] || 0; c.numFmt = mc.fmt; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
+      effDimKeys.forEach((fk, li) => { const c = row.getCell(2 + li); c.value = dimLabelOf(fk, baseAgg, k, d); c.font = { size: 10, color: { argb: C.dark } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
+      metricCols.forEach((mc, ci) => { const c = row.getCell(2 + effDimKeys.length + ci); c.value = d[mc.key] || 0; c.numFmt = mc.fmt; c.font = { size: 10, color: { argb: C.gray } }; c.alignment = cm; c.border = border; if (idx % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } }; });
       r++;
     });
   }
