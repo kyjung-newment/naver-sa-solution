@@ -6076,15 +6076,12 @@ function strategyPageContent(kind, selAccount) {
       html+='<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="stFullExcel()" id="st-fullx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 전체 리포트+제안 엑셀 추출</button></div>';
       return html;
     }
-    async function stFullExcel(){
-      var btn=document.getElementById('st-fullx'); btn.disabled=true; var old=btn.textContent; btn.textContent='엑셀 생성 중...';
-      try{
-        var r=await fetch('/smart-sa/api/report/one-click-analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:ST_ACCOUNT,type:document.getElementById('st-period').value})});
-        var j=await r.json(); if(!j.ok) throw new Error(j.error||'실패');
-        if(j.excelBase64){ var bin=atob(j.excelBase64); var bytes=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); var blob=new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=j.filename||'계정분석.xlsx'; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},2000); }
-        stToast('전체 엑셀이 다운로드되었습니다.');
-      }catch(e){ stToast(e.message,true); }
-      finally{ btn.disabled=false; btn.textContent=old; }
+    function stFullExcel(){
+      // GET 스트리밍 다운로드 (base64-in-JSON 대신 파일 직접 다운로드 → 응답크기 한도 회피)
+      var type=document.getElementById('st-period').value;
+      var url='/smart-sa/api/report/one-click-excel?accountId='+encodeURIComponent(ST_ACCOUNT)+'&type='+encodeURIComponent(type);
+      var a=document.createElement('a'); a.href=url; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      stToast('전체 엑셀 생성을 시작했습니다. 대용량 계정은 1~3분 후 다운로드됩니다.');
     }
     function stDownloadCsv(){
       if(!ST_LAST||!ST_LAST.items||!ST_LAST.items.length){ stToast('데이터가 없습니다.',true); return; }
@@ -7228,6 +7225,8 @@ router.post('/api/report/save-config', requireLogin, async (req, res) => {
 });
 
 // ─── 원클릭 계정분석 제안 (전체 리포트 + 증액/감액/키워드발굴 일괄 추출) ──
+// 원클릭 분석 요약(JSON) — 엑셀은 별도 GET 스트리밍 엔드포인트로 분리
+// (base64를 JSON에 담으면 Vercel 응답 4.5MB 한도를 넘어 'A server error' 발생)
 router.post('/api/report/one-click-analysis', requireLogin, async (req, res) => {
   try {
     const { accountId, type } = req.body;
@@ -7236,31 +7235,41 @@ router.post('/api/report/one-click-analysis', requireLogin, async (req, res) => 
     if (!account) return res.status(404).json({ ok: false, error: '광고주 없음' });
     if (account.has_sa === false) return res.status(400).json({ ok: false, error: 'SA 미활성 계정' });
 
-    // 자격증명 주입 (계정→대행사 연결 우선)
     const creds = await db.getApiCredentials(req.session.userId, account.id);
     if (!creds) return res.status(400).json({ ok: false, error: 'API 자격증명 미설정' });
     const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
 
-    const { generateAnalysisBundle } = require('../report/generator');
-    // 월간 대용량 계정은 전기 데이터 스킵으로 타임아웃/OOM 방지 (제안은 당기 데이터만 사용)
-    const { buffer, period, suggestions } = await generateAnalysisBundle(enriched, t, null, { skipPrev: t === 'monthly' });
-
-    const filename = `${account.name}_계정분석제안_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.xlsx`;
-    res.json({
-      ok: true,
-      period,
-      filename,
-      summary: suggestions.summary,
-      suggestions: {
-        upsell: (suggestions.upsell || []).slice(0, 5),
-        downsell: (suggestions.downsell || []).slice(0, 5),
-        expansion: (suggestions.expansion || []).slice(0, 5),
-      },
-      excelBase64: Buffer.from(buffer).toString('base64'),
-    });
+    const { generateAnalysisBrief } = require('../report/generator');
+    const r = await generateAnalysisBrief(enriched, t);
+    res.json({ ok: true, ...r });
   } catch (err) {
     console.error('원클릭 분석 오류:', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 원클릭 전체 엑셀(전체 리포트 + 증액/감액/키워드발굴 시트) 스트리밍 다운로드
+router.get('/api/report/one-click-excel', requireLogin, async (req, res) => {
+  const t = ['daily', 'weekly', 'monthly'].includes(req.query.type) ? req.query.type : 'monthly';
+  try {
+    const account = await db.getAccountById(req.query.accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+    if (account.has_sa === false) return res.status(400).send('SA 미활성 계정');
+    const creds = await db.getApiCredentials(req.session.userId, account.id);
+    if (!creds) return res.status(400).send('API 자격증명 미설정');
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+
+    const { generateAnalysisBundle } = require('../report/generator');
+    const { buffer } = await generateAnalysisBundle(enriched, t, null, { skipPrev: t === 'monthly' });
+
+    const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = `${safeName}_계정분석제안_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error('원클릭 엑셀 오류:', err.message);
+    res.status(500).send('엑셀 생성 실패: ' + err.message);
   }
 });
 
