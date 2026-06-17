@@ -1059,16 +1059,18 @@ async function collectStrategyLive(account, range) {
 }
 
 // 전략/원클릭용: DB 동기화 데이터 우선 + 기간 라벨.
-// DB가 비어있으면(미동기화 계정) 라이브 경량 수집으로 폴백(타임아웃 가드).
+// 분석은 키워드·그룹 단위 데이터가 필요하므로, DB에 그게 없으면(요약만 있고
+// 상세(stat_daily_detail) 미동기화여도) 라이브 경량 수집으로 폴백(타임아웃 가드).
 async function collectStrategyData(account, type) {
   const range = rollingRange(type);
   let data = await buildDataFromDb(account.id, range.since, range.until);
   let source = 'db';
-  const empty = (data.total.cost || 0) === 0 && Object.keys(data.byKeyword).length === 0;
-  if (empty && account.api_key) {
+  // 분석이 실제 쓰는 키워드/그룹 데이터가 비어있으면 폴백 (요약 total만으론 분석 불가)
+  const noDetail = Object.keys(data.byKeyword || {}).length === 0 && Object.keys(data.byAdgroup || {}).length === 0;
+  if (noDetail && account.api_key) {
     source = 'live';
     // 라이브 수집은 Vercel 800s 한도 안쪽에서 자체 타임아웃 → 함수 크래시 대신 명확한 에러
-    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('전략 데이터 수집 시간이 초과되었습니다(미동기화 계정). 더 짧은 기간(어제/최근 7일)으로 시도하거나, SA 성과 대시보드를 먼저 열어 동기화 후 다시 시도해주세요.')), 240000));
+    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('전략 데이터 수집 시간이 초과되었습니다. 더 짧은 기간(어제/최근 7일)으로 시도해주세요.')), 240000));
     data = await Promise.race([collectStrategyLive(account, range), guard]);
   }
   const period = `${range.label} (${range.since.replace(/-/g, '.')}~${range.until.replace(/-/g, '.')})`;
