@@ -518,7 +518,11 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   // ══════════════════════════════════════════════════════════════════
   // 4. 광고그룹별
   // ══════════════════════════════════════════════════════════════════
-  const agEntries = Object.entries(data.byAdgroup).sort((a, b) => b[1].cost - a[1].cost);
+  // ID로만 인식되는 그룹(grp-/cmp- 등)은 제외(삭제) — 사용자 요청
+  const AG_ID_RE = /^(grp|cmp|adg|nkw|ncc|nccc|nad|nccad|bnc)[-_]/i;
+  const agEntries = Object.entries(data.byAdgroup)
+    .filter(([, d]) => d.name && d.name !== '-' && !AG_ID_RE.test(d.name))
+    .sort((a, b) => b[1].cost - a[1].cost);
   if (agEntries.length > 0) {
     const gs = wb.addWorksheet('광고그룹별');
     setup(gs); setColWidths(gs, [20, 25]);
@@ -593,10 +597,9 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       const kws = wb.addWorksheet(sheetName);
       setup(kws); setColWidths(kws, [22, 24]);
 
-      // 미인식 키워드 패턴: 마스터 sync 누락으로 ID가 그대로 노출된 경우
-      // nkw-... (NCC 키워드 ID), ncc-..., nad-... 등 + '-' (쇼핑검색 등 미인식)
+      // 미인식 키워드(마스터 sync 누락으로 ID 노출): grp-/cmp-/nkw-/ncc-/nad- 등 → 표기 제외(삭제)
       // useQuery=true (AD_QUERY_DETAIL 기반)면 항상 텍스트이므로 미인식 판정 X
-      const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
+      const UNRESOLVED_RE = /^(grp|cmp|adg|nkw|ncc|nccc|nad|nccad|bnc|cnv)[-_]/i;
       const isUnresolved = (d) => {
         if (useQuery) return false;
         if (!d.name || d.name === '-') return true;
@@ -604,7 +607,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         return false;
       };
       const validKw = list.filter(([, d]) => !isUnresolved(d));
-      const unknownKw = list.filter(([, d]) => isUnresolved(d));
+      const unknownKw = list.filter(([, d]) => isUnresolved(d)); // 삭제 대상(표기 안 함)
       const kwWithConv = validKw.filter(([, d]) => d.purchaseCnt > 0).length;
 
       let r = 3;
@@ -612,7 +615,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       r++;
       r = subTitle(kws, r, useQuery
         ? `전체 검색어 ${list.length}개 · 전환 발생 ${kwWithConv}개 (AD_QUERY_DETAIL 기반)`
-        : `전체 ${list.length}개 · 인식 ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' · 미인식 '+unknownKw.length+'개' : ''}`, 14);
+        : `${kwLabel} ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' (ID 미인식 '+unknownKw.length+'개 제외)' : ''}`, 14);
       r++;
 
       // ── 구매전환매출 TOP 10 ──
@@ -656,21 +659,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         : `전체 키워드 목록 (${validKw.length}개, 비용순)`, 14);
       r = kwHeader(kws, r);
       showAllKw.forEach(([, d], idx) => { r = kwRow(kws, r, d, { stripe: idx % 2 === 1 }); });
-      if (unknownKw.length > 0) {
-        r += 2;
-        const showUnknown = unknownKw.length > KW_LIST_CAP ? unknownKw.slice(0, KW_LIST_CAP) : unknownKw;
-        r = subTitle(kws, r, unknownKw.length > KW_LIST_CAP
-          ? `미인식 키워드 ⚠ (총 ${unknownKw.length}개 중 비용 상위 ${KW_LIST_CAP}개 — 삭제된 키워드/확장검색/마스터 누락)`
-          : `미인식 키워드 ⚠ ${unknownKw.length}개 (삭제된 키워드/확장검색/마스터 누락)`, 14);
-        r = kwHeader(kws, r);
-        showUnknown.forEach(([k, d], idx) => {
-          // 키워드 컬럼에 '(미인식) ID끝부분' 표시
-          const kwId = (k || '').replace(/^kw:/, '');
-          const shortId = kwId.length > 14 ? '...' + kwId.slice(-12) : kwId;
-          const labelOverride = { ...d, name: `(미인식) ${shortId}` };
-          r = dataRow(kws, r, labelOverride, { labels: [d.adgroupName || '', `(미인식) ${shortId}`], stripe: idx % 2 === 1, labelColor: C.gray });
-        });
-      }
+      // ID 미인식 항목은 표기하지 않음(삭제) — 사용자 요청
     });
   }
 
@@ -928,6 +917,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       });
     }
     const UPSELL_SPECS = [
+      { h: '캠페인유형', v: it => it.campaignType || '-', w: 11 },
       { h: '캠페인', v: it => it.campaignName || '', w: 18 },
       { h: '광고그룹', v: it => it.adgroupName || '', w: 18 },
       { h: '키워드', v: it => it.name || '', w: 22, wrap: true, bold: true },
@@ -943,6 +933,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       { h: '근거', v: it => it.reason || '', w: 52, wrap: true },
     ];
     const DOWNSELL_SPECS = [
+      { h: '캠페인유형', v: it => it.campaignType || '-', w: 11 },
       { h: '캠페인', v: it => it.campaignName || '', w: 18 },
       { h: '광고그룹', v: it => it.adgroupName || '', w: 18 },
       { h: '키워드', v: it => it.name || '', w: 22, wrap: true, bold: true },

@@ -14,7 +14,8 @@ async function buildUpsellExcel({ accountName, period, track, channels, groups, 
   const chLabel = (channels && channels.length) ? channels.join(', ') : '전체';
 
   const SPECS = [
-    { h: '구분', w: 26, v: it => it.name || '', wrap: true, bold: true },
+    { h: '캠페인유형', w: 11, v: it => it.campaignType || '-' },
+    { h: '구분', w: 24, v: it => it.name || '', wrap: true, bold: true },
     { h: '캠페인', w: 18, v: it => it.campaignName || '' },
     { h: '현재클릭', w: 10, v: it => it.clk || 0, fmt: FMT.num },
     { h: 'CVR', w: 9, v: it => it.cvr || 0, fmt: FMT.pct },

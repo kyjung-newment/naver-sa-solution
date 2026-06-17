@@ -1063,6 +1063,24 @@ async function collectStrategyLive(account, range) {
     for (const [id, info] of Object.entries(m.kwMap || {})) { kwNameMap[id] = info.keyword; if (info.qi) kwQiMap[id] = info.qi; }
   } catch (_) {}
 
+  // 이름 보강: 최신 마스터(그룹·캠페인) 병합으로 ID로 남은 항목 최소화.
+  // 그룹/캠페인은 가벼워 항상 시도, 키워드는 타임아웃(40s) 가드로 시도.
+  try {
+    const [campRows, agRows] = await Promise.all([
+      client.syncMaster('Campaign').catch(() => []),
+      client.syncMaster('Adgroup').catch(() => []),
+    ]);
+    for (const r of campRows) { if (r.length >= 3) { campNameMap[r[1]] = r[2]; if (r[3] != null) campTypeMap[r[1]] = parseInt(r[3]) || campTypeMap[r[1]] || 1; } }
+    for (const r of agRows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
+  } catch (_) {}
+  try {
+    const kwRows = await Promise.race([
+      client.syncMaster('Keyword').catch(() => []),
+      new Promise(res => setTimeout(() => res([]), 40000)),
+    ]);
+    for (const r of (kwRows || [])) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
+  } catch (_) {}
+
   // 스트리밍 집계: 5일씩 수집→집계→병합, 원본은 즉시 버려 메모리 고정 (30일 OOM 방지)
   const dates = getDatesBetween(range.since, range.until);
   const CHUNK = 5;

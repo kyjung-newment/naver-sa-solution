@@ -25,7 +25,9 @@ const MIN_MONTHLY_VOL = 50;
 const DOWNSELL_MIN_COST = 10000;        // 감액: 비용 1만원 미만 제외
 const DISCOVERY_SEED_MIN_ROAS = 300;    // 발굴: ROAS 300% 이상 키워드만 소스로
 const ONECLICK_MIN_CLICKS = 1;          // 원클릭: 클릭 1 미만 제외
-const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
+// 마스터 미동기화로 이름이 ID로 남은 항목 탐지 (그룹 grp-/cmp-, 키워드 nkw- 등)
+const UNRESOLVED_RE = /^(grp|cmp|adg|nkw|ncc|nccc|nad|nccad|bnc|cnv)[-_]/i;
+const isIdLike = (s) => !s || s === '-' || UNRESOLVED_RE.test(String(s));
 
 // 증액 트랙별 파라미터
 // growth=클릭수 증가율, cpcInflation=입찰 상향에 따른 한계 CPC 상승, cvrDecay=한계 전환율 감쇠
@@ -142,6 +144,7 @@ function buildUpsellDim(src, track, bench, opts = {}) {
   const out = [];
   for (const [k, d] of Object.entries(src || {})) {
     if (!d) continue;
+    if (!opts.allowId && isIdLike(d.name)) continue;  // ID로만 인식되는 항목 제외(삭제)
     if ((d.purchaseCnt || 0) <= 0) continue;          // 증액 필터: 전환 0 제외
     if ((d.clk || 0) < MIN_CLICKS_UPSELL) continue;
     if ((d.cost || 0) <= 0) continue;
@@ -189,6 +192,7 @@ function downsellInefficiency(data, bench) {
   const out = [];
   for (const d of Object.values(data.byKeyword || {})) {
     if (!d || (d.cost || 0) < DOWNSELL_MIN_COST || (d.clk || 0) < MIN_CLICKS_DOWNSELL) continue; // 감액 필터: 비용 1만원 미만 제외
+    if (isIdLike(d.name)) continue; // ID로만 인식되는 항목 제외(삭제)
     const wasteful = (d.purchaseCnt || 0) === 0;
     const lowEff = (d.roas || 0) > 0 && bench.avgRoas > 0 && (d.roas || 0) < bench.avgRoas * LOW_ROAS_MULT && (d.cost || 0) >= bench.avgCpc * 10;
     if (!wasteful && !lowEff) continue;
@@ -217,7 +221,7 @@ function downsellBudgetTarget(data, bench, opts) {
   const target = (opts.targetAmt && opts.targetAmt > 0)
     ? opts.targetAmt
     : Math.round(totalCost * (Math.max(1, Math.min(90, opts.targetPct || 10)) / 100));
-  const kws = Object.values(data.byKeyword || {}).filter(d => (d.cost || 0) >= DOWNSELL_MIN_COST); // 비용 1만원 미만 제외
+  const kws = Object.values(data.byKeyword || {}).filter(d => (d.cost || 0) >= DOWNSELL_MIN_COST && !isIdLike(d.name)); // 비용 1만원 미만 + ID항목 제외
   // ROAS 오름차순(낮은 효율 먼저), 동률이면 비용 큰 것 먼저
   kws.sort((a, b) => (a.roas || 0) - (b.roas || 0) || (b.cost || 0) - (a.cost || 0));
   const items = []; let saved = 0, lostRev = 0;

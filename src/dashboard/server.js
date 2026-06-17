@@ -6063,10 +6063,10 @@ function strategyPageContent(kind, selAccount) {
     // dims: 'group'(캠페인/광고그룹) | 'kw'(캠페인/광고그룹/검색어) | 'dev'(기기)
     function stUpsellRows(items, dims){
       return (items||[]).map(function(it){
-        var lead;
-        if(dims==='group') lead=[stEsc(it.campaignName)||'-',(stEsc(it.name)||'-')];
-        else if(dims==='kw') lead=[stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-')];
-        else lead=[(stEsc(it.name)||'-')];
+        var lead=[stEsc(it.campaignType)||'-'];
+        if(dims==='group') lead=lead.concat([stEsc(it.campaignName)||'-',(stEsc(it.name)||'-')]);
+        else if(dims==='kw') lead=lead.concat([stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-')]);
+        else lead=lead.concat([(stEsc(it.name)||'-')]);
         return lead.concat([stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%',stEsc(it.reason)]);
       });
     }
@@ -6075,8 +6075,8 @@ function strategyPageContent(kind, selAccount) {
       if(!items||!items.length) return head+'<div class="st-empty">대상 없음 (전환 0건·저효율 제외)</div>';
       var lead = dims==='group'?['캠페인','광고그룹']:(dims==='kw'?['캠페인','광고그룹','검색어']:['기기']);
       var leadAlign = dims==='group'?['l','kw']:(dims==='kw'?['l','l','kw']:['kw']);
-      var headers=lead.concat(['현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거']);
-      var aligns=leadAlign.concat(['r','r','r','r','r','r','r','r','r','r','reason']);
+      var headers=['캠페인유형'].concat(lead, ['현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거']);
+      var aligns=['l'].concat(leadAlign, ['r','r','r','r','r','r','r','r','r','r','reason']);
       return head+stTable(headers, stUpsellRows(items, dims), aligns);
     }
     function stRenderUpsell(j){
@@ -6103,11 +6103,11 @@ function strategyPageContent(kind, selAccount) {
         ? [['목표 절감액',stWon(s.targetReduction)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard,['대상',stNum(s.count)+'건']]
         : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard];
       var html=stHead(j.period,cards, (s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액')+' · 감액 적용 시 전체 ROAS '+stNum(s.currentRoas)+'%→'+stNum(s.projectedRoas)+'%');
-      // 검색어(키워드) 다운셀링 — 캠페인/광고그룹/검색어 정렬
-      var dsAlign=['l','l','kw','r','r','r','r','r','reason'];
-      var rows=items.map(function(it){ return [stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; });
+      // 검색어(키워드) 다운셀링 — 캠페인유형/캠페인/광고그룹/검색어
+      var dsAlign=['l','l','l','kw','r','r','r','r','r','reason'];
+      var rows=items.map(function(it){ return [stEsc(it.campaignType)||'-',stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; });
       html+='<div class="st-section" style="color:'+ST_COLOR+'">① 키워드·검색어별 비효율 <span class="st-count">'+stNum(items.length)+'건</span></div>';
-      html+=stTable(['캠페인','광고그룹','검색어','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows,dsAlign);
+      html+=stTable(['캠페인유형','캠페인','광고그룹','검색어','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows,dsAlign);
       // 기기별 다운셀링
       var dev=j.devices||[];
       html+='<div class="st-section" style="color:'+ST_COLOR+'">② 기기별 비효율 <span class="st-count">매체이름은 SA API 미제공 → 기기로 대체</span></div>';
