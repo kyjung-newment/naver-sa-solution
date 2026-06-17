@@ -1120,10 +1120,10 @@ async function generateAnalysisBrief(account, type) {
     accountName: account.name,
     kpi: { cost: t.cost || 0, purchaseAmt: t.purchaseAmt || 0, roas: t.roas || 0, clk: t.clk || 0 },
     summary: suggestions.summary,
+    performance: suggestions.performance,
     suggestions: {
       upsell: (suggestions.upsell || []).slice(0, 5),
       downsell: (suggestions.downsell || []).slice(0, 5),
-      expansion: (suggestions.expansion || []).slice(0, 8),
     },
   };
 }

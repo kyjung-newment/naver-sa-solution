@@ -981,9 +981,10 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         r++;
       });
     }
-    buildBidSuggestionSheet('증액 제안', suggestions.upsell || [], C.green, ['성과 우수 키워드 → 증액 제안 예산·예상 상승 매출·예상 ROAS', `대상 ${(suggestions.upsell || []).length}건`], UPSELL_SPECS);
+    buildBidSuggestionSheet('증액 제안(그룹)', suggestions.upsell || [], C.green, ['성과 우수 그룹 → 증액 제안 예산·예상 상승 매출·예상 ROAS', `대상 ${(suggestions.upsell || []).length}건`], UPSELL_SPECS);
+    if (suggestions.upsellKeywords && suggestions.upsellKeywords.length) buildBidSuggestionSheet('증액 제안(키워드)', suggestions.upsellKeywords, C.green, ['키워드·상품검색어 단위 증액 제안', `대상 ${suggestions.upsellKeywords.length}건`], UPSELL_SPECS);
     buildBidSuggestionSheet('감액 제안', suggestions.downsell || [], C.red, ['비효율 예산 → 감액 제안액·예상 매출손실', `대상 ${(suggestions.downsell || []).length}건`], DOWNSELL_SPECS);
-    buildDiscoverySheet('키워드 발굴', suggestions.expansion || []);
+    // 키워드 발굴 시트 제거 (사용자 요청)
   }
 
   return await wb.xlsx.writeBuffer();

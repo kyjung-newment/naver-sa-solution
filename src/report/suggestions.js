@@ -243,21 +243,56 @@ function downsellBudgetTarget(data, bench, opts) {
   };
 }
 
+// 기기별 비효율 감액 (PC/모바일) — 매체이름은 SA API 미제공이라 기기로 대체
+function downsellDevices(data, bench) {
+  const out = [];
+  for (const [k, d] of Object.entries(data.byDevice || {})) {
+    if ((d.cost || 0) < DOWNSELL_MIN_COST) continue;
+    const wasteful = (d.purchaseCnt || 0) === 0;
+    const lowEff = bench.avgRoas > 0 && (d.roas || 0) < bench.avgRoas * LOW_ROAS_MULT;
+    if (!wasteful && !lowEff) continue;
+    const cut = wasteful ? (d.cost || 0) : Math.round((d.cost || 0) * 0.5);
+    out.push({
+      name: (k === 'PC' || k === 'P') ? 'PC' : '모바일', campaignName: '', adgroupName: '',
+      cost: d.cost || 0, roas: d.roas || 0, purchaseCnt: d.purchaseCnt || 0,
+      cutSpend: cut, lostRevenue: wasteful ? 0 : Math.round((d.purchaseAmt || 0) * 0.5),
+      action: wasteful ? '기기 입찰 가중치 OFF/하향' : '기기 입찰 가중치 하향(약 -50%)',
+      reason: wasteful ? `비용 ${won(d.cost)} · 전환 0 — 기기 비효율` : `ROAS ${fmt(d.roas)}% (계정평균 절반 미만) — 기기 비효율`,
+    });
+  }
+  return out.sort((a, b) => b.cutSpend - a.cutSpend);
+}
+
+// 감액 적용 후 예상 전체 ROAS (선택 키워드 비용·매출 차감)
+function projectedAccountRoas(bench, cutSpend, lostRevenue) {
+  const projCost = Math.max(0, bench.totalCost - cutSpend);
+  const projRev = Math.max(0, bench.totalPurchaseAmt - lostRevenue);
+  return projCost > 0 ? Math.round(projRev / projCost * 100) : 0;
+}
+
 function analyzeDownsell(data, opts = {}) {
   const bench = benchmarks(data);
+  const currentRoas = bench.totalCost > 0 ? Math.round(bench.totalPurchaseAmt / bench.totalCost * 100) : 0;
   if (opts.mode === 'budget_target') {
     const r = downsellBudgetTarget(data, bench, opts);
-    return { items: r.items, summary: r.summary, bench };
+    r.summary.currentRoas = currentRoas;
+    r.summary.projectedRoas = projectedAccountRoas(bench, r.summary.achievedReduction || 0, r.summary.estRevenueLoss || 0);
+    return { items: r.items, devices: downsellDevices(data, bench), summary: r.summary, bench };
   }
   const items = downsellInefficiency(data, bench);
+  // 정렬: 캠페인 → 광고그룹 → 검색어(키워드)
+  items.sort((a, b) => (a.campaignName || '').localeCompare(b.campaignName || '') || (a.adgroupName || '').localeCompare(b.adgroupName || '') || (a.name || '').localeCompare(b.name || ''));
+  const totalCutSpend = items.reduce((s, x) => s + (x.cutSpend || 0), 0);
+  const estRevenueLoss = items.reduce((s, x) => s + (x.lostRevenue || 0), 0);
   const summary = {
     mode: 'inefficiency',
     count: items.length,
-    totalCutSpend: items.reduce((s, x) => s + (x.cutSpend || 0), 0),
-    estRevenueLoss: items.reduce((s, x) => s + (x.lostRevenue || 0), 0),
+    totalCutSpend, estRevenueLoss,
     zeroConvCount: items.filter(x => (x.purchaseCnt || 0) === 0).length,
+    currentRoas,
+    projectedRoas: projectedAccountRoas(bench, totalCutSpend, estRevenueLoss),
   };
-  return { items, summary, bench };
+  return { items, devices: downsellDevices(data, bench), summary, bench };
 }
 
 // ─── 3) 키워드 발굴 (Discovery) ─────────────────────────────────────
@@ -381,6 +416,20 @@ async function analyzeDiscovery(data, client, opts = {}) {
 
 // ─── 4) 종합 (원클릭 / 번들 엑셀용) ─────────────────────────────────
 // 기존 호환: upsell/downsell/expansion 배열 + summary 반환 (upsell엔 투영 포함)
+// 계정 성과 요약 (원클릭 엑셀 전 미리보기용)
+function performanceSummary(data) {
+  const total = data.total || {};
+  const topN = (obj, n, withName) => Object.entries(obj || {})
+    .map(([k, d]) => ({ key: k, name: withName ? (d.name || k) : k, imp: d.imp || 0, clk: d.clk || 0, cost: d.cost || 0, roas: d.roas || 0, purchaseCnt: d.purchaseCnt || 0, purchaseAmt: d.purchaseAmt || 0, ctr: d.ctr || 0, cpc: d.cpc || 0 }))
+    .filter(x => x.cost > 0).sort((a, b) => b.cost - a.cost).slice(0, n);
+  return {
+    total: { imp: total.imp || 0, clk: total.clk || 0, cost: total.cost || 0, ctr: total.ctr || 0, cpc: total.cpc || 0, roas: total.roas || 0, purchaseCnt: total.purchaseCnt || 0, purchaseAmt: total.purchaseAmt || 0 },
+    byCampaignType: Object.entries(data.byCampaignType || {}).map(([k, d]) => ({ name: k, cost: d.cost || 0, clk: d.clk || 0, roas: d.roas || 0, purchaseAmt: d.purchaseAmt || 0 })).sort((a, b) => b.cost - a.cost),
+    byCampaign: topN(data.byCampaign, 10, true),
+    byDevice: Object.entries(data.byDevice || {}).map(([k, d]) => ({ name: (k === 'PC' || k === 'P') ? 'PC' : '모바일', cost: d.cost || 0, clk: d.clk || 0, roas: d.roas || 0, purchaseAmt: d.purchaseAmt || 0 })),
+  };
+}
+
 async function analyzeAccount(data, client, opts = {}) {
   // 원클릭 필터: 클릭 1 미만 데이터 제외
   const fdata = {
@@ -390,22 +439,26 @@ async function analyzeAccount(data, client, opts = {}) {
   };
   const up = analyzeUpsell(fdata, { track: opts.track || 'hold_roas', channels: ['파워링크', '쇼핑검색'] });
   const down = analyzeDownsell(fdata, { mode: 'inefficiency' });
-  const disc = await analyzeDiscovery(fdata, client, { registeredKeywords: opts.registeredKeywords, channel: 'all', character: 'all', skipTool: opts.skipTool });
+
+  // 업셀 적용 시 상향 가능 전체 ROAS (증액 후 블렌디드)
+  const upBlendedRoas = up.summary.blendedExpRoas || 0;
 
   const summary = {
     upsellCount: up.groups.length,
     downsellCount: down.items.length,
-    expansionCount: disc.items.length,
     upsellCurrentCost: up.summary.currentCost,
     upsellAddSpend: up.summary.totalAddSpend,
     upsellExpUplift: up.summary.totalExpUplift,
     upsellPurchaseAmt: up.summary.currentPurchaseAmt,
+    upsellBlendedRoas: upBlendedRoas,
     downsellWasteCost: down.summary.totalCutSpend || 0,
-    expansionConvertingQueries: disc.summary.convertingQueries,
-    expansionToolIdeas: disc.summary.toolIdeas,
+    downsellProjectedRoas: down.summary.projectedRoas || 0,
+    downsellCurrentRoas: down.summary.currentRoas || 0,
+    inefficientCount: down.items.length,
+    inefficientCost: down.summary.totalCutSpend || 0,
   };
-  // 원클릭 번들 엑셀의 증액 시트는 '그룹 단위'를 사용
-  return { upsell: up.groups, downsell: down.items, expansion: disc.items, meta: up.bench, summary };
+  // 원클릭 번들 엑셀의 증액 시트는 '그룹 단위'를 사용 (키워드 발굴 제거)
+  return { upsell: up.groups, upsellKeywords: up.keywords, upsellDevices: up.devices, downsell: down.items, downsellDevices: down.devices, meta: up.bench, summary, performance: performanceSummary(fdata) };
 }
 
 module.exports = {

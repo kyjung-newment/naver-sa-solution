@@ -196,7 +196,6 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const strategyItems = [
     { id: 'strategy-upsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>', label: '증액 (Upselling)', href: '/smart-sa/strategy/upsell' },
     { id: 'strategy-downsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>', label: '감액 (Downselling)', href: '/smart-sa/strategy/downsell' },
-    { id: 'strategy-discovery', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>', label: '키워드 발굴 (Discovery)', href: '/smart-sa/strategy/discovery' },
     { id: 'strategy-oneclick', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>', label: '원클릭 계정분석 제안', href: '/smart-sa/strategy/analysis' },
   ];
 
@@ -6037,21 +6036,30 @@ function strategyPageContent(kind, selAccount) {
       if(ST_KIND==='discovery') return stRenderDiscovery(j);
       return stRenderOneclick(j);
     }
-    function stUpsellRows(items){
-      return (items||[]).map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; });
+    // dims: 'group'(캠페인/광고그룹) | 'kw'(캠페인/광고그룹/검색어) | 'dev'(기기)
+    function stUpsellRows(items, dims){
+      return (items||[]).map(function(it){
+        var lead;
+        if(dims==='group') lead=[stEsc(it.campaignName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>'];
+        else if(dims==='kw') lead=[stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>'];
+        else lead=['<b>'+(stEsc(it.name)||'-')+'</b>'];
+        return lead.concat([stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']);
+      });
     }
-    function stUpsellSection(title, items){
-      var head='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:16px 0 6px">'+title+' <span style="font-weight:400;color:#94a3b8;font-size:12px">('+stNum((items||[]).length)+'건)</span></div>';
+    function stUpsellSection(title, items, dims){
+      var head='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:18px 0 6px">'+title+' <span style="font-weight:400;color:#94a3b8;font-size:12px">('+stNum((items||[]).length)+'건)</span></div>';
       if(!items||!items.length) return head+'<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">대상 없음 (전환 0건·저효율 제외)</div>';
-      return head+stTable(['구분','캠페인','현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거'], stUpsellRows(items));
+      var lead = dims==='group'?['캠페인','광고그룹']:(dims==='kw'?['캠페인','광고그룹','검색어']:['기기']);
+      var headers=lead.concat(['현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거']);
+      return head+stTable(headers, stUpsellRows(items, dims));
     }
     function stRenderUpsell(j){
       var s=j.summary||{};
-      var html=stHead(j.period,[['대상 그룹',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['예상 블렌디드 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||'')+' · 채널: '+((s.channels||[]).join(', ')||'전체'));
+      var html=stHead(j.period,[['대상 그룹',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['상향가능 전체 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||'')+' · 채널: '+((s.channels||[]).join(', ')||'전체'));
       html+='<div style="margin:8px 0 14px"><button class="btn btn-primary btn-sm" onclick="stUpsellExcel()" id="st-upx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 엑셀 상세 다운로드 (그룹·키워드·기기)</button></div>';
-      html+=stUpsellSection('① 그룹별 (증액 실행 단위)', j.groups);
-      html+=stUpsellSection('② 키워드 · 상품검색어별', j.keywords);
-      html+=stUpsellSection('③ 기기별 (PC/모바일, 계정 전체)', j.devices);
+      html+=stUpsellSection('① 그룹별 (증액 실행 단위)', j.groups, 'group');
+      html+=stUpsellSection('② 키워드 · 상품검색어별', j.keywords, 'kw');
+      html+=stUpsellSection('③ 기기별 (PC/모바일, 계정 전체)', j.devices, 'dev');
       return html;
     }
     function stUpsellExcel(){
@@ -6064,12 +6072,20 @@ function strategyPageContent(kind, selAccount) {
     }
     function stRenderDownsell(j){
       var s=j.summary||{}; var items=j.items||[];
+      var roasCard = ['예상 전체 ROAS', '<span>'+stNum(s.currentRoas)+'% → <b style="color:#16a34a">'+stNum(s.projectedRoas)+'%</b></span>'];
       var cards = s.mode==='budget_target'
-        ? [['목표 절감액',stWon(s.targetReduction)],['달성 절감액',stWon(s.achievedReduction)],['예상 매출손실',stWon(s.estRevenueLoss)],['대상',stNum(s.count)+'건']]
-        : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],['전환0 키워드',stNum(s.zeroConvCount)+'건']];
-      var html=stHead(j.period,cards, s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액');
-      var rows=items.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b">'+stEsc(it.reason)+'</span>']; });
-      html+=stTable(['키워드','캠페인','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows);
+        ? [['목표 절감액',stWon(s.targetReduction)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard,['대상',stNum(s.count)+'건']]
+        : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard];
+      var html=stHead(j.period,cards, (s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액')+' · 감액 적용 시 전체 ROAS '+stNum(s.currentRoas)+'%→'+stNum(s.projectedRoas)+'%');
+      // 검색어(키워드) 다운셀링 — 캠페인/광고그룹/검색어 정렬
+      var rows=items.map(function(it){ return [stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>',stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; });
+      html+='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:16px 0 6px">① 키워드·검색어별 비효율</div>';
+      html+=stTable(['캠페인','광고그룹','검색어','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows);
+      // 기기별 다운셀링
+      var dev=j.devices||[];
+      html+='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:18px 0 6px">② 기기별 비효율 <span style="font-weight:400;color:#94a3b8;font-size:12px">(매체이름은 SA API 미제공 → 기기로 대체)</span></div>';
+      if(!dev.length) html+='<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">대상 없음</div>';
+      else html+=stTable(['기기','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'], dev.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; }));
       return html+stCsvBtn();
     }
     function stRenderDiscovery(j){
@@ -6087,16 +6103,36 @@ function strategyPageContent(kind, selAccount) {
       else h+='<ul style="margin:0;padding-left:18px;font-size:12px;color:#334155">'+lines.map(function(l){return '<li style="margin:3px 0">'+l+'</li>';}).join('')+'</ul>';
       return h+'</div>';
     }
+    function stPerfTable(title, rows){
+      if(!rows||!rows.length) return '';
+      var h='<div style="font-weight:700;font-size:13px;margin:10px 0 4px;color:#334155">'+title+'</div>';
+      h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px"><thead><tr>'
+        +['구분','총비용','클릭','구매매출','ROAS'].map(function(x){return '<th style="text-align:left;padding:4px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0">'+x+'</th>';}).join('')+'</tr></thead><tbody>';
+      h+=rows.map(function(r){ return '<tr><td style="padding:4px 8px">'+stEsc(r.name)+'</td><td style="padding:4px 8px">'+stWon(r.cost)+'</td><td style="padding:4px 8px">'+stNum(r.clk)+'</td><td style="padding:4px 8px">'+stWon(r.purchaseAmt)+'</td><td style="padding:4px 8px">'+stNum(r.roas)+'%</td></tr>'; }).join('');
+      return h+'</tbody></table>';
+    }
     function stRenderOneclick(j){
-      var s=j.summary||{}; var sug=j.suggestions||{}; var k=j.kpi||{};
+      var s=j.summary||{}; var sug=j.suggestions||{}; var k=j.kpi||{}; var perf=j.performance||{};
       var html='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px">';
       html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;border-bottom:2px solid '+ST_COLOR+';padding-bottom:10px;margin-bottom:14px">';
       html+='<div><div style="font-size:18px;font-weight:800">'+stEsc(j.accountName||'')+' 월간 제안 리포트</div><div style="font-size:12px;color:#94a3b8">'+stEsc(j.period||'')+'</div></div>';
       html+='<button class="btn btn-outline btn-sm" onclick="window.print()" style="font-size:12px">🖨 인쇄</button></div>';
-      html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;font-size:13px"><div>총비용 <b>'+stWon(k.cost)+'</b></div><div>구매매출 <b>'+stWon(k.purchaseAmt)+'</b></div><div>ROAS <b>'+stNum(k.roas)+'%</b></div><div>클릭 <b>'+stNum(k.clk)+'</b></div></div>';
-      html+=stOcSection('① 증액(업셀링) 제안','#16a34a','대상 '+stNum(s.upsellCount)+'건 · 추가투입 '+stWon(s.upsellAddSpend)+' → 예상 상승매출 '+stWon(s.upsellExpUplift),(sug.upsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.recBudget)+' 증액 시 매출 +'+stWon(it.expRevenueUplift)+' (ROAS '+stNum(it.expRoas)+'%)';}));
-      html+=stOcSection('② 감액(다운셀링) 제안','#dc2626','대상 '+stNum(s.downsellCount)+'건 · 비효율 절감 '+stWon(s.downsellWasteCost),(sug.downsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.cost)+' (ROAS '+stNum(it.roas)+'%) → '+stEsc(it.action);}));
-      html+=stOcSection('③ 키워드 발굴(Discovery)','#7c3aed','대상 '+stNum(s.expansionCount)+'건 (전환검색어 '+stNum(s.expansionConvertingQueries)+' · 도구 '+stNum(s.expansionToolIdeas)+')',(sug.expansion||[]).slice(0,8).map(function(it){return stEsc(it.keyword)+(it.monthlyTotal?(' (월 '+stNum(it.monthlyTotal)+')'):'')+' — '+stEsc(it.source);}));
+      html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:13px"><div>총비용 <b>'+stWon(k.cost)+'</b></div><div>구매매출 <b>'+stWon(k.purchaseAmt)+'</b></div><div>ROAS <b>'+stNum(k.roas)+'%</b></div><div>클릭 <b>'+stNum(k.clk)+'</b></div></div>';
+      // ── 계정 성과 요약 (엑셀 전 미리보기) ──
+      html+='<div style="background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:12px;margin:10px 0 16px">';
+      html+='<div style="font-weight:700;font-size:13px;color:#0ea5e9;margin-bottom:6px">📊 계정 성과 요약</div>';
+      html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">';
+      html+='<div style="flex:1;min-width:180px;background:#fff;border:1px solid #fecaca;border-radius:6px;padding:8px"><div style="font-size:11px;color:#64748b">비효율 키워드</div><div style="font-size:16px;font-weight:700;color:#dc2626">'+stNum(s.inefficientCount)+'건 · '+stWon(s.inefficientCost)+'</div></div>';
+      html+='<div style="flex:1;min-width:180px;background:#fff;border:1px solid #bbf7d0;border-radius:6px;padding:8px"><div style="font-size:11px;color:#64748b">업셀링 제안</div><div style="font-size:16px;font-weight:700;color:#16a34a">'+stNum(s.upsellCount)+'건 · 상향가능 ROAS '+stNum(s.upsellBlendedRoas)+'%</div></div>';
+      html+='<div style="flex:1;min-width:180px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:8px"><div style="font-size:11px;color:#64748b">감액 적용 시 전체 ROAS</div><div style="font-size:16px;font-weight:700;color:#0ea5e9">'+stNum(s.downsellCurrentRoas)+'% → '+stNum(s.downsellProjectedRoas)+'%</div></div>';
+      html+='</div>';
+      html+=stPerfTable('캠페인 유형별 성과', perf.byCampaignType);
+      html+=stPerfTable('캠페인별 성과 (TOP)', perf.byCampaign);
+      html+=stPerfTable('기기별 성과', perf.byDevice);
+      html+='<div style="font-size:11px;color:#94a3b8;margin-top:4px">* 성별·연령별 성과는 네이버 SA API 미제공으로 제외</div>';
+      html+='</div>';
+      html+=stOcSection('① 증액(업셀링) 제안 — 그룹 단위','#16a34a','대상 '+stNum(s.upsellCount)+'건 · 추가투입 '+stWon(s.upsellAddSpend)+' → 예상 상승매출 '+stWon(s.upsellExpUplift)+' (상향가능 ROAS '+stNum(s.upsellBlendedRoas)+'%)',(sug.upsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.recBudget)+' 증액 시 매출 +'+stWon(it.expRevenueUplift)+' (ROAS '+stNum(it.expRoas)+'%)';}));
+      html+=stOcSection('② 감액(다운셀링) 제안','#dc2626','대상 '+stNum(s.downsellCount)+'건 · 비효율 절감 '+stWon(s.downsellWasteCost)+' · 적용 시 전체 ROAS '+stNum(s.downsellCurrentRoas)+'%→'+stNum(s.downsellProjectedRoas)+'%',(sug.downsell||[]).slice(0,5).map(function(it){return stEsc(it.name)+' — '+stWon(it.cost)+' (ROAS '+stNum(it.roas)+'%) → '+stEsc(it.action);}));
       html+='</div>';
       html+='<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="stFullExcel()" id="st-fullx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 전체 리포트+제안 엑셀 추출</button></div>';
       return html;
@@ -6126,7 +6162,7 @@ function strategyPageContent(kind, selAccount) {
     </script>`;
 }
 
-['upsell', 'downsell', 'discovery', 'analysis'].forEach(seg => {
+['upsell', 'downsell', 'analysis'].forEach(seg => {  // discovery 제거(사용자 요청)
   const kind = seg === 'analysis' ? 'oneclick' : seg;
   router.get('/strategy/' + seg, requireLogin, requireApi, async (req, res) => {
     const user = await getUser(req);
@@ -7366,7 +7402,7 @@ router.post('/api/strategy/downsell', requireLogin, async (req, res) => {
     }
     const { runStrategy } = require('../report/generator');
     const r = await runStrategy(account, strategyType(req.body.type), 'downsell', opts);
-    res.json({ ok: true, period: r.period, items: r.items, summary: r.summary });
+    res.json({ ok: true, period: r.period, items: r.items, devices: r.devices, summary: r.summary });
   } catch (err) { console.error('감액 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
 });
 
