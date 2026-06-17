@@ -6007,7 +6007,7 @@ function strategyPageContent(kind, selAccount) {
       if(!ST_ACCOUNT){ stToast('광고주를 먼저 선택하세요.',true); return; }
       var btn=document.getElementById('st-run'); var res=document.getElementById('st-result');
       btn.disabled=true; var old=btn.textContent; btn.textContent='분석 중...';
-      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 분석 중입니다...</div>';
+      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 분석 중입니다... <span style="color:#94a3b8">(대시보드 동기화 전 계정은 최초 1~2분 소요될 수 있어요)</span></div>';
       try{
         var r=await fetch(stEndpoint(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(stBody())});
         var j=await r.json(); if(!j.ok) throw new Error(j.error||'분석 실패');

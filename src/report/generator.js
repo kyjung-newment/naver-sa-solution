@@ -85,7 +85,8 @@ function remapShoppingRow(cols) {
  * SHOPPINGKEYWORD_DETAIL은 쇼핑 키워드별 분석 용도로만 별도 저장한다.
  * (이전에는 keywordId='-' 행을 모두 제거해 파워링크+쇼핑 데이터 손실이 발생)
  */
-async function collectDetailData(client, dateRange) {
+async function collectDetailData(client, dateRange, opts = {}) {
+  const light = !!opts.light; // light=AD_QUERY_DETAIL 생략(전략 라이브 폴백용: 메모리/속도)
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const rawAdDetail = [];
   const rawConvDetail = [];
@@ -93,19 +94,20 @@ async function collectDetailData(client, dateRange) {
   const rawShopConvDetail = [];
   const rawQueryDetail = [];
 
-  // 날짜별 5개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
-  const BATCH_SIZE = 5;
+  // 날짜별 N개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
+  const BATCH_SIZE = light ? 8 : 5;
   for (let i = 0; i < dates.length; i += BATCH_SIZE) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
       batch.map(async (dt) => {
-        const [adResult, convResult, shopResult, shopConvResult, queryResult] = await Promise.allSettled([
+        const reqs = [
           client.createAndDownloadStatReport('AD_DETAIL', dt),
           client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
-          client.createAndDownloadStatReport('AD_QUERY_DETAIL', dt),
-        ]);
+        ];
+        if (!light) reqs.push(client.createAndDownloadStatReport('AD_QUERY_DETAIL', dt));
+        const [adResult, convResult, shopResult, shopConvResult, queryResult] = await Promise.allSettled(reqs);
 
         // AD_DETAIL: 전체 성과 데이터 (파워링크+쇼핑 모두 포함, 필터 없음)
         const adRows = adResult.status === 'fulfilled' ? adResult.value : [];
@@ -126,9 +128,9 @@ async function collectDetailData(client, dateRange) {
           shopConvRows = shopConvResult.value.map(remapShoppingRow);
         }
 
-        // AD_QUERY_DETAIL: 검색어 텍스트 포함 (마스터 sync 의존 X)
-        const queryRows = queryResult.status === 'fulfilled' ? queryResult.value : [];
-        if (queryResult.status === 'rejected') console.log(`AD_QUERY_DETAIL 실패 (${dt}):`, queryResult.reason?.message);
+        // AD_QUERY_DETAIL: 검색어 텍스트 포함 (마스터 sync 의존 X). light 모드면 미수집.
+        const queryRows = (queryResult && queryResult.status === 'fulfilled') ? queryResult.value : [];
+        if (queryResult && queryResult.status === 'rejected') console.log(`AD_QUERY_DETAIL 실패 (${dt}):`, queryResult.reason?.message);
 
         return { dt, adRows, convRows, shopKwRows, shopConvRows, queryRows };
       })
@@ -1024,22 +1026,53 @@ async function buildDataFromDb(accountId, since, until) {
   return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byQuery: {}, byDevice, byHour, byDate };
 }
 
+// 전략 라이브 경량 수집 (DB 미동기화 계정용)
+// AD_QUERY_DETAIL/Stats 보정을 생략해 메모리·시간을 크게 줄이고, 총합은 /stats 1콜로 정확화.
+async function collectStrategyLive(account, range) {
+  const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
+  // 이름 맵 (DB 마스터 우선)
+  const campNameMap = {}, campTypeMap = {}, agNameMap = {}, kwNameMap = {}, kwQiMap = {};
+  try {
+    const m = await db.buildKeywordMaps(account.id);
+    for (const [id, info] of Object.entries(m.campMap || {})) { campNameMap[id] = info.name; campTypeMap[id] = info.tp || 1; }
+    for (const [id, info] of Object.entries(m.agMap || {})) { agNameMap[id] = info.name; }
+    for (const [id, info] of Object.entries(m.kwMap || {})) { kwNameMap[id] = info.keyword; if (info.qi) kwQiMap[id] = info.qi; }
+  } catch (_) {}
+
+  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, range, { light: true });
+  const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, []);
+
+  // 총합은 Stats API(1콜)로 정확화 (네이버 대시보드 일치)
+  try {
+    const s = await client.getStats({ startDate: range.since, endDate: range.until });
+    if (s) {
+      const t = data.total;
+      t.imp = s.impCnt || t.imp; t.clk = s.clkCnt || t.clk; t.cost = s.salesAmt || t.cost;
+      if (typeof s.purchaseCcnt === 'number') t.purchaseCnt = s.purchaseCcnt;
+      if (typeof s.purchaseConvAmt === 'number') t.purchaseAmt = s.purchaseConvAmt;
+      t.ctr = t.imp > 0 ? (t.clk / t.imp * 100) : 0;
+      t.cpc = t.clk > 0 ? Math.round(t.cost / t.clk) : 0;
+      t.roas = t.cost > 0 ? Math.round((t.purchaseAmt || 0) / t.cost * 100) : 0;
+    }
+  } catch (_) {}
+  return data;
+}
+
 // 전략/원클릭용: DB 동기화 데이터 우선 + 기간 라벨.
-// DB가 비어있고(미동기화 신규 계정) 기간이 짧으면(일간/주간) 라이브로 폴백(빠름).
-// 월간(30일)은 라이브 타임아웃 위험이 커서 DB만 사용.
+// DB가 비어있으면(미동기화 계정) 라이브 경량 수집으로 폴백(타임아웃 가드).
 async function collectStrategyData(account, type) {
-  const accountId = account.id;
   const range = rollingRange(type);
-  let data = await buildDataFromDb(accountId, range.since, range.until);
+  let data = await buildDataFromDb(account.id, range.since, range.until);
+  let source = 'db';
   const empty = (data.total.cost || 0) === 0 && Object.keys(data.byKeyword).length === 0;
-  if (empty && type !== 'monthly' && account.api_key) {
-    try {
-      const live = await collectReportData(account, type, { since: range.since, until: range.until }, { skipPrev: true });
-      if (live && live.data) data = live.data;
-    } catch (e) { console.log('  ⚠️ 전략 라이브 폴백 실패:', e.message); }
+  if (empty && account.api_key) {
+    source = 'live';
+    // 라이브 수집은 Vercel 800s 한도 안쪽에서 자체 타임아웃 → 함수 크래시 대신 명확한 에러
+    const guard = new Promise((_, rej) => setTimeout(() => rej(new Error('전략 데이터 수집 시간이 초과되었습니다(미동기화 계정). 더 짧은 기간(어제/최근 7일)으로 시도하거나, SA 성과 대시보드를 먼저 열어 동기화 후 다시 시도해주세요.')), 240000));
+    data = await Promise.race([collectStrategyLive(account, range), guard]);
   }
   const period = `${range.label} (${range.since.replace(/-/g, '.')}~${range.until.replace(/-/g, '.')})`;
-  return { data, period, range };
+  return { data, period, range, source };
 }
 
 /**
