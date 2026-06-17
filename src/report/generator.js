@@ -1028,6 +1028,30 @@ async function buildDataFromDb(accountId, since, until) {
 
 // 전략 라이브 경량 수집 (DB 미동기화 계정용)
 // AD_QUERY_DETAIL/Stats 보정을 생략해 메모리·시간을 크게 줄이고, 총합은 /stats 1콜로 정확화.
+// 집계 결과를 누적 병합 (원본 raw는 청크마다 버림 → 메모리 고정)
+function mergeAgg(acc, part) {
+  const DIMS = ['byCampaign', 'byCampaignType', 'byAdgroup', 'byKeyword', 'byDevice', 'byHour', 'byDate', 'byQuery'];
+  const RAW = ['imp', 'clk', 'cost', 'rankSum', 'rankCount', 'purchaseCnt', 'purchaseAmt', 'cartCnt', 'cartAmt'];
+  const reEnrich = (o) => {
+    o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
+    o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
+    o.avgRank = o.rankCount > 0 ? (o.rankSum / o.rankCount) : 0;
+    o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+  };
+  if (!acc) acc = { total: {}, byCampaign: {}, byCampaignType: {}, byAdgroup: {}, byKeyword: {}, byDevice: {}, byHour: {}, byDate: {}, byQuery: {} };
+  RAW.forEach(f => acc.total[f] = (acc.total[f] || 0) + (part.total[f] || 0));
+  reEnrich(acc.total);
+  for (const dim of DIMS) {
+    const src = part[dim] || {};
+    for (const k of Object.keys(src)) {
+      const bd = src[k];
+      if (!acc[dim][k]) { acc[dim][k] = Object.assign({}, bd); }
+      else { RAW.forEach(f => acc[dim][k][f] = (acc[dim][k][f] || 0) + (bd[f] || 0)); reEnrich(acc[dim][k]); }
+    }
+  }
+  return acc;
+}
+
 async function collectStrategyLive(account, range) {
   const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
   // 이름 맵 (DB 마스터 우선)
@@ -1039,8 +1063,18 @@ async function collectStrategyLive(account, range) {
     for (const [id, info] of Object.entries(m.kwMap || {})) { kwNameMap[id] = info.keyword; if (info.qi) kwQiMap[id] = info.qi; }
   } catch (_) {}
 
-  const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail } = await collectDetailData(client, range, { light: true });
-  const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, []);
+  // 스트리밍 집계: 5일씩 수집→집계→병합, 원본은 즉시 버려 메모리 고정 (30일 OOM 방지)
+  const dates = getDatesBetween(range.since, range.until);
+  const CHUNK = 5;
+  let data = null;
+  for (let i = 0; i < dates.length; i += CHUNK) {
+    const sub = { since: dates[i], until: dates[Math.min(i + CHUNK - 1, dates.length - 1)] };
+    const raw = await collectDetailData(client, sub, { light: true });
+    const part = aggregateData(raw.rawAdDetail, raw.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raw.rawShopKwDetail, raw.rawShopConvDetail, kwQiMap, []);
+    data = mergeAgg(data, part);
+    // raw, part는 다음 반복에서 GC 대상
+  }
+  if (!data) data = mergeAgg(null, { total: {}, byCampaign: {}, byCampaignType: {}, byAdgroup: {}, byKeyword: {}, byDevice: {}, byHour: {}, byDate: {}, byQuery: {} });
 
   // 총합은 Stats API(1콜)로 정확화 (네이버 대시보드 일치)
   try {
