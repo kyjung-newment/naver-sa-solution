@@ -946,13 +946,100 @@ async function getRegisteredKeywords(accountId) {
   } catch (_) { return []; }
 }
 
+// 성과개선 전략용 롤링 기간 (라벨: 최근 30일/7일/어제)
+function rollingRange(type) {
+  const now = new Date();
+  const fmt = d => new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const end = new Date(now); end.setDate(end.getDate() - 1); // 어제(KST 기준 근사)
+  if (type === 'daily') return { since: fmt(end), until: fmt(end), label: '어제' };
+  const days = type === 'weekly' ? 7 : 30;
+  const start = new Date(now); start.setDate(start.getDate() - days);
+  return { since: fmt(start), until: fmt(end), label: `최근 ${days}일` };
+}
+
+/**
+ * DB에 동기화된 통계(stat_daily_detail/stat_campaign_daily)로 리포트 data 객체를 조립.
+ * 라이브 네이버 API 수집(30일=수백 콜, 타임아웃 위험) 대신 대시보드와 동일한
+ * 즉시 응답 소스를 사용 → 성과개선 전략/원클릭 분석이 빠르고 안정적으로 동작.
+ * (검색어별 byQuery는 DB 미보유 → 디스커버리는 키워드도구 기반으로 동작)
+ */
+async function buildDataFromDb(accountId, since, until) {
+  const [summary, kwRows, campRows, agRows, devRows, hourly, trend] = await Promise.all([
+    db.queryStatsSummary(accountId, since, until),
+    db.queryStatsKeywords(accountId, since, until),
+    db.queryStatsCampaigns(accountId, since, until),
+    db.queryStatsAdgroups(accountId, since, until),
+    db.queryStatsDevice(accountId, since, until),
+    db.queryStatsHourly(accountId, since, until),
+    db.queryStatsTrend(accountId, since, until),
+  ]);
+
+  const typeLabels = { 1: '파워링크', 2: '쇼핑검색', 3: '파워콘텐츠', 4: '브랜드검색', 6: '로컬' };
+  const lbl = tp => typeLabels[Number(tp)] || `기타(${tp})`;
+  const N = v => Number(v) || 0;
+  const enrich = (o) => {
+    o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
+    o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
+    o.avgRank = o.avgRank || 0;
+    o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+    o.cartCnt = o.cartCnt || 0; o.cartAmt = o.cartAmt || 0;
+    return o;
+  };
+  const accum = (map, key, r, extra) => {
+    if (!map[key]) map[key] = Object.assign({ imp: 0, clk: 0, cost: 0, purchaseCnt: 0, purchaseAmt: 0 }, extra || {});
+    map[key].imp += N(r.imp); map[key].clk += N(r.clk); map[key].cost += N(r.cost);
+    map[key].purchaseCnt += N(r.purchaseCnt); map[key].purchaseAmt += N(r.purchaseAmt);
+  };
+
+  const total = enrich({ imp: N(summary.impCnt), clk: N(summary.clkCnt), cost: N(summary.salesAmt), purchaseCnt: N(summary.purchaseCnt), purchaseAmt: N(summary.purchaseAmt) });
+  total.avgRank = N(summary.avgRnk);
+
+  const byKeyword = {};
+  for (const r of kwRows) {
+    byKeyword['kw:' + r.keyword_id] = enrich({
+      name: r.keyword, campaignName: r.campaignName, adgroupName: r.adgroupName,
+      campaignType: lbl(r.campaignTp), qi: N(r.qiGrade), avgRank: 0,
+      imp: N(r.imp), clk: N(r.clk), cost: N(r.cost), purchaseCnt: N(r.purchaseCnt), purchaseAmt: N(r.purchaseAmt),
+    });
+  }
+  const byCampaign = {}, byCampaignType = {};
+  for (const r of campRows) {
+    const ct = lbl(r.campaignTp);
+    byCampaign['c:' + r.campaign_id] = enrich({ name: r.campaignName, campaignType: ct, imp: N(r.imp), clk: N(r.clk), cost: N(r.cost), purchaseCnt: N(r.purchaseCnt), purchaseAmt: N(r.purchaseAmt) });
+    accum(byCampaignType, ct, r);
+  }
+  Object.values(byCampaignType).forEach(enrich);
+  const byAdgroup = {};
+  for (const r of agRows) {
+    byAdgroup['ag:' + r.adgroup_id] = enrich({ name: r.adgroupName, campaignName: r.campaignName, campaignType: lbl(r.campaignTp), imp: N(r.imp), clk: N(r.clk), cost: N(r.cost), purchaseCnt: N(r.purchaseCnt), purchaseAmt: N(r.purchaseAmt) });
+  }
+  const byDevice = {};
+  for (const r of devRows) { const dv = (r.device === 'P' || r.device === 'PC') ? 'PC' : 'MO'; accum(byDevice, dv, r); }
+  Object.values(byDevice).forEach(enrich);
+  const byHour = {};
+  for (const r of (hourly.byHour || [])) { byHour[String(r.hour).padStart(2, '0')] = enrich({ imp: N(r.imp), clk: N(r.clk), cost: N(r.cost), purchaseCnt: N(r.purchaseCnt), purchaseAmt: N(r.purchaseAmt) }); }
+  const byDate = {};
+  for (const r of trend) { byDate[r.date] = enrich({ imp: N(r.imp), clk: N(r.clk), cost: N(r.cost), purchaseCnt: N(r.purchaseCnt), purchaseAmt: N(r.purchaseAmt) }); }
+
+  return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byQuery: {}, byDevice, byHour, byDate };
+}
+
+// 전략/원클릭용: DB 데이터 + 기간 라벨 (대시보드 미동기화 시 빈 데이터)
+async function collectStrategyData(accountId, type) {
+  const range = rollingRange(type);
+  const data = await buildDataFromDb(accountId, range.since, range.until);
+  const period = `${range.label} (${range.since.replace(/-/g, '.')}~${range.until.replace(/-/g, '.')})`;
+  return { data, period, range };
+}
+
 /**
  * 원클릭 계정분석 제안 번들 생성
  * - 전체 리포트(시트 커스터마이징 적용) + 증액/감액/키워드발굴 제안 시트를 한 엑셀로 추출
  * - 화면 표시용 요약(summary)과 제안 목록(suggestions)도 함께 반환
  */
 async function generateAnalysisBundle(account, type, customRange, opts) {
-  const r = await collectReportDataCached(account, type, customRange, opts);
+  // DB 동기화 통계 사용 (라이브 30일 수집 타임아웃 회피). 검색어별은 DB 미보유.
+  const r = await collectStrategyData(account.id, type);
   const { analyzeAccount } = require('./suggestions');
   const { buildExcelReport } = require('../email/excelReport');
 
@@ -965,7 +1052,7 @@ async function generateAnalysisBundle(account, type, customRange, opts) {
   const reportConfig = db.parseReportConfig(account);
   const buffer = await buildExcelReport({
     type, period: r.period, accountName: account.name,
-    data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom,
+    data: r.data, prevData: null, dateRange: r.range, prevRange: null, isCustom: false,
     reportConfig, suggestions,
   });
 
@@ -977,7 +1064,7 @@ async function generateAnalysisBundle(account, type, customRange, opts) {
  * 엑셀을 만들지 않아 빠르고, 키워드도구는 생략(전환검색어 중심).
  */
 async function generateAnalysisBrief(account, type) {
-  const r = await collectReportDataCached(account, type, null, { skipPrev: type === 'monthly' });
+  const r = await collectStrategyData(account.id, type);
   const { analyzeAccount } = require('./suggestions');
   const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
   const registeredKeywords = await getRegisteredKeywords(account.id);
@@ -1002,7 +1089,7 @@ async function generateAnalysisBrief(account, type) {
  * opts: 증액 {track}, 감액 {mode,targetPct,targetAmt}, 발굴 {channel,character}
  */
 async function runStrategy(account, type, kind, opts = {}) {
-  const r = await collectReportDataCached(account, type, null, { skipPrev: type === 'monthly' });
+  const r = await collectStrategyData(account.id, type);
   const { analyzeUpsell, analyzeDownsell, analyzeDiscovery } = require('./suggestions');
   if (kind === 'upsell') return { ...analyzeUpsell(r.data, opts), period: r.period };
   if (kind === 'downsell') return { ...analyzeDownsell(r.data, opts), period: r.period };
