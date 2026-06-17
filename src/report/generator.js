@@ -1024,10 +1024,20 @@ async function buildDataFromDb(accountId, since, until) {
   return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byQuery: {}, byDevice, byHour, byDate };
 }
 
-// 전략/원클릭용: DB 데이터 + 기간 라벨 (대시보드 미동기화 시 빈 데이터)
-async function collectStrategyData(accountId, type) {
+// 전략/원클릭용: DB 동기화 데이터 우선 + 기간 라벨.
+// DB가 비어있고(미동기화 신규 계정) 기간이 짧으면(일간/주간) 라이브로 폴백(빠름).
+// 월간(30일)은 라이브 타임아웃 위험이 커서 DB만 사용.
+async function collectStrategyData(account, type) {
+  const accountId = account.id;
   const range = rollingRange(type);
-  const data = await buildDataFromDb(accountId, range.since, range.until);
+  let data = await buildDataFromDb(accountId, range.since, range.until);
+  const empty = (data.total.cost || 0) === 0 && Object.keys(data.byKeyword).length === 0;
+  if (empty && type !== 'monthly' && account.api_key) {
+    try {
+      const live = await collectReportData(account, type, { since: range.since, until: range.until }, { skipPrev: true });
+      if (live && live.data) data = live.data;
+    } catch (e) { console.log('  ⚠️ 전략 라이브 폴백 실패:', e.message); }
+  }
   const period = `${range.label} (${range.since.replace(/-/g, '.')}~${range.until.replace(/-/g, '.')})`;
   return { data, period, range };
 }
@@ -1039,7 +1049,7 @@ async function collectStrategyData(accountId, type) {
  */
 async function generateAnalysisBundle(account, type, customRange, opts) {
   // DB 동기화 통계 사용 (라이브 30일 수집 타임아웃 회피). 검색어별은 DB 미보유.
-  const r = await collectStrategyData(account.id, type);
+  const r = await collectStrategyData(account, type);
   const { analyzeAccount } = require('./suggestions');
   const { buildExcelReport } = require('../email/excelReport');
 
@@ -1064,7 +1074,7 @@ async function generateAnalysisBundle(account, type, customRange, opts) {
  * 엑셀을 만들지 않아 빠르고, 키워드도구는 생략(전환검색어 중심).
  */
 async function generateAnalysisBrief(account, type) {
-  const r = await collectStrategyData(account.id, type);
+  const r = await collectStrategyData(account, type);
   const { analyzeAccount } = require('./suggestions');
   const client = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
   const registeredKeywords = await getRegisteredKeywords(account.id);
@@ -1089,7 +1099,7 @@ async function generateAnalysisBrief(account, type) {
  * opts: 증액 {track}, 감액 {mode,targetPct,targetAmt}, 발굴 {channel,character}
  */
 async function runStrategy(account, type, kind, opts = {}) {
-  const r = await collectStrategyData(account.id, type);
+  const r = await collectStrategyData(account, type);
   const { analyzeUpsell, analyzeDownsell, analyzeDiscovery } = require('./suggestions');
   if (kind === 'upsell') return { ...analyzeUpsell(r.data, opts), period: r.period };
   if (kind === 'downsell') return { ...analyzeDownsell(r.data, opts), period: r.period };
