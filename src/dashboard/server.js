@@ -143,6 +143,26 @@ const css = `
   th.sortable.sort-asc::after{content:'▲';color:#6366f1}
   th.sortable.sort-desc::after{content:'▼';color:#6366f1}
   .section-title{font-size:16px;font-weight:700;color:#111827;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  td{font-variant-numeric:tabular-nums}
+  /* ── 데이터 테이블 (전략/분석 공용) ── */
+  .dtable-wrap{border:1px solid #eef2f7;border-radius:12px;overflow:auto;background:#fff;max-height:560px}
+  .dtable{width:100%;border-collapse:collapse;font-size:12.5px}
+  .dtable th{position:sticky;top:0;background:#f8fafc;color:#64748b;font-size:11px;font-weight:700;text-transform:none;letter-spacing:0;padding:11px 12px;border-bottom:1px solid #e5e7eb;white-space:nowrap;text-align:left;z-index:1}
+  .dtable td{padding:11px 12px;border-bottom:1px solid #f1f5f9;color:#334155;vertical-align:middle}
+  .dtable tbody tr:last-child td{border-bottom:none}
+  .dtable tbody tr:nth-child(even){background:#fafbfc}
+  .dtable tbody tr:hover td{background:#f5f7ff}
+  .dtable td.num,.dtable th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .dtable td.kw{font-weight:600;color:#1e293b}
+  .dtable td.reason{color:#94a3b8;font-size:11.5px;line-height:1.5;min-width:240px;max-width:440px}
+  /* ── 전략 결과 섹션/요약 ── */
+  .st-section{font-weight:700;font-size:14px;margin:22px 0 9px;display:flex;align-items:center;gap:7px}
+  .st-section .st-count{font-weight:400;color:#94a3b8;font-size:12px}
+  .st-summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .st-sc{flex:1;min-width:160px;background:#fff;border:1px solid #eef2f7;border-left-width:4px;border-radius:10px;padding:14px 16px}
+  .st-sc .st-l{font-size:12px;color:#64748b;margin-bottom:5px}
+  .st-sc .st-v{font-size:21px;font-weight:800;letter-spacing:-.01em}
+  .st-empty{font-size:12.5px;color:#94a3b8;padding:14px;background:#fafbfc;border:1px dashed #e5e7eb;border-radius:10px}
   .tab-bar{display:flex;gap:4px;background:#f5f6fa;border-radius:10px;padding:4px;margin-bottom:16px}
   .tab-btn{padding:8px 18px;border-radius:8px;border:none;background:transparent;font-size:13px;font-weight:500;cursor:pointer;color:#6b7280;transition:all .15s}
   .tab-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.08);font-weight:600}
@@ -6018,15 +6038,19 @@ function strategyPageContent(kind, selAccount) {
       finally{ btn.disabled=false; btn.textContent=old; }
     }
     function stHead(period, cards, note){
-      var h='<div style="font-size:12px;color:#94a3b8;margin-bottom:8px">분석 기간: '+stEsc(period||'')+(note?' · '+stEsc(note):'')+'</div>';
-      h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
-      h+=cards.map(function(c){ return '<div style="flex:1;min-width:140px;background:#fff;border:1px solid #eef2f7;border-left:4px solid '+ST_COLOR+';border-radius:8px;padding:12px"><div style="font-size:12px;color:#64748b">'+stEsc(c[0])+'</div><div style="font-size:20px;font-weight:700;color:'+ST_COLOR+'">'+c[1]+'</div></div>'; }).join('');
+      var h='<div style="font-size:12px;color:#94a3b8;margin-bottom:10px">분석 기간: '+stEsc(period||'')+(note?' · '+stEsc(note):'')+'</div>';
+      h+='<div class="st-summary">';
+      h+=cards.map(function(c){ return '<div class="st-sc" style="border-left-color:'+ST_COLOR+'"><div class="st-l">'+stEsc(c[0])+'</div><div class="st-v" style="color:'+ST_COLOR+'">'+c[1]+'</div></div>'; }).join('');
       h+='</div>'; return h;
     }
-    function stTable(headers, rows){
-      var h='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
-      h+='<thead><tr>'+headers.map(function(x){return '<th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0;white-space:nowrap">'+stEsc(x)+'</th>';}).join('')+'</tr></thead><tbody>';
-      h+=rows.map(function(r,idx){ return '<tr style="background:'+(idx%2?'#fafafa':'#fff')+'">'+r.map(function(c){return '<td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top">'+c+'</td>';}).join('')+'</tr>'; }).join('');
+    // aligns[i]: 'l'(기본) | 'r'(숫자 우측정렬) | 'kw'(강조 라벨) | 'reason'(근거)
+    function stTable(headers, rows, aligns){
+      aligns = aligns || [];
+      function cls(a){ return a==='r'?'num':(a==='reason'?'reason':(a==='kw'?'kw':'')); }
+      var h='<div class="dtable-wrap"><table class="dtable"><thead><tr>';
+      h+=headers.map(function(x,i){ var a=aligns[i]; return '<th class="'+(a==='r'?'num':'')+'">'+stEsc(x)+'</th>'; }).join('');
+      h+='</tr></thead><tbody>';
+      h+=rows.map(function(r){ return '<tr>'+r.map(function(c,i){ var k=cls(aligns[i]); return '<td'+(k?' class="'+k+'"':'')+'>'+c+'</td>'; }).join('')+'</tr>'; }).join('');
       h+='</tbody></table></div>'; return h;
     }
     function stCsvBtn(){ return '<div style="margin-top:10px"><button class="btn btn-outline btn-sm" onclick="stDownloadCsv()" style="font-size:12px">📥 CSV 다운로드</button></div>'; }
@@ -6040,23 +6064,25 @@ function strategyPageContent(kind, selAccount) {
     function stUpsellRows(items, dims){
       return (items||[]).map(function(it){
         var lead;
-        if(dims==='group') lead=[stEsc(it.campaignName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>'];
-        else if(dims==='kw') lead=[stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>'];
-        else lead=['<b>'+(stEsc(it.name)||'-')+'</b>'];
-        return lead.concat([stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']);
+        if(dims==='group') lead=[stEsc(it.campaignName)||'-',(stEsc(it.name)||'-')];
+        else if(dims==='kw') lead=[stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-')];
+        else lead=[(stEsc(it.name)||'-')];
+        return lead.concat([stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%',stEsc(it.reason)]);
       });
     }
     function stUpsellSection(title, items, dims){
-      var head='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:18px 0 6px">'+title+' <span style="font-weight:400;color:#94a3b8;font-size:12px">('+stNum((items||[]).length)+'건)</span></div>';
-      if(!items||!items.length) return head+'<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">대상 없음 (전환 0건·저효율 제외)</div>';
+      var head='<div class="st-section" style="color:'+ST_COLOR+'">'+title+' <span class="st-count">'+stNum((items||[]).length)+'건</span></div>';
+      if(!items||!items.length) return head+'<div class="st-empty">대상 없음 (전환 0건·저효율 제외)</div>';
       var lead = dims==='group'?['캠페인','광고그룹']:(dims==='kw'?['캠페인','광고그룹','검색어']:['기기']);
+      var leadAlign = dims==='group'?['l','kw']:(dims==='kw'?['l','l','kw']:['kw']);
       var headers=lead.concat(['현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거']);
-      return head+stTable(headers, stUpsellRows(items, dims));
+      var aligns=leadAlign.concat(['r','r','r','r','r','r','r','r','r','r','reason']);
+      return head+stTable(headers, stUpsellRows(items, dims), aligns);
     }
     function stRenderUpsell(j){
       var s=j.summary||{};
       var html=stHead(j.period,[['대상 그룹',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['상향가능 전체 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||'')+' · 채널: '+((s.channels||[]).join(', ')||'전체'));
-      html+='<div style="margin:8px 0 14px"><button class="btn btn-primary btn-sm" onclick="stUpsellExcel()" id="st-upx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 엑셀 상세 다운로드 (그룹·키워드·기기)</button></div>';
+      html+='<div style="margin:6px 0 8px"><button class="btn btn-primary btn-sm" onclick="stUpsellExcel()" id="st-upx" style="background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 엑셀 상세 다운로드 (그룹·키워드·기기)</button></div>';
       html+=stUpsellSection('① 그룹별 (증액 실행 단위)', j.groups, 'group');
       html+=stUpsellSection('② 키워드 · 상품검색어별', j.keywords, 'kw');
       html+=stUpsellSection('③ 기기별 (PC/모바일, 계정 전체)', j.devices, 'dev');
@@ -6078,14 +6104,15 @@ function strategyPageContent(kind, selAccount) {
         : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard];
       var html=stHead(j.period,cards, (s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액')+' · 감액 적용 시 전체 ROAS '+stNum(s.currentRoas)+'%→'+stNum(s.projectedRoas)+'%');
       // 검색어(키워드) 다운셀링 — 캠페인/광고그룹/검색어 정렬
-      var rows=items.map(function(it){ return [stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-','<b>'+(stEsc(it.name)||'-')+'</b>',stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; });
-      html+='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:16px 0 6px">① 키워드·검색어별 비효율</div>';
-      html+=stTable(['캠페인','광고그룹','검색어','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows);
+      var dsAlign=['l','l','kw','r','r','r','r','r','reason'];
+      var rows=items.map(function(it){ return [stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; });
+      html+='<div class="st-section" style="color:'+ST_COLOR+'">① 키워드·검색어별 비효율 <span class="st-count">'+stNum(items.length)+'건</span></div>';
+      html+=stTable(['캠페인','광고그룹','검색어','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'],rows,dsAlign);
       // 기기별 다운셀링
       var dev=j.devices||[];
-      html+='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:18px 0 6px">② 기기별 비효율 <span style="font-weight:400;color:#94a3b8;font-size:12px">(매체이름은 SA API 미제공 → 기기로 대체)</span></div>';
-      if(!dev.length) html+='<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">대상 없음</div>';
-      else html+=stTable(['기기','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'], dev.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),'<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; }));
+      html+='<div class="st-section" style="color:'+ST_COLOR+'">② 기기별 비효율 <span class="st-count">매체이름은 SA API 미제공 → 기기로 대체</span></div>';
+      if(!dev.length) html+='<div class="st-empty">대상 없음</div>';
+      else html+=stTable(['기기','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'], dev.map(function(it){ return [(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; }), ['kw','r','r','r','r','r','reason']);
       return html+stCsvBtn();
     }
     function stRenderDiscovery(j){
@@ -6105,11 +6132,9 @@ function strategyPageContent(kind, selAccount) {
     }
     function stPerfTable(title, rows){
       if(!rows||!rows.length) return '';
-      var h='<div style="font-weight:700;font-size:13px;margin:10px 0 4px;color:#334155">'+title+'</div>';
-      h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px"><thead><tr>'
-        +['구분','총비용','클릭','구매매출','ROAS'].map(function(x){return '<th style="text-align:left;padding:4px 8px;background:#f8fafc;border-bottom:1px solid #e2e8f0">'+x+'</th>';}).join('')+'</tr></thead><tbody>';
-      h+=rows.map(function(r){ return '<tr><td style="padding:4px 8px">'+stEsc(r.name)+'</td><td style="padding:4px 8px">'+stWon(r.cost)+'</td><td style="padding:4px 8px">'+stNum(r.clk)+'</td><td style="padding:4px 8px">'+stWon(r.purchaseAmt)+'</td><td style="padding:4px 8px">'+stNum(r.roas)+'%</td></tr>'; }).join('');
-      return h+'</tbody></table>';
+      var h='<div style="font-weight:700;font-size:12.5px;margin:12px 0 5px;color:#334155">'+title+'</div>';
+      var trows=rows.map(function(r){ return [(stEsc(r.name)||'-'),stWon(r.cost),stNum(r.clk),stWon(r.purchaseAmt),stNum(r.roas)+'%']; });
+      return h+stTable(['구분','총비용','클릭','구매매출','ROAS'], trows, ['kw','r','r','r','r']);
     }
     function stRenderOneclick(j){
       var s=j.summary||{}; var sug=j.suggestions||{}; var k=j.kpi||{}; var perf=j.performance||{};
