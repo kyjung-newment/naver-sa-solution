@@ -5923,31 +5923,35 @@ const STRATEGY_META = {
 };
 
 function strategyControls(kind) {
+  // 라벨/입력이 줄바꿈되지 않도록 white-space:nowrap + pill 스타일
+  const pill = 'display:inline-flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;white-space:nowrap;padding:7px 13px;border:1px solid #e2e8f0;border-radius:8px;background:#fff';
+  const lbl = 'font-size:12px;color:#64748b;white-space:nowrap';
+  const sel = 'padding:7px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;min-width:112px;background:#fff';
   if (kind === 'upsell') {
-    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-      <span style="font-size:12px;color:#64748b">증액 트랙:</span>
-      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-track" value="hold_roas" checked> ROAS 유지 증액</label>
-      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-track" value="grow_volume"> 볼륨 성장(ROAS 최소화)</label>
+    return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="${lbl}">증액 트랙</span>
+      <label style="${pill}"><input type="radio" name="st-track" value="hold_roas" checked> ROAS 유지 증액</label>
+      <label style="${pill}"><input type="radio" name="st-track" value="grow_volume"> 볼륨 성장(ROAS 최소화)</label>
     </div>`;
   }
   if (kind === 'downsell') {
-    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-      <span style="font-size:12px;color:#64748b">감액 모드:</span>
-      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-mode" value="inefficiency" checked onchange="stToggleMode()"> 비효율 감액</label>
-      <label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="radio" name="st-mode" value="budget_target" onchange="stToggleMode()"> 재정 목표 감액</label>
-      <div id="st-target-box" style="display:none;gap:8px;align-items:center;font-size:13px">
-        <label>목표 절감 <input id="st-target-pct" type="number" value="10" min="1" max="90" style="width:56px;padding:4px 6px;border:1px solid #e2e8f0;border-radius:6px">%</label>
+    return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="${lbl}">감액 모드</span>
+      <label style="${pill}"><input type="radio" name="st-mode" value="inefficiency" checked onchange="stToggleMode()"> 비효율 감액</label>
+      <label style="${pill}"><input type="radio" name="st-mode" value="budget_target" onchange="stToggleMode()"> 재정 목표 감액</label>
+      <div id="st-target-box" style="display:none;gap:8px;align-items:center;font-size:13px;flex-wrap:wrap">
+        <label style="white-space:nowrap;color:#475569">목표 절감 <input id="st-target-pct" type="number" value="10" min="1" max="90" style="width:60px;padding:6px;border:1px solid #e2e8f0;border-radius:6px"> %</label>
         <span style="color:#94a3b8">또는</span>
-        <label>금액 <input id="st-target-amt" type="number" value="0" min="0" style="width:110px;padding:4px 6px;border:1px solid #e2e8f0;border-radius:6px">원</label>
+        <label style="white-space:nowrap;color:#475569">금액 <input id="st-target-amt" type="number" value="0" min="0" style="width:124px;padding:6px;border:1px solid #e2e8f0;border-radius:6px"> 원</label>
       </div>
     </div>`;
   }
   if (kind === 'discovery') {
     return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <span style="font-size:12px;color:#64748b">채널:</span>
-      <select id="st-channel" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"><option value="all">전체</option><option value="powerlink">파워링크</option><option value="shopping">쇼핑검색</option></select>
-      <span style="font-size:12px;color:#64748b">키워드 성격:</span>
-      <select id="st-character" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px"><option value="all">전체</option><option value="related">연관</option><option value="functional">기능성</option><option value="seasonal">시즌성</option><option value="local">지역성</option></select>
+      <span style="${lbl}">채널</span>
+      <select id="st-channel" style="${sel}"><option value="all">전체</option><option value="powerlink">파워링크</option><option value="shopping">쇼핑검색</option></select>
+      <span style="${lbl}">키워드 성격</span>
+      <select id="st-character" style="${sel}"><option value="all">전체</option><option value="related">연관</option><option value="functional">기능성</option><option value="seasonal">시즌성</option><option value="local">지역성</option></select>
     </div>`;
   }
   return ''; // oneclick: 기간만
@@ -5969,17 +5973,17 @@ function strategyPageContent(kind, selAccount) {
             <div style="font-size:12px;color:#94a3b8;margin-top:4px">광고주: <b>${(selAccount.name||'').replace(/</g,'&lt;')}</b></div>
           </div>
         </div>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:12px">
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:12px;color:#64748b">기간</span>
-            <select id="st-period" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px">
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span style="font-size:12px;color:#64748b;white-space:nowrap">기간</span>
+            <select id="st-period" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;min-width:112px;background:#fff">
               <option value="monthly">최근 30일</option>
               <option value="weekly">최근 7일</option>
               <option value="daily">어제</option>
             </select>
           </div>
           ${strategyControls(kind)}
-          <button class="btn btn-primary" id="st-run" onclick="stRun()" style="background:${meta.color};border-color:${meta.color}">${runLabel}</button>
+          <button class="btn btn-primary" id="st-run" onclick="stRun()" style="background:${meta.color};border-color:${meta.color};white-space:nowrap;flex-shrink:0;min-width:128px;margin-left:auto">${runLabel}</button>
         </div>
         <div id="st-result" style="margin-top:16px"></div>
       </div>
@@ -6003,7 +6007,7 @@ function strategyPageContent(kind, selAccount) {
       if(!ST_ACCOUNT){ stToast('광고주를 먼저 선택하세요.',true); return; }
       var btn=document.getElementById('st-run'); var res=document.getElementById('st-result');
       btn.disabled=true; var old=btn.textContent; btn.textContent='분석 중...';
-      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 데이터 수집 + 분석 중... 대용량 계정은 1~3분 걸릴 수 있어요. (이후 같은 계정·기간은 캐시로 빠르게 재분석)</div>';
+      res.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">⏳ 분석 중입니다...</div>';
       try{
         var r=await fetch(stEndpoint(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(stBody())});
         var j=await r.json(); if(!j.ok) throw new Error(j.error||'분석 실패');
@@ -6444,13 +6448,13 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       // 오른쪽 선택 칩
       var chips=p.fields.map(function(k,idx){ return csFieldChip(pi,k,idx); }).join('');
       if(!chips) chips='<div style="font-size:12px;color:#cbd5e1;padding:20px;text-align:center">왼쪽에서 항목을 클릭/드래그해 추가하세요</div>';
-      return '<div class="cs-panel" data-pi="'+pi+'" style="border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">'
-        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
-          +'<input class="cs-pname" value="'+escapeHtml(p.name||'')+'" placeholder="시트명 (예: 키워드 ROAS 분석)" style="padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;width:240px">'
-          +'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#64748b">'
-            +'정렬 <select class="cs-psort" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">'+sortOpts+'</select>'
-            +'행수 <input class="cs-plimit" type="number" value="'+(p.limit||50)+'" min="1" max="500" style="width:64px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px">'
-            +'<button class="btn btn-outline btn-sm" onclick="removePanel('+pi+')" style="font-size:11px;color:#dc2626;border-color:#fecaca">시트 삭제</button>'
+      return '<div class="cs-panel" data-pi="'+pi+'" style="border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:14px;background:#fff">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+          +'<input class="cs-pname" value="'+escapeHtml(p.name||'')+'" placeholder="시트명 (예: 키워드 ROAS 분석)" style="flex:1;min-width:200px;max-width:340px;padding:8px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px">'
+          +'<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#64748b;white-space:nowrap;flex-shrink:0;flex-wrap:wrap">'
+            +'<label style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">정렬 <select class="cs-psort" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;min-width:96px">'+sortOpts+'</select></label>'
+            +'<label style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">행수 <input class="cs-plimit" type="number" value="'+(p.limit||50)+'" min="1" max="500" style="width:68px;padding:6px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px"></label>'
+            +'<button class="btn btn-outline btn-sm" onclick="removePanel('+pi+')" style="font-size:11px;color:#dc2626;border-color:#fecaca;white-space:nowrap;flex-shrink:0;padding:6px 12px">시트 삭제</button>'
           +'</div>'
         +'</div>'
         +'<div style="display:grid;grid-template-columns:230px 1fr;gap:12px">'
