@@ -5929,7 +5929,10 @@ function strategyControls(kind) {
   const sel = 'padding:7px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;min-width:112px;background:#fff';
   if (kind === 'upsell') {
     return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <span style="${lbl}">증액 트랙</span>
+      <span style="${lbl}">채널</span>
+      <label style="${pill}"><input type="checkbox" class="st-channel" value="powerlink" checked> 파워링크</label>
+      <label style="${pill}"><input type="checkbox" class="st-channel" value="shopping" checked> 쇼핑검색</label>
+      <span style="${lbl};margin-left:8px">증액 트랙</span>
       <label style="${pill}"><input type="radio" name="st-track" value="hold_roas" checked> ROAS 유지 증액</label>
       <label style="${pill}"><input type="radio" name="st-track" value="grow_volume"> 볼륨 성장(ROAS 최소화)</label>
     </div>`;
@@ -5998,7 +6001,7 @@ function strategyPageContent(kind, selAccount) {
     function stEndpoint(){ return ST_KIND==='oneclick' ? '/smart-sa/api/strategy/oneclick' : '/smart-sa/api/strategy/'+ST_KIND; }
     function stBody(){
       var b={ accountId:ST_ACCOUNT, type:document.getElementById('st-period').value };
-      if(ST_KIND==='upsell'){ var t=document.querySelector('input[name=st-track]:checked'); b.track=t?t.value:'hold_roas'; }
+      if(ST_KIND==='upsell'){ var t=document.querySelector('input[name=st-track]:checked'); b.track=t?t.value:'hold_roas'; b.channels=Array.prototype.slice.call(document.querySelectorAll('.st-channel:checked')).map(function(c){return c.value;}); }
       if(ST_KIND==='downsell'){ var m=document.querySelector('input[name=st-mode]:checked'); b.mode=m?m.value:'inefficiency'; if(b.mode==='budget_target'){ b.targetPct=parseInt(document.getElementById('st-target-pct').value)||10; var amt=parseInt(document.getElementById('st-target-amt').value)||0; if(amt>0) b.targetAmt=amt; } }
       if(ST_KIND==='discovery'){ b.channel=document.getElementById('st-channel').value; b.character=document.getElementById('st-character').value; }
       return b;
@@ -6034,12 +6037,30 @@ function strategyPageContent(kind, selAccount) {
       if(ST_KIND==='discovery') return stRenderDiscovery(j);
       return stRenderOneclick(j);
     }
+    function stUpsellRows(items){
+      return (items||[]).map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stNum(it.clk),stNum(it.cvr)+'%',stWon(it.cpc),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">+'+stNum(it.addClicks)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>','<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b;font-size:11px">'+stEsc(it.reason)+'</span>']; });
+    }
+    function stUpsellSection(title, items){
+      var head='<div style="font-weight:700;font-size:14px;color:'+ST_COLOR+';margin:16px 0 6px">'+title+' <span style="font-weight:400;color:#94a3b8;font-size:12px">('+stNum((items||[]).length)+'건)</span></div>';
+      if(!items||!items.length) return head+'<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">대상 없음 (전환 0건·저효율 제외)</div>';
+      return head+stTable(['구분','캠페인','현재클릭','CVR','CPC','현재비용','현재ROAS','+클릭','추가투입','증액제안예산','예상상승매출','예상ROAS','근거'], stUpsellRows(items));
+    }
     function stRenderUpsell(j){
-      var s=j.summary||{}; var items=j.items||[];
-      var html=stHead(j.period,[['대상',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['예상 블렌디드 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||''));
-      var rows=items.map(function(it){ return ['<b>'+stEsc(it.name)+'</b>',stEsc(it.campaignName),stWon(it.cost),stNum(it.roas)+'%','<b style="color:'+ST_COLOR+'">'+stWon(it.recBudget)+'</b>',stWon(it.addSpend),'<b style="color:'+ST_COLOR+'">'+stWon(it.expRevenueUplift)+'</b>',stNum(it.expRoas)+'%','<span style="color:#64748b">'+stEsc(it.reason)+'</span>']; });
-      html+=stTable(['키워드','캠페인','현재비용','현재ROAS','증액제안예산','추가투입','예상상승매출','예상ROAS','근거'],rows);
-      return html+stCsvBtn();
+      var s=j.summary||{};
+      var html=stHead(j.period,[['대상 그룹',stNum(s.count)+'건'],['총 추가투입',stWon(s.totalAddSpend)],['총 예상상승매출',stWon(s.totalExpUplift)],['예상 블렌디드 ROAS',stNum(s.blendedExpRoas)+'%']],'트랙: '+(s.trackLabel||'')+' · 채널: '+((s.channels||[]).join(', ')||'전체'));
+      html+='<div style="margin:8px 0 14px"><button class="btn btn-primary btn-sm" onclick="stUpsellExcel()" id="st-upx" style="font-size:12px;background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 엑셀 상세 다운로드 (그룹·키워드·기기)</button></div>';
+      html+=stUpsellSection('① 그룹별 (증액 실행 단위)', j.groups);
+      html+=stUpsellSection('② 키워드 · 상품검색어별', j.keywords);
+      html+=stUpsellSection('③ 기기별 (PC/모바일, 계정 전체)', j.devices);
+      return html;
+    }
+    function stUpsellExcel(){
+      var type=document.getElementById('st-period').value;
+      var chs=Array.prototype.slice.call(document.querySelectorAll('.st-channel:checked')).map(function(c){return c.value;});
+      var t=document.querySelector('input[name=st-track]:checked'); var track=t?t.value:'hold_roas';
+      var url='/smart-sa/api/strategy/upsell-excel?accountId='+encodeURIComponent(ST_ACCOUNT)+'&type='+encodeURIComponent(type)+'&track='+encodeURIComponent(track)+'&channels='+encodeURIComponent(chs.join(','));
+      var a=document.createElement('a'); a.href=url; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      stToast('증액 상세 엑셀을 생성합니다. 잠시 후 다운로드됩니다.');
     }
     function stRenderDownsell(j){
       var s=j.summary||{}; var items=j.items||[];
@@ -7291,15 +7312,45 @@ async function loadStrategyAccount(req) {
 function strategyType(t) { return ['daily', 'weekly', 'monthly'].includes(t) ? t : 'monthly'; }
 
 // 증액 (Upselling)
+function normChannels(v) {
+  const arr = Array.isArray(v) ? v : (typeof v === 'string' ? v.split(',') : []);
+  return arr.map(c => String(c).trim()).filter(c => c === 'powerlink' || c === 'shopping');
+}
 router.post('/api/strategy/upsell', requireLogin, async (req, res) => {
   try {
     const { account, error, status } = await loadStrategyAccount(req);
     if (error) return res.status(status).json({ ok: false, error });
     const track = req.body.track === 'grow_volume' ? 'grow_volume' : 'hold_roas';
+    const channels = normChannels(req.body.channels);
     const { runStrategy } = require('../report/generator');
-    const r = await runStrategy(account, strategyType(req.body.type), 'upsell', { track });
-    res.json({ ok: true, period: r.period, items: r.items, summary: r.summary });
+    const r = await runStrategy(account, strategyType(req.body.type), 'upsell', { track, channels });
+    res.json({ ok: true, period: r.period, groups: r.groups, keywords: r.keywords, devices: r.devices, summary: r.summary });
   } catch (err) { console.error('증액 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 증액 다차원 엑셀 스트리밍 다운로드 (그룹별/키워드별/기기별)
+router.get('/api/strategy/upsell-excel', requireLogin, async (req, res) => {
+  const t = strategyType(req.query.type);
+  try {
+    const account = await db.getAccountById(req.query.accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+    if (account.has_sa === false) return res.status(400).send('SA 미활성 계정');
+    if (!account.customer_id) return res.status(400).send('Customer ID 미등록');
+    const creds = await db.getApiCredentials(req.session.userId, account.id);
+    if (!creds) return res.status(400).send('API 자격증명 미설정');
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+    const track = req.query.track === 'grow_volume' ? 'grow_volume' : 'hold_roas';
+    const channels = normChannels(req.query.channels);
+
+    const { generateUpsellExcel } = require('../report/generator');
+    const { buffer } = await generateUpsellExcel(enriched, t, { track, channels });
+
+    const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = `${safeName}_증액제안_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(Buffer.from(buffer));
+  } catch (err) { console.error('증액 엑셀 오류:', err.message); res.status(500).send('엑셀 생성 실패: ' + err.message); }
 });
 
 // 감액 (Downselling)

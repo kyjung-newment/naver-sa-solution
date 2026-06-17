@@ -21,12 +21,18 @@ const LOW_ROAS_MULT = 0.5;
 const RANK_ROOM = 1.5;
 const MAX_PER_CATEGORY = 40;
 const MIN_MONTHLY_VOL = 50;
+// ─── 기능별 사전 필터 (사용자 지정) ─────────────────────────────────
+const DOWNSELL_MIN_COST = 10000;        // 감액: 비용 1만원 미만 제외
+const DISCOVERY_SEED_MIN_ROAS = 300;    // 발굴: ROAS 300% 이상 키워드만 소스로
+const ONECLICK_MIN_CLICKS = 1;          // 원클릭: 클릭 1 미만 제외
 const UNRESOLVED_RE = /^(nkw|ncc|nad|nccad)[-_]/i;
 
 // 증액 트랙별 파라미터
+// growth=클릭수 증가율, cpcInflation=입찰 상향에 따른 한계 CPC 상승, cvrDecay=한계 전환율 감쇠
+// (광고비 증가 → 전환율 낮은 클릭도 유입 → ROAS·전환율 소폭 감소를 반영)
 const TRACK = {
-  hold_roas:   { incPct: 0.30, label: 'ROAS 유지 증액' },
-  grow_volume: { incPct: 0.80, label: '볼륨 성장(ROAS 최소화)' },
+  hold_roas:   { incPct: 0.30, growth: 0.30, cpcInflation: 1.05, cvrDecay: 0.90, label: 'ROAS 유지 증액' },
+  grow_volume: { incPct: 0.80, growth: 0.80, cpcInflation: 1.12, cvrDecay: 0.72, label: '볼륨 성장(ROAS 최소화)' },
 };
 
 // 키워드 성격 사전 (디스커버리 카테고리)
@@ -88,73 +94,93 @@ function benchmarks(data) {
 }
 
 // ─── 1) 증액 (Upselling) ────────────────────────────────────────────
-function baseUpsell(data, bench) {
-  const goodRoasBar = Math.max(GOOD_ROAS_FLOOR, bench.avgRoas * GOOD_ROAS_MULT);
-  const out = [];
-  for (const d of Object.values(data.byKeyword || {})) {
-    if (!d || (d.cost || 0) <= 0 || (d.clk || 0) < MIN_CLICKS_UPSELL) continue;
-    if ((d.purchaseCnt || 0) < 1) continue;
-    const efficient = (d.roas || 0) >= goodRoasBar;
-    const engaging = bench.avgCtr > 0 && (d.ctr || 0) >= bench.avgCtr * HIGH_CTR_MULT && (d.roas || 0) >= bench.avgRoas;
-    if (!efficient && !engaging) continue;
-    const it = kwItem(d);
-    it.room = (d.avgRank || 0) === 0 || (d.avgRank || 0) > RANK_ROOM;
-    it.score = (d.roas || 0) * (d.cost || 0);
-    out.push(it);
-  }
-  out.sort((a, b) => b.score - a.score);
-  return out;
+// 선택 채널 정규화 ('powerlink'/'shopping' 또는 한글 → 캠페인유형 라벨 배열)
+function normalizeChannels(channels) {
+  if (!Array.isArray(channels) || channels.length === 0) return ['파워링크', '쇼핑검색'];
+  const map = { powerlink: '파워링크', shopping: '쇼핑검색', '파워링크': '파워링크', '쇼핑검색': '쇼핑검색' };
+  const out = channels.map(c => map[c]).filter(Boolean);
+  return out.length ? out : ['파워링크', '쇼핑검색'];
 }
 
-// 트랙별 증액 투영 (증액 예산 / 예상 상승 매출 / 예상 ROAS)
-function projectUpsell(it, track, bench) {
-  const C = it.cost || 0, A = it.purchaseAmt || 0, R = it.roas || 0;
+// 증액 투영 (클릭수 증가 × CPC × 전환율 기반, 한계 전환율 감쇠로 ROAS 소폭 하락)
+// 필터: 전환수 0 제외 (전환 데이터가 있어야 AOV·전환율 추정 가능)
+function projectUpsellItem(d, track, key) {
+  const C = d.clk || 0;                 // 현재 클릭수
+  const cost = d.cost || 0;
+  const cv = d.purchaseCnt || 0;        // 현재 전환수
+  const R = d.purchaseAmt || 0;         // 현재 매출
+  const cpc = C > 0 ? (cost / C) : (d.cpc || 0);
+  const cvr = C > 0 ? (cv / C) : 0;     // 현재 전환율
+  const aov = cv > 0 ? (R / cv) : 0;    // 전환당 매출(AOV)
   const p = TRACK[track] || TRACK.hold_roas;
-  const addSpend = Math.round(C * p.incPct);
-  let expUplift, expRoas, marginalRoas;
-  if (track === 'grow_volume') {
-    // 한계 ROAS = max(계정평균, 150%, 현재의 60%) → 추가 예산은 최소 효율 유지
-    marginalRoas = Math.max(bench.avgRoas, 150, Math.round(R * 0.6));
-    expUplift = Math.round(addSpend * marginalRoas / 100);
-    const newCost = C + addSpend, newRev = A + expUplift;
-    expRoas = newCost > 0 ? Math.round(newRev / newCost * 100) : 0;
-  } else {
-    // ROAS 유지 → 매출도 비례 증가
-    marginalRoas = R;
-    expUplift = Math.round(A * p.incPct);
-    expRoas = R;
-  }
+
+  const addClicks = Math.round(C * p.growth);          // 클릭수 증가
+  const marginalCpc = Math.round(cpc * p.cpcInflation); // 입찰 상향 → 한계 CPC 상승
+  const addSpend = addClicks * marginalCpc;            // 추가 투입(=증가 클릭 × 한계 CPC)
+  const marginalCvr = cvr * p.cvrDecay;                // 한계 전환율(소폭 감소)
+  const addConv = addClicks * marginalCvr;             // 추가 전환수(추정)
+  const uplift = Math.round(addConv * aov);            // 예상 상승 매출
+  const newCost = cost + addSpend, newRev = R + uplift;
+  const expRoas = newCost > 0 ? Math.round(newRev / newCost * 100) : 0;
+
   return {
-    ...it,
+    name: d.name || key, campaignName: d.campaignName || '', adgroupName: d.adgroupName || '', campaignType: d.campaignType || '',
+    clk: C, cost, cpc: Math.round(cpc), cvr: +(cvr * 100).toFixed(2), roas: d.roas || 0, purchaseCnt: cv, purchaseAmt: R,
+    addClicks, marginalCpc, addSpend, recBudget: newCost,
+    addConversions: +addConv.toFixed(1), expRevenueUplift: uplift, expRoas,
     track, trackLabel: p.label,
-    currentCost: C, currentRoas: R,
-    addSpend, recBudget: C + addSpend,
-    expRevenueUplift: expUplift, expRoas, marginalRoas,
-    action: track === 'grow_volume'
-      ? `예산 +${Math.round(p.incPct * 100)}% (볼륨 성장)`
-      : `예산 +${Math.round(p.incPct * 100)}% (ROAS 유지)`,
-    reason: track === 'grow_volume'
-      ? `ROAS ${fmt(R)}% 우수 → 추가예산 ${won(addSpend)} 투입 시 한계ROAS ${fmt(marginalRoas)}% 가정, 매출 +${won(expUplift)} (블렌디드 ROAS ${fmt(expRoas)}%)`
-      : `ROAS ${fmt(R)}% 유지하며 예산 ${won(addSpend)} 증액 → 매출 +${won(expUplift)} 예상`,
+    // 호환 필드
+    currentCost: cost, currentRoas: d.roas || 0,
+    action: `클릭 +${fmt(addClicks)}회(입찰 상향) → 추가비용 ${won(addSpend)}`,
+    reason: `현재 CVR ${(cvr * 100).toFixed(2)}% · CPC ${won(Math.round(cpc))} 기준, 클릭 +${fmt(addClicks)}회 시 한계전환율 ${(marginalCvr * 100).toFixed(2)}%(소폭↓) 가정 → 매출 +${won(uplift)}, 예상 ROAS ${expRoas}% (현재 ${fmt(d.roas || 0)}%)`,
+    score: uplift,
   };
 }
 
+// 차원 소스에서 증액 후보 생성 (전환수 0 제외 + 성과 우수=계정평균 ROAS 이상)
+function buildUpsellDim(src, track, bench, opts = {}) {
+  const out = [];
+  for (const [k, d] of Object.entries(src || {})) {
+    if (!d) continue;
+    if ((d.purchaseCnt || 0) <= 0) continue;          // 증액 필터: 전환 0 제외
+    if ((d.clk || 0) < MIN_CLICKS_UPSELL) continue;
+    if ((d.cost || 0) <= 0) continue;
+    if (bench.avgRoas > 0 && (d.roas || 0) < bench.avgRoas) continue; // 성과 우수만
+    out.push(projectUpsellItem(d, track, k));
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, opts.limit || MAX_PER_CATEGORY);
+}
+
+function sumUpsell(items) {
+  const totalAddSpend = items.reduce((s, x) => s + (x.addSpend || 0), 0);
+  const totalExpUplift = items.reduce((s, x) => s + (x.expRevenueUplift || 0), 0);
+  const currentCost = items.reduce((s, x) => s + (x.cost || 0), 0);
+  const currentPurchaseAmt = items.reduce((s, x) => s + (x.purchaseAmt || 0), 0);
+  const blendedExpRoas = (currentCost + totalAddSpend) > 0
+    ? Math.round((currentPurchaseAmt + totalExpUplift) / (currentCost + totalAddSpend) * 100) : 0;
+  return { count: items.length, totalAddSpend, totalExpUplift, currentCost, currentPurchaseAmt, blendedExpRoas };
+}
+
+// 그룹/키워드(상품검색어)/기기 차원별 증액 분석 (채널 선택)
 function analyzeUpsell(data, opts = {}) {
   const bench = benchmarks(data);
   const track = TRACK[opts.track] ? opts.track : 'hold_roas';
-  const base = baseUpsell(data, bench).slice(0, MAX_PER_CATEGORY);
-  const items = base.map(it => projectUpsell(it, track, bench));
-  const summary = {
-    track, trackLabel: (TRACK[track] || TRACK.hold_roas).label,
-    count: items.length,
-    totalAddSpend: items.reduce((s, x) => s + (x.addSpend || 0), 0),
-    totalExpUplift: items.reduce((s, x) => s + (x.expRevenueUplift || 0), 0),
-    currentCost: items.reduce((s, x) => s + (x.currentCost || 0), 0),
-    currentPurchaseAmt: items.reduce((s, x) => s + (x.purchaseAmt || 0), 0),
-  };
-  summary.blendedExpRoas = (summary.currentCost + summary.totalAddSpend) > 0
-    ? Math.round((summary.currentPurchaseAmt + summary.totalExpUplift) / (summary.currentCost + summary.totalAddSpend) * 100) : 0;
-  return { items, summary, bench };
+  const channels = normalizeChannels(opts.channels);
+  const inCh = (d) => channels.includes(d.campaignType);
+  const filt = (src) => Object.fromEntries(Object.entries(src || {}).filter(([, d]) => inCh(d)));
+
+  const groups = buildUpsellDim(filt(data.byAdgroup), track, bench);
+  const keywords = buildUpsellDim(filt(data.byKeyword), track, bench);
+  // 기기별: 계정 전체(채널 분리 미보유) — PC/모바일 라벨 부여
+  const devSrc = {};
+  for (const [k, d] of Object.entries(data.byDevice || {})) {
+    devSrc[k] = { ...d, name: (k === 'PC' || k === 'P') ? 'PC' : '모바일', campaignType: '' };
+  }
+  const devices = buildUpsellDim(devSrc, track, { avgRoas: 0 }, { limit: 4 }); // 기기는 ROAS 필터 없이
+
+  const summary = Object.assign({ track, trackLabel: (TRACK[track] || TRACK.hold_roas).label, channels }, sumUpsell(groups));
+  return { groups, keywords, devices, items: groups, summary, bench };
 }
 
 // ─── 2) 감액 (Downselling) ──────────────────────────────────────────
@@ -162,7 +188,7 @@ function analyzeUpsell(data, opts = {}) {
 function downsellInefficiency(data, bench) {
   const out = [];
   for (const d of Object.values(data.byKeyword || {})) {
-    if (!d || (d.cost || 0) <= 0 || (d.clk || 0) < MIN_CLICKS_DOWNSELL) continue;
+    if (!d || (d.cost || 0) < DOWNSELL_MIN_COST || (d.clk || 0) < MIN_CLICKS_DOWNSELL) continue; // 감액 필터: 비용 1만원 미만 제외
     const wasteful = (d.purchaseCnt || 0) === 0;
     const lowEff = (d.roas || 0) > 0 && bench.avgRoas > 0 && (d.roas || 0) < bench.avgRoas * LOW_ROAS_MULT && (d.cost || 0) >= bench.avgCpc * 10;
     if (!wasteful && !lowEff) continue;
@@ -191,7 +217,7 @@ function downsellBudgetTarget(data, bench, opts) {
   const target = (opts.targetAmt && opts.targetAmt > 0)
     ? opts.targetAmt
     : Math.round(totalCost * (Math.max(1, Math.min(90, opts.targetPct || 10)) / 100));
-  const kws = Object.values(data.byKeyword || {}).filter(d => (d.cost || 0) > 0);
+  const kws = Object.values(data.byKeyword || {}).filter(d => (d.cost || 0) >= DOWNSELL_MIN_COST); // 비용 1만원 미만 제외
   // ROAS 오름차순(낮은 효율 먼저), 동률이면 비용 큰 것 먼저
   kws.sort((a, b) => (a.roas || 0) - (b.roas || 0) || (b.cost || 0) - (a.cost || 0));
   const items = []; let saved = 0, lostRev = 0;
@@ -278,8 +304,9 @@ async function discoveryEnrich(data, client, registeredSet, alreadySet) {
   const out = [];
   // 채널별 seed: 전환 우수 등록 키워드(텍스트)
   const seedsByChannel = { powerlink: [], shopping: [] };
+  // 발굴 필터: ROAS 300% 이상 키워드만 소스(seed)로 사용
   const kwSorted = Object.values(data.byKeyword || {})
-    .filter(d => d && d.name && !UNRESOLVED_RE.test(d.name) && (d.purchaseCnt || 0) >= 1)
+    .filter(d => d && d.name && !UNRESOLVED_RE.test(d.name) && (d.purchaseCnt || 0) >= 1 && (d.roas || 0) >= DISCOVERY_SEED_MIN_ROAS)
     .sort((a, b) => (b.purchaseAmt || 0) - (a.purchaseAmt || 0));
   for (const d of kwSorted) {
     const ch = channelOf(d.campaignType);
@@ -355,12 +382,18 @@ async function analyzeDiscovery(data, client, opts = {}) {
 // ─── 4) 종합 (원클릭 / 번들 엑셀용) ─────────────────────────────────
 // 기존 호환: upsell/downsell/expansion 배열 + summary 반환 (upsell엔 투영 포함)
 async function analyzeAccount(data, client, opts = {}) {
-  const up = analyzeUpsell(data, { track: opts.track || 'hold_roas' });
-  const down = analyzeDownsell(data, { mode: 'inefficiency' });
-  const disc = await analyzeDiscovery(data, client, { registeredKeywords: opts.registeredKeywords, channel: 'all', character: 'all', skipTool: opts.skipTool });
+  // 원클릭 필터: 클릭 1 미만 데이터 제외
+  const fdata = {
+    ...data,
+    byKeyword: Object.fromEntries(Object.entries(data.byKeyword || {}).filter(([, d]) => (d.clk || 0) >= ONECLICK_MIN_CLICKS)),
+    byAdgroup: Object.fromEntries(Object.entries(data.byAdgroup || {}).filter(([, d]) => (d.clk || 0) >= ONECLICK_MIN_CLICKS)),
+  };
+  const up = analyzeUpsell(fdata, { track: opts.track || 'hold_roas', channels: ['파워링크', '쇼핑검색'] });
+  const down = analyzeDownsell(fdata, { mode: 'inefficiency' });
+  const disc = await analyzeDiscovery(fdata, client, { registeredKeywords: opts.registeredKeywords, channel: 'all', character: 'all', skipTool: opts.skipTool });
 
   const summary = {
-    upsellCount: up.items.length,
+    upsellCount: up.groups.length,
     downsellCount: down.items.length,
     expansionCount: disc.items.length,
     upsellCurrentCost: up.summary.currentCost,
@@ -371,8 +404,8 @@ async function analyzeAccount(data, client, opts = {}) {
     expansionConvertingQueries: disc.summary.convertingQueries,
     expansionToolIdeas: disc.summary.toolIdeas,
   };
-  // expansion 아이템을 excelReport가 쓰는 필드명으로 유지(keyword/source/monthly*/compIdx/action/reason/currentClk/currentPurchase)
-  return { upsell: up.items, downsell: down.items, expansion: disc.items, meta: up.bench, summary };
+  // 원클릭 번들 엑셀의 증액 시트는 '그룹 단위'를 사용
+  return { upsell: up.groups, downsell: down.items, expansion: disc.items, meta: up.bench, summary };
 }
 
 module.exports = {

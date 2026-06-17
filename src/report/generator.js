@@ -1145,4 +1145,17 @@ async function runStrategy(account, type, kind, opts = {}) {
   throw new Error('알 수 없는 전략: ' + kind);
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy };
+// 증액 다차원 엑셀 (그룹별/키워드별/기기별) 스트리밍용 버퍼
+async function generateUpsellExcel(account, type, opts = {}) {
+  const r = await collectStrategyData(account, type);
+  const { analyzeUpsell } = require('./suggestions');
+  const { buildUpsellExcel } = require('../email/strategyExcel');
+  const up = analyzeUpsell(r.data, opts);
+  const buffer = await buildUpsellExcel({
+    accountName: account.name, period: r.period, track: up.summary.track, channels: up.summary.channels,
+    groups: up.groups, keywords: up.keywords, devices: up.devices,
+  });
+  return { buffer, period: r.period };
+}
+
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel };
