@@ -756,8 +756,10 @@ async function generateAndSend(account, type, customRange, opts) {
       return { since: prevSince.toISOString().slice(0,10), until: prevUntil.toISOString().slice(0,10) };
     }
     let prevData = null;
+    // 비교기간: opts.comparePeriod로 직접 지정 가능, 없으면 동일길이 직전기간 자동
     const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null
-      : (customRange && customRange.since && customRange.until ? getCustomPrevRange2(customRange) : getPrevDateRange(type, dateRange));
+      : ((opts.comparePeriod && opts.comparePeriod.since && opts.comparePeriod.until) ? opts.comparePeriod
+        : (customRange && customRange.since && customRange.until ? getCustomPrevRange2(customRange) : getPrevDateRange(type, dateRange)));
     if (prevRange) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
@@ -872,8 +874,10 @@ async function collectReportData(account, type, customRange, opts) {
     const prevSince = new Date(prevUntil); prevSince.setDate(prevSince.getDate() - (diffDays - 1));
     return { since: prevSince.toISOString().slice(0,10), until: prevUntil.toISOString().slice(0,10) };
   }
+  // 비교기간: opts.comparePeriod로 직접 지정 가능(예: 5.1~5.14), 없으면 동일길이 직전기간 자동
   const prevRange = (opts.skipPrev || process.env.SKIP_PREV_DATA === '1') ? null
-    : (customRange && customRange.since && customRange.until ? getCustomPrevRange(customRange) : getPrevDateRange(type, dateRange));
+    : ((opts.comparePeriod && opts.comparePeriod.since && opts.comparePeriod.until) ? opts.comparePeriod
+      : (customRange && customRange.since && customRange.until ? getCustomPrevRange(customRange) : getPrevDateRange(type, dateRange)));
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
@@ -1214,4 +1218,16 @@ async function generateUpsellExcel(account, type, opts = {}) {
   return { buffer, period: r.period };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel };
+// 감액 엑셀 (키워드/검색어별 + 기기별) 스트리밍용 버퍼
+async function generateDownsellExcel(account, type, opts = {}) {
+  const r = await collectStrategyData(account, type);
+  const { analyzeDownsell } = require('./suggestions');
+  const { buildDownsellExcel } = require('../email/strategyExcel');
+  const d = analyzeDownsell(r.data, opts);
+  const buffer = await buildDownsellExcel({
+    accountName: account.name, period: r.period, summary: d.summary, items: d.items, devices: d.devices,
+  });
+  return { buffer, period: r.period };
+}
+
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel };

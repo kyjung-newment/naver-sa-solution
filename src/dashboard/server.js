@@ -6103,6 +6103,7 @@ function strategyPageContent(kind, selAccount) {
         ? [['목표 절감액',stWon(s.targetReduction)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard,['대상',stNum(s.count)+'건']]
         : [['대상',stNum(s.count)+'건'],['총 감액 제안액',stWon(s.totalCutSpend)],['예상 매출손실',stWon(s.estRevenueLoss)],roasCard];
       var html=stHead(j.period,cards, (s.mode==='budget_target'?'모드: 재정 목표 감액 (ROAS 낮은 순 컷 → 손실 최소)':'모드: 비효율 감액')+' · 감액 적용 시 전체 ROAS '+stNum(s.currentRoas)+'%→'+stNum(s.projectedRoas)+'%');
+      html+='<div style="margin:6px 0 8px"><button class="btn btn-primary btn-sm" onclick="stDownsellExcel()" id="st-dnx" style="background:'+ST_COLOR+';border-color:'+ST_COLOR+'">📊 엑셀 상세 다운로드 (키워드·기기)</button></div>';
       // 검색어(키워드) 다운셀링 — 캠페인유형/캠페인/광고그룹/검색어
       var dsAlign=['l','l','l','kw','r','r','r','r','r','reason'];
       var rows=items.map(function(it){ return [stEsc(it.campaignType)||'-',stEsc(it.campaignName)||'-',stEsc(it.adgroupName)||'-',(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; });
@@ -6113,7 +6114,15 @@ function strategyPageContent(kind, selAccount) {
       html+='<div class="st-section" style="color:'+ST_COLOR+'">② 기기별 비효율 <span class="st-count">매체이름은 SA API 미제공 → 기기로 대체</span></div>';
       if(!dev.length) html+='<div class="st-empty">대상 없음</div>';
       else html+=stTable(['기기','현재비용','ROAS','구매수','감액제안액','예상매출손실','근거'], dev.map(function(it){ return [(stEsc(it.name)||'-'),stWon(it.cost),stNum(it.roas)+'%',stNum(it.purchaseCnt),'<b style="color:'+ST_COLOR+'">'+stWon(it.cutSpend)+'</b>',stWon(it.lostRevenue),stEsc(it.reason)]; }), ['kw','r','r','r','r','r','reason']);
-      return html+stCsvBtn();
+      return html;
+    }
+    function stDownsellExcel(){
+      var type=document.getElementById('st-period').value;
+      var m=document.querySelector('input[name=st-mode]:checked'); var mode=m?m.value:'inefficiency';
+      var url='/smart-sa/api/strategy/downsell-excel?accountId='+encodeURIComponent(ST_ACCOUNT)+'&type='+encodeURIComponent(type)+'&mode='+encodeURIComponent(mode);
+      if(mode==='budget_target'){ url+='&targetPct='+(parseInt((document.getElementById('st-target-pct')||{}).value)||10); var amt=parseInt((document.getElementById('st-target-amt')||{}).value)||0; if(amt>0) url+='&targetAmt='+amt; }
+      var a=document.createElement('a'); a.href=url; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      stToast('감액 상세 엑셀을 생성합니다. 잠시 후 다운로드됩니다.');
     }
     function stRenderDiscovery(j){
       var s=j.summary||{}; var items=j.items||[]; var cm={functional:'기능성',seasonal:'시즌성',local:'지역성'};
@@ -6749,62 +6758,94 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       // kind: 'sa' or 'da'
       var existing = document.getElementById('custom-report-modal');
       if (existing) existing.remove();
-      var today = new Date(); var end = new Date(today); end.setDate(end.getDate()-1);
-      var start = new Date(today); start.setDate(start.getDate()-30);
-      var fmt = function(d){return d.toISOString().slice(0,10);};
+      var pad=function(n){return (n<10?'0':'')+n;};
+      var fmt=function(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());};
+      var mdot=function(d){return (d.getMonth()+1)+'.'+d.getDate();};
+      var today=new Date(); var endDef=new Date(today); endDef.setDate(today.getDate()-1); var startDef=new Date(today); startDef.setDate(today.getDate()-30);
+      // 월간 옵션(최근 12개월)
+      var monthOpts=''; for(var i=0;i<12;i++){ var mm=new Date(today.getFullYear(), today.getMonth()-i, 1); monthOpts+='<option value="'+mm.getFullYear()+'-'+pad(mm.getMonth()+1)+'">'+mm.getFullYear()+'년 '+(mm.getMonth()+1)+'월</option>'; }
+      // 주간 옵션(최근 12주, 월요일 시작)
+      var dow=today.getDay(); var thisMon=new Date(today); thisMon.setDate(today.getDate()-((dow+6)%7));
+      var weekOpts=''; for(var j=1;j<=12;j++){ var wm=new Date(thisMon); wm.setDate(thisMon.getDate()-7*j); var ws=new Date(wm); var we=new Date(wm); we.setDate(wm.getDate()+6); weekOpts+='<option value="'+fmt(wm)+'">'+mdot(ws)+'주 ('+mdot(ws)+'~'+mdot(we)+')</option>'; }
       var modal = document.createElement('div');
       modal.id = 'custom-report-modal';
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99999;display:flex;align-items:center;justify-content:center';
-      var title = (kind==='da' ? 'DA' : 'SA') + ' 맞춤 리포트';
+      var title = (kind==='da' ? 'DA' : 'SA') + ' 기간 리포트';
       var color = kind==='da' ? '#9f1239' : '#6366f1';
-      modal.innerHTML = '<div style="background:#fff;width:480px;max-width:92vw;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden">'
-        + '<div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><div style="font-size:16px;font-weight:700">'+title+'</div><button id="cr-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b">×</button></div>'
-        + '<div style="padding:20px 22px"><p style="color:#64748b;font-size:13px;margin:0 0 14px">리포트는 <strong>월간 리포트와 동일한 폼</strong>으로 생성됩니다 (전기간 비교 포함).</p>'
-        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px">'
-        + '<div><label style="font-size:12px;color:#475569;font-weight:600;display:block;margin-bottom:4px">시작일</label><input type="date" id="cr-start" value="'+fmt(start)+'" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px"></div>'
-        + '<div><label style="font-size:12px;color:#475569;font-weight:600;display:block;margin-bottom:4px">종료일</label><input type="date" id="cr-end" value="'+fmt(end)+'" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px"></div>'
+      var inp='width:100%;padding:9px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px';
+      var lbl='font-size:12px;color:#475569;font-weight:600;display:block;margin-bottom:5px';
+      function tabBtn(id,txt){ return '<button id="'+id+'" class="cr-tab" style="flex:1;padding:8px;border:none;background:transparent;font-size:13px;font-weight:600;color:#64748b;cursor:pointer;border-radius:7px">'+txt+'</button>'; }
+      modal.innerHTML = '<div style="background:#fff;width:500px;max-width:92vw;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,0.22);overflow:hidden">'
+        + '<div style="padding:18px 22px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center"><div style="font-size:16px;font-weight:700">'+title+'</div><button id="cr-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#94a3b8">×</button></div>'
+        + '<div style="padding:20px 22px">'
+        + '<div style="display:flex;gap:3px;background:#f5f6fa;border-radius:9px;padding:4px;margin-bottom:16px">'+tabBtn('cr-tab-month','월간')+tabBtn('cr-tab-week','주간')+tabBtn('cr-tab-custom','맞춤 기간')+'</div>'
+        + '<div id="cr-panel-month"><label style="'+lbl+'">대상 월</label><select id="cr-month" style="'+inp+'">'+monthOpts+'</select></div>'
+        + '<div id="cr-panel-week" style="display:none"><label style="'+lbl+'">대상 주 (월~일)</label><select id="cr-week" style="'+inp+'">'+weekOpts+'</select></div>'
+        + '<div id="cr-panel-custom" style="display:none;grid-template-columns:1fr 1fr;gap:12px">'
+        + '<div><label style="'+lbl+'">시작일</label><input type="date" id="cr-start" value="'+fmt(startDef)+'" style="'+inp+'"></div>'
+        + '<div><label style="'+lbl+'">종료일</label><input type="date" id="cr-end" value="'+fmt(endDef)+'" style="'+inp+'"></div>'
         + '</div>'
+        + '<div id="cr-note" style="font-size:12px;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:10px 12px;margin:14px 0"></div>'
         + '<div style="display:flex;gap:8px">'
         + '<button id="cr-excel" class="btn btn-outline" style="flex:1">📥 엑셀 다운로드</button>'
-        + '<button id="cr-send" class="btn btn-primary" style="flex:1;background:'+color+'">📧 이메일 발송</button>'
+        + '<button id="cr-send" class="btn btn-primary" style="flex:1;background:'+color+';border-color:'+color+'">📧 이메일 발송</button>'
         + '</div></div></div>';
       document.body.appendChild(modal);
+      var crMode='month';
+      function compute(){
+        if(crMode==='month'){ var v=document.getElementById('cr-month').value.split('-'); var y=+v[0],m=+v[1]-1;
+          return {s:fmt(new Date(y,m,1)),e:fmt(new Date(y,m+1,0)),cs:fmt(new Date(y,m-1,1)),ce:fmt(new Date(y,m,0)),clabel:'전월'}; }
+        if(crMode==='week'){ var mon=new Date(document.getElementById('cr-week').value+'T00:00:00'); var e=new Date(mon); e.setDate(mon.getDate()+6); var ps=new Date(mon); ps.setDate(mon.getDate()-7); var pe=new Date(mon); pe.setDate(mon.getDate()-1);
+          return {s:fmt(mon),e:fmt(e),cs:fmt(ps),ce:fmt(pe),clabel:'전주'}; }
+        var s=document.getElementById('cr-start').value,e2=document.getElementById('cr-end').value;
+        if(!s||!e2||s>e2) return null;
+        return {s:s,e:e2,cs:'',ce:'',clabel:'동일길이 직전기간'};
+      }
+      function updateNote(){ var c=compute(); var n=document.getElementById('cr-note');
+        if(!c){ n.innerHTML='기간을 선택하세요.'; return; }
+        var cmp = c.cs ? (c.cs.replace(/-/g,'.')+'~'+c.ce.replace(/-/g,'.')) : '(자동 계산)';
+        n.innerHTML='분석: <b>'+c.s.replace(/-/g,'.')+'~'+c.e.replace(/-/g,'.')+'</b> &nbsp;·&nbsp; 비교('+c.clabel+'): <b>'+cmp+'</b>'; }
+      function setMode(m){ crMode=m;
+        document.getElementById('cr-panel-month').style.display=(m==='month'?'block':'none');
+        document.getElementById('cr-panel-week').style.display=(m==='week'?'block':'none');
+        document.getElementById('cr-panel-custom').style.display=(m==='custom'?'grid':'none');
+        ['month','week','custom'].forEach(function(x){ var b=document.getElementById('cr-tab-'+x); var on=(x===m); b.style.background=on?'#fff':'transparent'; b.style.color=on?'#111827':'#64748b'; b.style.boxShadow=on?'0 1px 3px rgba(0,0,0,.08)':'none'; });
+        updateNote();
+      }
+      document.getElementById('cr-tab-month').onclick=function(){setMode('month');};
+      document.getElementById('cr-tab-week').onclick=function(){setMode('week');};
+      document.getElementById('cr-tab-custom').onclick=function(){setMode('custom');};
+      ['cr-month','cr-week','cr-start','cr-end'].forEach(function(id){ var el=document.getElementById(id); if(el) el.onchange=updateNote; });
       document.getElementById('cr-close').onclick = function(){ modal.remove(); };
       modal.addEventListener('click', function(e){ if (e.target===modal) modal.remove(); });
-      document.getElementById('cr-excel').onclick = function(){
-        var s = document.getElementById('cr-start').value; var e = document.getElementById('cr-end').value;
-        if (!s||!e) return toast('시작/종료일을 선택해주세요.', true);
-        if (s>e) return toast('시작일이 종료일보다 큽니다.', true);
-        modal.remove();
-        if (kind==='da') downloadDaReportCustom(s, e);
-        else downloadSaReportCustom(s, e);
-      };
-      document.getElementById('cr-send').onclick = function(){
-        var s = document.getElementById('cr-start').value; var e = document.getElementById('cr-end').value;
-        if (!s||!e) return toast('시작/종료일을 선택해주세요.', true);
-        if (s>e) return toast('시작일이 종료일보다 큽니다.', true);
-        modal.remove();
-        if (kind==='da') triggerDaReportCustom(s, e);
-        else triggerSaReportCustom(s, e);
-      };
+      setMode('month');
+      function go(send){ var c=compute(); if(!c){ toast('기간을 올바르게 선택해주세요.',true); return; } modal.remove();
+        if(kind==='da'){ if(send) triggerDaReportCustom(c.s,c.e); else downloadDaReportCustom(c.s,c.e); }
+        else { if(send) triggerSaReportCustom(c.s,c.e,c.cs,c.ce); else downloadSaReportCustom(c.s,c.e,c.cs,c.ce); } }
+      document.getElementById('cr-excel').onclick=function(){ go(false); };
+      document.getElementById('cr-send').onclick=function(){ go(true); };
     }
 
-    async function downloadSaReportCustom(s, e){
-      showReportOverlay('맞춤 SA 리포트 엑셀 생성 중...');
+    async function downloadSaReportCustom(s, e, cs, ce){
+      showReportOverlay('기간 SA 리포트 엑셀 생성 중...');
       try {
-        const res = await fetch('/smart-sa/api/report/download-excel?type=monthly&accountId='+reportAccountId+'&startDate='+s+'&endDate='+e+'&custom=1');
+        var url='/smart-sa/api/report/download-excel?type=monthly&accountId='+reportAccountId+'&startDate='+s+'&endDate='+e+'&custom=1';
+        if(cs&&ce) url+='&compareStart='+cs+'&compareEnd='+ce;
+        const res = await fetch(url);
         if (!res.ok) throw new Error(await res.text() || '서버 오류');
-        const blob = await res.blob(); triggerDownload(blob, res, '맞춤_SA_리포트.xlsx');
-        toast('SA 맞춤 리포트 다운로드 시작');
+        const blob = await res.blob(); triggerDownload(blob, res, 'SA_리포트.xlsx');
+        toast('SA 리포트 다운로드 시작');
       } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
     }
-    async function triggerSaReportCustom(s, e){
-      showReportOverlay('맞춤 SA 리포트 생성 + 발송 중...');
+    async function triggerSaReportCustom(s, e, cs, ce){
+      showReportOverlay('기간 SA 리포트 생성 + 발송 중...');
       try {
-        const res = await fetch('/smart-sa/api/report/trigger', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type:'monthly', accountId:reportAccountId, startDate:s, endDate:e, custom:true})});
+        var body={type:'monthly', accountId:reportAccountId, startDate:s, endDate:e, custom:true};
+        if(cs&&ce){ body.compareStart=cs; body.compareEnd=ce; }
+        const res = await fetch('/smart-sa/api/report/trigger', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
         const t = await res.text(); let json; try{json=JSON.parse(t);}catch(_){throw new Error('서버 응답 오류');}
         if (!json.ok) throw new Error(json.error);
-        toast(json.message || 'SA 맞춤 리포트 발송 완료!');
+        toast(json.message || 'SA 리포트 발송 완료!');
       } catch(err){ toast(err.message, true); } finally { hideReportOverlay(); }
     }
     async function downloadDaReportCustom(s, e){
@@ -7089,7 +7130,8 @@ router.get('/api/report/download-excel', requireLogin, async (req, res) => {
     const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
     const { generateExcelBuffer } = require('../report/generator');
     const customRange = (req.query.custom && req.query.startDate && req.query.endDate) ? { since: req.query.startDate, until: req.query.endDate } : null;
-    const { buffer } = await generateExcelBuffer(enriched, type, customRange);
+    const comparePeriod = (req.query.compareStart && req.query.compareEnd) ? { since: req.query.compareStart, until: req.query.compareEnd } : null;
+    const { buffer } = await generateExcelBuffer(enriched, type, customRange, { comparePeriod });
 
     const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -7201,9 +7243,10 @@ router.post('/api/report/update-emails', requireLogin, async (req, res) => {
 });
 
 router.post('/api/report/trigger', requireLogin, async (req, res) => {
-  const { type, accountId, custom, startDate, endDate } = req.body;
+  const { type, accountId, custom, startDate, endDate, compareStart, compareEnd } = req.body;
   if (!['daily','weekly','monthly'].includes(type)) return res.status(400).json({ ok:false, error:'잘못된 타입' });
   const customRange = (custom && startDate && endDate) ? { since: startDate, until: endDate } : null;
+  const comparePeriod = (compareStart && compareEnd) ? { since: compareStart, until: compareEnd } : null;
   const account = await db.getAccountById(accountId, req.session.userId);
   if (!account) return res.status(404).json({ ok:false, error:'광고주 없음' });
 
@@ -7233,7 +7276,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   try {
     // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (단, 맞춤 기간은 비교 데이터 필수이므로 항상 prev 가져옴)
     const skipPrev = customRange ? false : (req.body.skipPrev === true || (type === 'monthly' && !customRange));
-    const ok = await generateAndSend(enriched, type, customRange, { skipPrev });
+    const ok = await generateAndSend(enriched, type, customRange, { skipPrev, comparePeriod });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
@@ -7429,6 +7472,32 @@ router.post('/api/strategy/downsell', requireLogin, async (req, res) => {
     const r = await runStrategy(account, strategyType(req.body.type), 'downsell', opts);
     res.json({ ok: true, period: r.period, items: r.items, devices: r.devices, summary: r.summary });
   } catch (err) { console.error('감액 분석 오류:', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 감액 엑셀 스트리밍 다운로드 (키워드/검색어별 + 기기별)
+router.get('/api/strategy/downsell-excel', requireLogin, async (req, res) => {
+  const t = strategyType(req.query.type);
+  try {
+    const account = await db.getAccountById(req.query.accountId, req.session.userId);
+    if (!account) return res.status(404).send('광고주 없음');
+    if (account.has_sa === false) return res.status(400).send('SA 미활성 계정');
+    if (!account.customer_id) return res.status(400).send('Customer ID 미등록');
+    const creds = await db.getApiCredentials(req.session.userId, account.id);
+    if (!creds) return res.status(400).send('API 자격증명 미설정');
+    const enriched = { ...account, api_key: creds.api_key, secret_key: creds.secret_key };
+    const mode = req.query.mode === 'budget_target' ? 'budget_target' : 'inefficiency';
+    const opts = { mode };
+    if (mode === 'budget_target') { opts.targetPct = Math.max(1, Math.min(90, parseInt(req.query.targetPct) || 10)); const amt = parseInt(req.query.targetAmt) || 0; if (amt > 0) opts.targetAmt = amt; }
+
+    const { generateDownsellExcel } = require('../report/generator');
+    const { buffer } = await generateDownsellExcel(enriched, t, opts);
+
+    const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = `${safeName}_감액제안_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(Buffer.from(buffer));
+  } catch (err) { console.error('감액 엑셀 오류:', err.message); res.status(500).send('엑셀 생성 실패: ' + err.message); }
 });
 
 // 키워드 발굴 (Discovery)

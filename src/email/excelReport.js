@@ -155,7 +155,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   for (let c = 3; c <= 4; c++) { cover.getRow(cr).getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.green } }; cover.getRow(cr).getCell(c).border = border; }
   cr += 2;
 
-  [['광고주', accountName], ['보고서 기간', period], ['보고서 유형', typeLabel + ' 리포트'], ['발행일', now], ['제작', '뉴먼트 솔루션 자동 리포트']].forEach(([l, v]) => {
+  [['광고주', accountName], ['보고서 기간', period], ['보고서 유형', typeLabel + ' 리포트'], ['발행일', now], ['제작', '뉴먼트 솔루션 리포트']].forEach(([l, v]) => {
     const row = cover.getRow(cr); row.height = 26;
     const lc = row.getCell(2); lc.value = l;
     lc.font = { bold: true, size: 11, color: { argb: C.dark } };

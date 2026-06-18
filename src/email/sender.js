@@ -523,7 +523,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
   // ══════════════════════════════════════════════════════════════
   html += `
 <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:0 0 14px 14px;padding:14px 20px;text-align:center">
-  <p style="margin:0;font-size:11px;color:#9ca3af">이 리포트는 뉴먼트 솔루션에서 자동 발송되었습니다 · ${accountName}</p>
+  <p style="margin:0;font-size:11px;color:#9ca3af">이 리포트는 뉴먼트 솔루션에서 발송되었습니다 · ${accountName}</p>
   <p style="margin:4px 0 0;font-size:10px;color:#d1d5db">데이터 출처: 네이버 검색광고 API (AD_DETAIL + AD_CONVERSION_DETAIL)</p>
 </div>
 </div></body></html>`;
