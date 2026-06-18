@@ -6460,8 +6460,6 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       {cat:'전환 성과', key:'purchaseCnt', label:'구매완료 전환수', type:'metric', sup:true},
       {cat:'전환 성과', key:'purchaseAmt', label:'구매완료 전환매출액', type:'metric', sup:true},
       {cat:'전환 성과', key:'roas', label:'구매완료 광고수익률(%)', type:'metric', sup:true},
-      {cat:'전환 성과', key:'cartCnt', label:'장바구니 전환수', type:'metric', sup:true},
-      {cat:'전환 성과', key:'cartAmt', label:'장바구니 전환매출액', type:'metric', sup:true},
       {cat:'전환 성과', key:null, label:'전환 유형', type:'dim', sup:false},
       {cat:'시간구분', key:'byDate', label:'일별', type:'dim', sup:true},
       {cat:'시간구분', key:null, label:'주별', type:'dim', sup:false},
@@ -7329,7 +7327,7 @@ router.post('/api/report/save-config', requireLogin, async (req, res) => {
       if (sheets && typeof sheets[k] === 'boolean') cleanSheets[k] = sheets[k];
     }
     const allowedDims = ['byCampaign','byCampaignType','byAdgroup','byKeyword','byQuery','byDevice','byHour','byDate'];
-    const allowedMetrics = ['cost','imp','avgRank','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas','cartCnt','cartAmt'];
+    const allowedMetrics = ['cost','imp','avgRank','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas'];
     const allowedFields = new Set([...allowedDims, ...allowedMetrics]);
     const cleanCustom = (Array.isArray(customSheets) ? customSheets : []).slice(0, 10).map(cs => {
       // 신규: fields[] (차원/지표 혼합 순서), 레거시: {dimension, metrics}

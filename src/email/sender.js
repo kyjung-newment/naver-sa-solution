@@ -142,8 +142,6 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
     { label: '구매완료', align: 'right' },
     { label: '구매매출', align: 'right' },
     { label: 'ROAS', align: 'right' },
-    { label: '장바구니', align: 'right' },
-    { label: '장바구니매출', align: 'right' },
   ];
 
   function metricRow(d) {
@@ -157,8 +155,6 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
       { v: f.num(d.purchaseCnt), color: '#16a34a', bold: true },
       { v: f.won(d.purchaseAmt), color: '#16a34a' },
       { v: d.roas + '%', color: d.roas >= 100 ? '#16a34a' : '#dc2626', bold: true },
-      { v: f.num(d.cartCnt) },
-      { v: f.won(d.cartAmt) },
     ];
   }
 
@@ -200,7 +196,6 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
     { icon: '🛒', label: '구매완료전환매출', value: f.won(t.purchaseAmt), trend: pt ? trendBadge(t.purchaseAmt, pt.purchaseAmt) : '', color: '#16a34a' },
     { icon: '📈', label: 'ROAS', value: t.roas + '%', trend: '', color: t.roas >= 100 ? '#16a34a' : '#ef4444' },
     { icon: '🔄', label: '구매완료전환수', value: f.num(t.purchaseCnt), trend: pt ? trendBadge(t.purchaseCnt, pt.purchaseCnt) : '' },
-    { icon: '🧺', label: '장바구니수', value: f.num(t.cartCnt), trend: '' },
   ];
 
   html += `<div style="background:#fff;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;padding:20px 20px 10px">

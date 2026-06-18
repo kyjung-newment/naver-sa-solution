@@ -37,8 +37,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   const border = { top: { style: 'thin', color: { argb: C.border } }, bottom: { style: 'thin', color: { argb: C.border } }, left: { style: 'thin', color: { argb: C.border } }, right: { style: 'thin', color: { argb: C.border } } };
   const cm = { horizontal: 'center', vertical: 'middle' };
 
-  const mHeaders = ['총비용','노출수','평균순위','클릭수','CPC','CTR','구매완료','구매매출','ROAS','장바구니','장바구니매출'];
-  const mFmts = [FMT.won, FMT.num, FMT.rank, FMT.num, FMT.won, FMT.pct, FMT.num, FMT.won, FMT.roas, FMT.num, FMT.won];
+  const mHeaders = ['총비용','노출수','평균순위','클릭수','CPC','CTR','구매완료','구매매출','ROAS'];
+  const mFmts = [FMT.won, FMT.num, FMT.rank, FMT.num, FMT.won, FMT.pct, FMT.num, FMT.won, FMT.roas];
 
   // ─── 리포트 커스터마이징 설정 ────────────────────────────────────
   // reportConfig = { sheets: {summary:true,comparison:false,...}, customSheets:[{name,dimension,metrics,sortBy,limit}] }
@@ -56,8 +56,6 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     { key: 'purchaseCnt', label: '구매완료', fmt: FMT.num },
     { key: 'purchaseAmt', label: '구매매출', fmt: FMT.won },
     { key: 'roas', label: 'ROAS', fmt: FMT.roas },
-    { key: 'cartCnt', label: '장바구니', fmt: FMT.num },
-    { key: 'cartAmt', label: '장바구니매출', fmt: FMT.won },
   ];
 
   // ─── 공통 헬퍼 ───────────────────────────────────────────────────
@@ -104,7 +102,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       else if (opts.stripe) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.altRow } };
     });
     const ms = sc + labels.length;
-    const vals = [d.cost||0, d.imp||0, d.avgRank||0, d.clk||0, d.cpc||0, d.ctr||0, d.purchaseCnt||0, d.purchaseAmt||0, d.roas||0, d.cartCnt||0, d.cartAmt||0];
+    const vals = [d.cost||0, d.imp||0, d.avgRank||0, d.clk||0, d.cpc||0, d.ctr||0, d.purchaseCnt||0, d.purchaseAmt||0, d.roas||0];
     vals.forEach((v, i) => {
       const c = row.getCell(ms + i);
       c.value = v; c.numFmt = mFmts[i];
@@ -120,7 +118,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     const row = ws.getRow(r); row.height = 23;
     const lc = row.getCell(2);
     lc.value = label; lc.font = { size: 10, italic: true, color: { argb: C.gray } }; lc.alignment = cm; lc.border = border;
-    const diffs = [curr.cost-prev.cost, curr.imp-prev.imp, (curr.avgRank||0)-(prev.avgRank||0), curr.clk-prev.clk, (curr.cpc||0)-(prev.cpc||0), (curr.ctr||0)-(prev.ctr||0), (curr.purchaseCnt||0)-(prev.purchaseCnt||0), (curr.purchaseAmt||0)-(prev.purchaseAmt||0), (curr.roas||0)-(prev.roas||0), (curr.cartCnt||0)-(prev.cartCnt||0), (curr.cartAmt||0)-(prev.cartAmt||0)];
+    const diffs = [curr.cost-prev.cost, curr.imp-prev.imp, (curr.avgRank||0)-(prev.avgRank||0), curr.clk-prev.clk, (curr.cpc||0)-(prev.cpc||0), (curr.ctr||0)-(prev.ctr||0), (curr.purchaseCnt||0)-(prev.purchaseCnt||0), (curr.purchaseAmt||0)-(prev.purchaseAmt||0), (curr.roas||0)-(prev.roas||0)];
     diffs.forEach((v, i) => {
       const c = row.getCell(3 + i); c.value = v; c.numFmt = mFmts[i];
       const costLike = [0, 4].includes(i);
@@ -133,8 +131,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   function setColWidths(ws, firstWidths = [22]) {
     firstWidths.forEach((w, i) => { ws.getColumn(i + 2).width = w; });
     const s = firstWidths.length + 2;
-    // 총비용, 노출수, 평균순위, 클릭수, CPC, CTR, 구매완료, 구매매출, ROAS, 장바구니, 장바구니매출
-    [15, 13, 10, 12, 12, 10, 10, 16, 10, 10, 16].forEach((w, i) => { ws.getColumn(s + i).width = w; });
+    // 총비용, 노출수, 평균순위, 클릭수, CPC, CTR, 구매완료, 구매매출, ROAS
+    [15, 13, 10, 12, 12, 10, 10, 16, 10].forEach((w, i) => { ws.getColumn(s + i).width = w; });
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -216,7 +214,6 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     { label: '구매매출', value: t.purchaseAmt||0, fmt: FMT.won },
     { label: 'ROAS', value: t.roas||0, fmt: FMT.roas },
     { label: '구매전환수', value: t.purchaseCnt||0, fmt: FMT.num },
-    { label: '장바구니수', value: t.cartCnt||0, fmt: FMT.num },
   ];
 
   // 라벨
@@ -306,7 +303,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         const row = cmp.getRow(r); row.height = 23;
         const lc1 = row.getCell(2); lc1.value = ''; lc1.border = border;
         const lc2 = row.getCell(3); lc2.value = cmpLabel; lc2.font = { size: 10, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
-        const diffs = [data.total.cost-prevData.total.cost, data.total.imp-prevData.total.imp, (data.total.avgRank||0)-(prevData.total.avgRank||0), data.total.clk-prevData.total.clk, (data.total.cpc||0)-(prevData.total.cpc||0), (data.total.ctr||0)-(prevData.total.ctr||0), (data.total.purchaseCnt||0)-(prevData.total.purchaseCnt||0), (data.total.purchaseAmt||0)-(prevData.total.purchaseAmt||0), (data.total.roas||0)-(prevData.total.roas||0), (data.total.cartCnt||0)-(prevData.total.cartCnt||0), (data.total.cartAmt||0)-(prevData.total.cartAmt||0)];
+        const diffs = [data.total.cost-prevData.total.cost, data.total.imp-prevData.total.imp, (data.total.avgRank||0)-(prevData.total.avgRank||0), data.total.clk-prevData.total.clk, (data.total.cpc||0)-(prevData.total.cpc||0), (data.total.ctr||0)-(prevData.total.ctr||0), (data.total.purchaseCnt||0)-(prevData.total.purchaseCnt||0), (data.total.purchaseAmt||0)-(prevData.total.purchaseAmt||0), (data.total.roas||0)-(prevData.total.roas||0)];
         diffs.forEach((v, i) => {
           const c = row.getCell(4 + i); c.value = v; c.numFmt = mFmts[i];
           const costLike = [0, 4].includes(i);
@@ -348,7 +345,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
           const row = cmp.getRow(r); row.height = 23;
           const lc1 = row.getCell(2); lc1.value = tp; lc1.font = { size: 10, italic: true, color: { argb: C.gray } }; lc1.alignment = cm; lc1.border = border;
           const lc2 = row.getCell(3); lc2.value = cmpLabel; lc2.font = { size: 10, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
-          const diffs = [diff.cost, diff.imp, diff.avgRank, diff.clk, diff.cpc, diff.ctr, diff.purchaseCnt, diff.purchaseAmt, diff.roas, diff.cartCnt, diff.cartAmt];
+          const diffs = [diff.cost, diff.imp, diff.avgRank, diff.clk, diff.cpc, diff.ctr, diff.purchaseCnt, diff.purchaseAmt, diff.roas];
           diffs.forEach((v, i) => {
             const c = row.getCell(4 + i); c.value = v; c.numFmt = mFmts[i];
             const costLike = [0, 4].includes(i);
@@ -361,8 +358,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
           const row = cmp.getRow(r); row.height = 20;
           const lc1 = row.getCell(2); lc1.value = ''; lc1.border = border;
           const lc2 = row.getCell(3); lc2.value = '증감률'; lc2.font = { size: 9, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
-          const prevVals = [prev.cost||0, prev.imp||0, prev.avgRank||0, prev.clk||0, prev.cpc||0, prev.ctr||0, prev.purchaseCnt||0, prev.purchaseAmt||0, prev.roas||0, prev.cartCnt||0, prev.cartAmt||0];
-          const currVals = [curr.cost||0, curr.imp||0, curr.avgRank||0, curr.clk||0, curr.cpc||0, curr.ctr||0, curr.purchaseCnt||0, curr.purchaseAmt||0, curr.roas||0, curr.cartCnt||0, curr.cartAmt||0];
+          const prevVals = [prev.cost||0, prev.imp||0, prev.avgRank||0, prev.clk||0, prev.cpc||0, prev.ctr||0, prev.purchaseCnt||0, prev.purchaseAmt||0, prev.roas||0];
+          const currVals = [curr.cost||0, curr.imp||0, curr.avgRank||0, curr.clk||0, curr.cpc||0, curr.ctr||0, curr.purchaseCnt||0, curr.purchaseAmt||0, curr.roas||0];
           currVals.forEach((cv, i) => {
             const pv = prevVals[i];
             const pctChange = pv !== 0 ? ((cv - pv) / Math.abs(pv) * 100) : (cv > 0 ? 100 : 0);
@@ -412,7 +409,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
           const row = cmp.getRow(r); row.height = 23;
           const lc1 = row.getCell(2); lc1.value = agName; lc1.font = { size: 10, italic: true, color: { argb: C.gray } }; lc1.alignment = cm; lc1.border = border;
           const lc2 = row.getCell(3); lc2.value = cmpLabel; lc2.font = { size: 10, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
-          const diffs = [diff.cost, diff.imp, diff.avgRank, diff.clk, diff.cpc, diff.ctr, diff.purchaseCnt, diff.purchaseAmt, diff.roas, diff.cartCnt, diff.cartAmt];
+          const diffs = [diff.cost, diff.imp, diff.avgRank, diff.clk, diff.cpc, diff.ctr, diff.purchaseCnt, diff.purchaseAmt, diff.roas];
           diffs.forEach((v, i) => {
             const c = row.getCell(4 + i); c.value = v; c.numFmt = mFmts[i];
             const costLike = [0, 4].includes(i);
@@ -425,8 +422,8 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
           const row = cmp.getRow(r); row.height = 20;
           const lc1 = row.getCell(2); lc1.value = ''; lc1.border = border;
           const lc2 = row.getCell(3); lc2.value = '증감률'; lc2.font = { size: 9, italic: true, color: { argb: C.gray } }; lc2.alignment = cm; lc2.border = border;
-          const prevVals = [prev.cost||0, prev.imp||0, prev.avgRank||0, prev.clk||0, prev.cpc||0, prev.ctr||0, prev.purchaseCnt||0, prev.purchaseAmt||0, prev.roas||0, prev.cartCnt||0, prev.cartAmt||0];
-          const currVals = [curr.cost||0, curr.imp||0, curr.avgRank||0, curr.clk||0, curr.cpc||0, curr.ctr||0, curr.purchaseCnt||0, curr.purchaseAmt||0, curr.roas||0, curr.cartCnt||0, curr.cartAmt||0];
+          const prevVals = [prev.cost||0, prev.imp||0, prev.avgRank||0, prev.clk||0, prev.cpc||0, prev.ctr||0, prev.purchaseCnt||0, prev.purchaseAmt||0, prev.roas||0];
+          const currVals = [curr.cost||0, curr.imp||0, curr.avgRank||0, curr.clk||0, curr.cpc||0, curr.ctr||0, curr.purchaseCnt||0, curr.purchaseAmt||0, curr.roas||0];
           currVals.forEach((cv, i) => {
             const pv = prevVals[i];
             const pctChange = pv !== 0 ? ((cv - pv) / Math.abs(pv) * 100) : (cv > 0 ? 100 : 0);
