@@ -762,8 +762,9 @@ async function generateAndSend(account, type, customRange, opts) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
       try {
-        const prev = await collectDetailData(client, prevRange);
-        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, prev.rawQueryDetail);
+        // 이전기간은 비교용(총합·유형·그룹)이라 AD_QUERY_DETAIL 생략(light)으로 가속
+        const prev = await collectDetailData(client, prevRange, { light: true });
+        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
         // 이전 기간도 Stats API 보정 적용
         await calibrateWithStatsApi(prevData, client, prevRange);
         console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
@@ -877,8 +878,9 @@ async function collectReportData(account, type, customRange, opts) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
       const prevPromise = (async () => {
-        const prev = await collectDetailData(client, prevRange);
-        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, prev.rawQueryDetail);
+        // 이전기간은 비교(총합·유형·그룹)용으로만 쓰므로 AD_QUERY_DETAIL 생략(light) → 수집 가속·타임아웃 방지
+        const prev = await collectDetailData(client, prevRange, { light: true });
+        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
         await calibrateWithStatsApi(pd, client, prevRange);
         return pd;
       })();
