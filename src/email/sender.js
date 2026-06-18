@@ -196,6 +196,7 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
     { icon: '🛒', label: '구매완료전환매출', value: f.won(t.purchaseAmt), trend: pt ? trendBadge(t.purchaseAmt, pt.purchaseAmt) : '', color: '#16a34a' },
     { icon: '📈', label: 'ROAS', value: t.roas + '%', trend: '', color: t.roas >= 100 ? '#16a34a' : '#ef4444' },
     { icon: '🔄', label: '구매완료전환수', value: f.num(t.purchaseCnt), trend: pt ? trendBadge(t.purchaseCnt, pt.purchaseCnt) : '' },
+    { icon: '✅', label: '전환율', value: f.pct(t.clk ? (t.purchaseCnt / t.clk) * 100 : 0), trend: '', color: '#16a34a' },
   ];
 
   html += `<div style="background:#fff;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;padding:20px 20px 10px">

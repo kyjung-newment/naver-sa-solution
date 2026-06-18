@@ -214,6 +214,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     { label: '구매매출', value: t.purchaseAmt||0, fmt: FMT.won },
     { label: 'ROAS', value: t.roas||0, fmt: FMT.roas },
     { label: '구매전환수', value: t.purchaseCnt||0, fmt: FMT.num },
+    { label: '전환율', value: t.clk ? (t.purchaseCnt/t.clk)*100 : 0, fmt: FMT.pct },
   ];
 
   // 라벨
