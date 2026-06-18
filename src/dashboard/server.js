@@ -6250,9 +6250,9 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       }).join('')}
       <div class="card" style="border:2px dashed #cbd5e1">
         <div class="card-body" style="text-align:center">
-          <div style="font-size:32px;margin-bottom:12px">🛠</div>
-          <h3 style="font-weight:600;margin-bottom:6px">맞춤 리포트</h3>
-          <p style="color:#64748b;font-size:12px;margin-bottom:16px">원하는 기간 직접 선택<br>월간 폼으로 생성</p>
+          <div style="font-size:32px;margin-bottom:12px">🗓</div>
+          <h3 style="font-weight:600;margin-bottom:6px">기간 선택 리포트</h3>
+          <p style="color:#64748b;font-size:12px;margin-bottom:16px">월간(전월 비교)·주간(전주 비교)<br>또는 맞춤 기간</p>
           <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="openCustomReportModal('sa')">📅 기간 선택</button>
         </div>
       </div>
