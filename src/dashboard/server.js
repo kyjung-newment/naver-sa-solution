@@ -6232,6 +6232,11 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     <!-- SA 탭 -->
     <div id="rep-tab-sa" class="rep-tab-content">
     ${selAccount.has_sa === false ? '<div class="alert" style="background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:16px;border-radius:8px">이 광고주는 SA가 활성화되지 않은 계정입니다. 광고주 설정에서 SA를 활성화하세요.</div>' : `
+    <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:12px;color:#0c4a6e;line-height:1.65">
+      <b>📌 데이터 조회 가능 기간 안내</b><br>
+      • 비용·노출·클릭, 그리고 <b>일자·광고그룹·기기·키워드·캠페인별 전환</b>: 과거 기간도 정확합니다 (네이버 보존 범위 내).<br>
+      • <b>시간대별 전환</b>(구매완료·매출·ROAS): 네이버 정책상 <b>최근 약 45일</b>까지만 제공됩니다. 그 이전 기간은 시간대별 시트에 <b>빈칸(-)</b>으로 표시되며, 해당 항목은 네이버 다차원보고서를 이용해 주세요. <span style="color:#0369a1">(시간대별 비용·클릭은 과거도 정확)</span>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
         const label = {daily:'일간',weekly:'주간',monthly:'월간'}[t];
