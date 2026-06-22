@@ -2831,7 +2831,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       <div class="kpi-grid" id="kpi-grid">
         ${[
           {l:'노출수',c:'kpi-blue'},{l:'클릭수',c:'kpi-cyan'},{l:'CTR',c:'kpi-green'},{l:'총비용',c:'kpi-red'},
-          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'평균순위',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
+          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'전환당비용',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
         ].map(k => `
           <div class="kpi-card ${k.c}"><div class="kpi-label">${k.l}</div><div class="kpi-value" style="color:#e5e7eb">—</div></div>
         `).join('')}
@@ -2952,7 +2952,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
       grid.innerHTML = ${JSON.stringify(
         [
           {l:'노출수',c:'kpi-blue'},{l:'클릭수',c:'kpi-cyan'},{l:'CTR',c:'kpi-green'},{l:'총비용',c:'kpi-red'},
-          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'평균순위',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
+          {l:'구매완료전환매출',c:'kpi-purple'},{l:'ROAS',c:'kpi-green'},{l:'전환당비용',c:'kpi-orange'},{l:'구매완료전환수',c:'kpi-purple'}
         ].map(k =>
           `<div class="kpi-card ${k.c}"><div class="kpi-label">${k.l}</div><div class="kpi-value"><span class="spinner"></span></div></div>`
         ).join('')
@@ -3192,7 +3192,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
         {l:'총비용', v:won(s?.salesAmt), c:'kpi-red'},
         {l:'구매완료전환매출',v:won(s?.purchaseAmt), c:'kpi-purple'},
         {l:'ROAS',   v:roas+'%', c:'kpi-green'},
-        {l:'평균순위',v:rnk(s?.avgRnk), c:'kpi-orange'},
+        {l:'전환당비용',v:won(s?.purchaseCnt ? s.salesAmt/s.purchaseCnt : 0), c:'kpi-orange'},
         {l:'구매완료전환수', v:num(s?.purchaseCnt), c:'kpi-purple'},
       ];
       document.getElementById('kpi-grid').innerHTML = cards.map(c =>
@@ -6447,7 +6447,6 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       {cat:'광고 성과', key:'ctr', label:'클릭률(%)', type:'metric', sup:true},
       {cat:'광고 성과', key:'cpc', label:'평균 CPC', type:'metric', sup:true},
       {cat:'광고 성과', key:'cost', label:'총비용', type:'metric', sup:true},
-      {cat:'광고 성과', key:'avgRank', label:'평균노출순위', type:'metric', sup:true},
       {cat:'전환 성과', key:null, label:'총 전환수', type:'metric', sup:false},
       {cat:'전환 성과', key:null, label:'직접전환수', type:'metric', sup:false},
       {cat:'전환 성과', key:null, label:'간접전환수', type:'metric', sup:false},
@@ -7327,7 +7326,7 @@ router.post('/api/report/save-config', requireLogin, async (req, res) => {
       if (sheets && typeof sheets[k] === 'boolean') cleanSheets[k] = sheets[k];
     }
     const allowedDims = ['byCampaign','byCampaignType','byAdgroup','byKeyword','byQuery','byDevice','byHour','byDate'];
-    const allowedMetrics = ['cost','imp','avgRank','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas'];
+    const allowedMetrics = ['cost','imp','clk','cpc','ctr','purchaseCnt','purchaseAmt','roas'];
     const allowedFields = new Set([...allowedDims, ...allowedMetrics]);
     const cleanCustom = (Array.isArray(customSheets) ? customSheets : []).slice(0, 10).map(cs => {
       // 신규: fields[] (차원/지표 혼합 순서), 레거시: {dimension, metrics}
