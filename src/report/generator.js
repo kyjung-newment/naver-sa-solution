@@ -89,7 +89,8 @@ async function collectDetailData(client, dateRange, opts = {}) {
   const light = !!opts.light; // light=AD_QUERY_DETAIL 생략(전략 라이브 폴백용: 메모리/속도)
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const rawAdDetail = [];
-  const rawConvDetail = [];
+  const rawConvDetail = [];   // AD_CONVERSION (장기보존 ~8개월: 기기/키워드/광고그룹/일자 전환)
+  const rawConvHourly = [];   // AD_CONVERSION_DETAIL (최근~45일: 시간대 전환 보강용)
   const rawShopKwDetail = [];
   const rawShopConvDetail = [];
   const rawQueryDetail = [];
@@ -102,19 +103,22 @@ async function collectDetailData(client, dateRange, opts = {}) {
       batch.map(async (dt) => {
         const reqs = [
           client.createAndDownloadStatReport('AD_DETAIL', dt),
-          client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),
+          client.createAndDownloadStatReport('AD_CONVERSION', dt),                  // 주 전환(장기보존 ~8개월)
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
+          client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),           // 시간대 전환(최근~45일, best-effort)
         ];
         if (!light) reqs.push(client.createAndDownloadStatReport('AD_QUERY_DETAIL', dt));
-        const [adResult, convResult, shopResult, shopConvResult, queryResult] = await Promise.allSettled(reqs);
+        const [adResult, convResult, shopResult, shopConvResult, convHourResult, queryResult] = await Promise.allSettled(reqs);
 
         // AD_DETAIL: 전체 성과 데이터 (파워링크+쇼핑 모두 포함, 필터 없음)
         const adRows = adResult.status === 'fulfilled' ? adResult.value : [];
         if (adResult.status === 'rejected') console.log(`AD_DETAIL 실패 (${dt}):`, adResult.reason?.message);
 
-        // AD_CONVERSION_DETAIL: 전체 전환 데이터 (필터 없음)
+        // AD_CONVERSION: 전체 전환 데이터 (장기보존, 시간대 컬럼 없음)
         const convRows = convResult.status === 'fulfilled' ? convResult.value : [];
+        // AD_CONVERSION_DETAIL: 시간대 전환 보강 (최근만 성공, 과거기간은 실패→무시)
+        const convHourRows = (convHourResult && convHourResult.status === 'fulfilled') ? convHourResult.value : [];
 
         // SHOPPINGKEYWORD_DETAIL: 쇼핑 키워드별 분석 전용 (리매핑만, 총합에는 미반영)
         let shopKwRows = [];
@@ -132,13 +136,13 @@ async function collectDetailData(client, dateRange, opts = {}) {
         const queryRows = (queryResult && queryResult.status === 'fulfilled') ? queryResult.value : [];
         if (queryResult && queryResult.status === 'rejected') console.log(`AD_QUERY_DETAIL 실패 (${dt}):`, queryResult.reason?.message);
 
-        return { dt, adRows, convRows, shopKwRows, shopConvRows, queryRows };
+        return { dt, adRows, convRows, convHourRows, shopKwRows, shopConvRows, queryRows };
       })
     );
 
     for (const result of batchResults) {
       if (result.status === 'fulfilled') {
-        const { dt, adRows, convRows, shopKwRows, shopConvRows, queryRows } = result.value;
+        const { dt, adRows, convRows, convHourRows, shopKwRows, shopConvRows, queryRows } = result.value;
         // AD_DETAIL: imp+clk+cost 모두 0인 행은 메모리 절감 위해 즉시 제외
         // (전환은 별도 테이블에 있으므로 이 행들은 정말 의미 없는 노이즈)
         for (const r of adRows) {
@@ -149,6 +153,7 @@ async function collectDetailData(client, dateRange, opts = {}) {
         }
         // CONVERSION은 전부 보존 (전환 발생 = 중요)
         rawConvDetail.push(...convRows.map(r => ({ date: dt, cols: r })));
+        rawConvHourly.push(...convHourRows.map(r => ({ date: dt, cols: r })));
         // SHOPPINGKEYWORD_DETAIL도 imp+clk+cost 0이면 제외
         for (const r of shopKwRows) {
           if (r.length < 14) continue;
@@ -173,7 +178,7 @@ async function collectDetailData(client, dateRange, opts = {}) {
     }
   }
 
-  return { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail };
+  return { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail };
 }
 
 /**
@@ -253,7 +258,7 @@ function getPrevDateRange(type, dateRange) {
  * 6:channelId, 7:hour, 8:code, 9:queryId, 10:device, 11:directFlag,
  * 12:convType, 13:convCnt, 14:convAmt
  */
-function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail) {
+function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly) {
   campTypeMap = campTypeMap || {};
   kwNameMap = kwNameMap || {};
   kwQiMap = kwQiMap || {};
@@ -276,53 +281,54 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     return tp === '2' || tp === 'SHOPPING';
   }
 
-  // 전환 데이터를 캠페인/광고그룹/디바이스/시간별/키워드별 집계
+  // 구매 전환 판별 (영문 + 한국어 + 코드 대응)
+  const isPurchaseType = (convType) => {
+    const l = (convType || '').toLowerCase(); const r = (convType || '').trim();
+    return l === 'purchase' || l === 'purchase_complete' || l === 'complete_purchase'
+      || l === 'conversion' || l === 'conv' || l === '1' || r === '구매완료';
+  };
+  const isCartType = (convType) => {
+    const l = (convType || '').toLowerCase(); const r = (convType || '').trim();
+    return l === 'add_to_cart' || l === 'cart' || l === 'add_cart' || r === '장바구니 담기' || r === '장바구니';
+  };
+  const addConv = (convMap, key, isPurchase, isCart, cnt, amt) => {
+    if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
+    if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
+    else if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
+  };
+
+  // ── AD_CONVERSION (장기보존 ~8개월) 13컬럼: 0:date 2:camp 3:adgroup 4:keyword 8:device 10:convType 11:cnt 12:amt ──
+  // AD_CONVERSION_DETAIL은 ~45일만 보존돼 과거기간 전환이 누락되므로 AD_CONVERSION으로 전환.
+  // 시간대(hour) 컬럼이 없어 기기/키워드/광고그룹/캠페인/일자/전체 전환만 집계(시간대는 아래 별도 보강).
   const convMap = {}; // key → { purchaseCnt, purchaseAmt, cartCnt, cartAmt }
-  const convTypeSet = new Set(); // 디버깅: 실제 convType 값 수집
+  const convTypeSet = new Set();
   for (const { date: convDate, cols } of rawConvDetail) {
-    if (cols.length < 15) continue;
+    if (cols.length < 13) continue;
     const campaignId = cols[2];
     const adgroupId = cols[3];
     const keywordId = cols[4];
-    const device = cols[10] === 'P' ? 'PC' : 'MO';
+    const device = cols[8] === 'P' ? 'PC' : 'MO';
+    const convType = cols[10];
+    const cnt = parseInt(cols[11]) || 0;
+    const amt = parseInt(cols[12]) || 0;
+    const campType = getCampTypeLabel(campaignId);
+    convTypeSet.add(convType);
+    const isPurchase = isPurchaseType(convType);
+    const isCart = isCartType(convType);
+    const convKwKey = (keywordId && keywordId !== '-') ? `kw:${keywordId}` : `ag:${adgroupId}`;
+    const keys = [`camp:${campaignId}`, `ag:${adgroupId}`, `device:${device}`, convKwKey, `campType:${campType}`, `total`, `date:${convDate}`];
+    for (const key of keys) addConv(convMap, key, isPurchase, isCart, cnt, amt);
+  }
+
+  // ── AD_CONVERSION_DETAIL (최근~45일) 15컬럼: 7:hour 12:convType 13:cnt 14:amt → 시간대(hour) 전환만 보강 ──
+  // (과거기간은 이 리포트가 실패하여 시간대 전환은 비게 됨 — 네이버 OpenAPI 한계)
+  for (const { cols } of (rawConvHourly || [])) {
+    if (cols.length < 15) continue;
     const hour = parseInt(cols[7]) || 0;
     const convType = cols[12];
     const cnt = parseInt(cols[13]) || 0;
     const amt = parseInt(cols[14]) || 0;
-    const campType = getCampTypeLabel(campaignId);
-
-    convTypeSet.add(convType);
-
-    // 구매 전환 판별 (영문 + 한국어 + 코드 대응)
-    const convTypeLower = (convType || '').toLowerCase();
-    const convTypeRaw = (convType || '').trim();
-    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
-      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1'
-      || convTypeRaw === '구매완료';
-    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart'
-      || convTypeRaw === '장바구니 담기' || convTypeRaw === '장바구니';
-
-    const convKwKey = (keywordId && keywordId !== '-') ? `kw:${keywordId}` : `ag:${adgroupId}`;
-    const keys = [
-      `camp:${campaignId}`,
-      `ag:${adgroupId}`,
-      `device:${device}`,
-      `hour:${hour}`,
-      convKwKey,
-      `campType:${campType}`,
-      `total`,
-      `date:${convDate}`,
-    ];
-    for (const key of keys) {
-      if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
-      if (isPurchase) {
-        convMap[key].purchaseCnt += cnt;
-        convMap[key].purchaseAmt += amt;
-      } else if (isCart) {
-        convMap[key].cartCnt += cnt;
-        convMap[key].cartAmt += amt;
-      }
-    }
+    addConv(convMap, `hour:${hour}`, isPurchaseType(convType), isCartType(convType), cnt, amt);
   }
   // SHOPPINGKEYWORD_CONVERSION_DETAIL → 쇼핑 키워드별 전환만 convMap에 추가 (kw: 키만)
   for (const { cols } of (rawShopConvDetail || [])) {
@@ -684,6 +690,27 @@ async function calibrateDimensionsWithStats(data, client, dateRange) {
       data.byAdgroup = out;
     }
 
+    // 3) 기기별·시간대별: 비용 분포는 AD_DETAIL, 총합은 /stats에 정합되도록 비례 보정
+    //    (AD_DETAIL 비용이 대시보드 대비 ~9% 적은 알려진 차이 → 분포는 유지하며 총합을 일치).
+    //    전환(purchaseCnt/Amt)은 AD_CONVERSION에서 이미 정확 → 그대로 두고 cost만 스케일.
+    const scaleDimToTotal = (dim) => {
+      const entries = Object.values(dim || {});
+      if (!entries.length) return;
+      const sum = (f) => entries.reduce((a, o) => a + (o[f] || 0), 0);
+      const sImp = sum('imp'), sClk = sum('clk'), sCost = sum('cost');
+      const rImp = sImp > 0 ? data.total.imp / sImp : 1;
+      const rClk = sClk > 0 ? data.total.clk / sClk : 1;
+      const rCost = sCost > 0 ? data.total.cost / sCost : 1;
+      for (const o of entries) {
+        o.imp = Math.round((o.imp || 0) * rImp);
+        o.clk = Math.round((o.clk || 0) * rClk);
+        o.cost = Math.round((o.cost || 0) * rCost);
+        enrich(o);
+      }
+    };
+    scaleDimToTotal(data.byDevice);
+    scaleDimToTotal(data.byHour);
+
     console.log(`  ✅ 차원 보정(/stats): 일자 ${Object.keys(data.byDate || {}).length}일, 광고그룹 ${Object.keys(data.byAdgroup || {}).length}개 (다차원보고서 정합)`);
   } catch (e) {
     console.log(`  ⚠️ 차원 보정 실패(AD_DETAIL 유지):`, e.message);
@@ -785,10 +812,10 @@ async function generateAndSend(account, type, customRange, opts) {
     }
 
     // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
-    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
+    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
 
     // 3. 다차원 집계
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
 
     // 3-1. Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
     await calibrateWithStatsApi(data, client, dateRange);
@@ -816,7 +843,7 @@ async function generateAndSend(account, type, customRange, opts) {
       try {
         // 이전기간은 비교용(총합·유형·그룹)이라 AD_QUERY_DETAIL 생략(light)으로 가속
         const prev = await collectDetailData(client, prevRange, { light: true });
-        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
+        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, [], prev.rawConvHourly);
         // 이전 기간도 Stats API 보정 적용
         await calibrateWithStatsApi(prevData, client, prevRange);
         await calibrateDimensionsWithStats(prevData, client, prevRange);
@@ -905,8 +932,8 @@ async function collectReportData(account, type, customRange, opts) {
   );
 
   const collectMain = (async () => {
-    const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail);
+    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
+    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
     await calibrateWithStatsApi(data, client, dateRange);
     await calibrateDimensionsWithStats(data, client, dateRange);
     return data;
@@ -936,7 +963,7 @@ async function collectReportData(account, type, customRange, opts) {
       const prevPromise = (async () => {
         // 이전기간은 비교(총합·유형·그룹)용으로만 쓰므로 AD_QUERY_DETAIL 생략(light) → 수집 가속·타임아웃 방지
         const prev = await collectDetailData(client, prevRange, { light: true });
-        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
+        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, [], prev.rawConvHourly);
         await calibrateWithStatsApi(pd, client, prevRange);
         await calibrateDimensionsWithStats(pd, client, prevRange);
         return pd;
@@ -1147,7 +1174,7 @@ async function collectStrategyLive(account, range) {
   for (let i = 0; i < dates.length; i += CHUNK) {
     const sub = { since: dates[i], until: dates[Math.min(i + CHUNK - 1, dates.length - 1)] };
     const raw = await collectDetailData(client, sub, { light: true });
-    const part = aggregateData(raw.rawAdDetail, raw.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raw.rawShopKwDetail, raw.rawShopConvDetail, kwQiMap, []);
+    const part = aggregateData(raw.rawAdDetail, raw.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raw.rawShopKwDetail, raw.rawShopConvDetail, kwQiMap, [], raw.rawConvHourly);
     data = mergeAgg(data, part);
     // raw, part는 다음 반복에서 GC 대상
   }
