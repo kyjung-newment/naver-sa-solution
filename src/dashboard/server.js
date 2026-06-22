@@ -6801,7 +6801,10 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       function updateNote(){ var c=compute(); var n=document.getElementById('cr-note');
         if(!c){ n.innerHTML='기간을 선택하세요.'; return; }
         var cmp = c.cs ? (c.cs.replace(/-/g,'.')+'~'+c.ce.replace(/-/g,'.')) : '(자동 계산)';
-        n.innerHTML='분석: <b>'+c.s.replace(/-/g,'.')+'~'+c.e.replace(/-/g,'.')+'</b> &nbsp;·&nbsp; 비교('+c.clabel+'): <b>'+cmp+'</b>'; }
+        var warn='';
+        var sd=new Date(c.s+'T00:00:00'); var daysAgo=Math.floor((today - sd)/86400000);
+        if(daysAgo>40 && kind!=='da'){ warn='<div style="margin-top:9px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.55">⚠️ <b>시간대별 전환</b> 데이터는 네이버 정책상 최근 약 45일까지만 제공됩니다. 선택 기간은 그 이전이라 <b>시간대별 시트의 전환·매출·ROAS가 빈칸(-)으로 표시</b>됩니다(비용·클릭은 정확). 해당 항목은 네이버 다차원보고서를 이용해 주세요.<br>※ 일자·광고그룹·기기·키워드·캠페인별 전환과 모든 비용 지표는 과거 기간도 정확합니다.</div>'; }
+        n.innerHTML='분석: <b>'+c.s.replace(/-/g,'.')+'~'+c.e.replace(/-/g,'.')+'</b> &nbsp;·&nbsp; 비교('+c.clabel+'): <b>'+cmp+'</b>'+warn; }
       function setMode(m){ crMode=m;
         document.getElementById('cr-panel-month').style.display=(m==='month'?'block':'none');
         document.getElementById('cr-panel-week').style.display=(m==='week'?'block':'none');

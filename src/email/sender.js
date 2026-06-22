@@ -422,11 +422,20 @@ function buildHtmlReport({ type, period, accountName, data, prevData, dateRange,
     hourChart += '<div style="text-align:center;font-size:10px;color:#9ca3af;margin-top:4px">시간대별 클릭수 분포 (0~23시)</div>';
     hourChart += '</div>';
 
-    // 00시~23시 순서대로 전체 표시
-    const rows = hourEntries.map(([h, d]) => [{ v: `${parseInt(h)}시`, bold: true }, ...metricRow(d)]);
+    // 시간대별 전환은 최근 ~45일만 제공 → 과거기간이면 전환 비어옴(0). 0 오인 방지 위해 '-' 표기.
+    const accountHasConv = (data.total.purchaseCnt || 0) > 0;
+    const hourHasConv = hourEntries.some(([, d]) => (d.purchaseCnt || 0) > 0);
+    const convMissing = accountHasConv && !hourHasConv;
+    // 00시~23시 순서대로 전체 표시 (전환 컬럼=구매완료·구매매출·ROAS = metricRow 인덱스 5·6·7)
+    const rows = hourEntries.map(([h, d]) => {
+      const mr = metricRow(d);
+      if (convMissing) { mr[5] = { v: '-' }; mr[6] = { v: '-' }; mr[7] = { v: '-' }; }
+      return [{ v: `${parseInt(h)}시`, bold: true }, ...mr];
+    });
+    const hourNote = convMissing ? '<div style="font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:10px">⚠️ 시간대별 전환은 네이버 정책상 최근 약 45일까지만 제공되어 본 기간은 미표시(-)됩니다. 비용·클릭은 정확합니다. (시간대별 전환은 네이버 다차원보고서 이용)</div>' : '';
     const tableHtml = makeTable([{ label: '시간', align: 'left' }, ...metricHeaders], rows);
 
-    html += section('시간대별 성과', '🕐', hourChart + `<div style="overflow-x:auto">${tableHtml}</div>`);
+    html += section('시간대별 성과', '🕐', hourNote + hourChart + `<div style="overflow-x:auto">${tableHtml}</div>`);
   }
 
   // ══════════════════════════════════════════════════════════════

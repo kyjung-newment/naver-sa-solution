@@ -104,7 +104,9 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     const vals = [d.cost||0, d.imp||0, d.clk||0, d.cpc||0, d.ctr||0, d.purchaseCnt||0, d.purchaseAmt||0, d.roas||0];
     vals.forEach((v, i) => {
       const c = row.getCell(ms + i);
-      c.value = v; c.numFmt = mFmts[i];
+      // blankConv: 전환 컬럼(구매완료=5·구매매출=6·ROAS=7)을 '-'로 (미제공 데이터를 0으로 오인 방지)
+      if (opts.blankConv && i >= 5) { c.value = '-'; }
+      else { c.value = v; c.numFmt = mFmts[i]; }
       c.font = { size: 10, bold: !!opts.bold, color: { argb: opts.bold ? C.dark : C.gray } };
       c.alignment = cm; c.border = border;
       if (opts.bg) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } };
@@ -673,11 +675,19 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     r = sectionTitle(hs, r, `시간대별 성과 분포 (${period})`);
     r++;
 
-    // 구매전환매출 히트맵
+    // 시간대별 전환은 네이버 정책상 최근 ~45일만 제공 → 과거 기간이면 전환이 비어 옴(0).
+    // 0을 실제 전환 0건으로 오인시키지 않도록, 미제공이면 전환열을 '-'로 표기 + 안내.
+    const accountHasConv = (data.total.purchaseCnt || 0) > 0;
+    const hourHasConv = hourEntries.some(([, d]) => (d.purchaseCnt || 0) > 0);
+    const convMissing = accountHasConv && !hourHasConv;
     const maxAmt = Math.max(...hourEntries.map(([, d]) => d.purchaseAmt || 0), 1);
-    const topHours = [...hourEntries].sort((a, b) => (b[1].purchaseAmt||0) - (a[1].purchaseAmt||0)).slice(0, 3);
+    const topHours = convMissing ? [] : [...hourEntries].sort((a, b) => (b[1].purchaseAmt||0) - (a[1].purchaseAmt||0)).slice(0, 3);
     const topKeys = topHours.map(([h]) => h);
 
+    if (convMissing) {
+      r = subTitle(hs, r, '⚠ 시간대별 전환 데이터는 네이버 정책상 최근 약 45일까지만 제공됩니다. 본 기간은 전환·매출·ROAS가 제공되지 않아 비용·클릭만 표시합니다(시간대별 전환은 네이버 다차원보고서 이용).', 13);
+      r += 2;
+    } else {
     r = subTitle(hs, r, '시간대별 구매전환매출 히트맵 (진할수록 높음)', 13);
     const heatRow = hs.getRow(r); heatRow.height = 30;
     for (let h = 0; h < Math.min(24, 12); h++) {
@@ -717,11 +727,12 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
 
     r = subTitle(hs, r, `구매전환 최대 시간대: ${topHours.map(([h, d]) => `${parseInt(h)}시(${f.won(d.purchaseAmt||0)})`).join(', ')}`, 13);
     r++;
+    } // end else(히트맵: 전환 제공 시에만)
 
     r = tableHeader(hs, r, ['시간']);
     hourEntries.forEach(([h, d], idx) => {
       const isTop = topKeys.includes(h);
-      r = dataRow(hs, r, d, { labels: [`${parseInt(h)}시`], stripe: idx % 2 === 1, bold: isTop, labelColor: isTop ? C.green : undefined });
+      r = dataRow(hs, r, d, { labels: [`${parseInt(h)}시`], stripe: idx % 2 === 1, bold: isTop, labelColor: isTop ? C.green : undefined, blankConv: convMissing });
     });
   }
 
