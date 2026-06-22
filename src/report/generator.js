@@ -644,6 +644,54 @@ async function calibrateWithStatsApi(data, client, dateRange) {
 }
 
 /**
+ * 일자별·광고그룹별 차원을 /stats(대시보드 동일 소스)로 정확 재구성.
+ *
+ * AD_DETAIL은 총비용이 대시보드 대비 ~9% 적고, 전환 상세 리포트(AD_CONVERSION_DETAIL)는
+ * 과거기간(약 2개월 초과)·31일 초과 breakdown에서 막혀 일자별/광고그룹별 전환이 0이 된다.
+ * → /stats 캠페인 일일행 합산(byDate) + 광고그룹 단위(byAdgroup)로 교체하여
+ *    다차원보고서와 비용·전환 오차 0을 보장한다. (캠페인유형은 보정된 byCampaign에서 매핑)
+ */
+async function calibrateDimensionsWithStats(data, client, dateRange) {
+  try {
+    const dims = await client.getDashboardDimensions({ startDate: dateRange.since, endDate: dateRange.until });
+    const enrich = (o) => {
+      o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
+      o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
+      o.avgRank = o.rankCount > 0 ? (o.rankSum / o.rankCount) : 0;
+      o.cartCnt = o.cartCnt || 0;
+      o.cartAmt = o.cartAmt || 0;
+      o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+      return o;
+    };
+
+    // 1) 일자별 교체 (전환·비용 정확)
+    if (dims.byDate && Object.keys(dims.byDate).length) {
+      for (const k of Object.keys(dims.byDate)) enrich(dims.byDate[k]);
+      data.byDate = dims.byDate;
+    }
+
+    // 2) 광고그룹별 교체 (이름은 API 신선값, 캠페인유형은 보정된 byCampaign에서)
+    if (dims.byAdgroup && Object.keys(dims.byAdgroup).length) {
+      const out = {};
+      for (const [agId, o] of Object.entries(dims.byAdgroup)) {
+        const camp = data.byCampaign && data.byCampaign[o.campaignId];
+        o.name = o.adgroupName || agId;
+        o.campaignName = o.campaignName || (camp && camp.name) || '';
+        o.campaignType = (camp && camp.campaignType) || '파워링크';
+        enrich(o);
+        out[agId] = o; // aggregateData와 동일하게 raw adgroupId 키 사용
+      }
+      data.byAdgroup = out;
+    }
+
+    console.log(`  ✅ 차원 보정(/stats): 일자 ${Object.keys(data.byDate || {}).length}일, 광고그룹 ${Object.keys(data.byAdgroup || {}).length}개 (다차원보고서 정합)`);
+  } catch (e) {
+    console.log(`  ⚠️ 차원 보정 실패(AD_DETAIL 유지):`, e.message);
+  }
+  return data;
+}
+
+/**
  * @param {object} account - DB의 ad_accounts + users JOIN 결과
  * @param {'daily'|'weekly'|'monthly'} type
  */
@@ -744,6 +792,8 @@ async function generateAndSend(account, type, customRange, opts) {
 
     // 3-1. Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
     await calibrateWithStatsApi(data, client, dateRange);
+    // 3-2. 일자별·광고그룹별 차원을 /stats로 정확 재구성 (다차원보고서 정합)
+    await calibrateDimensionsWithStats(data, client, dateRange);
 
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     // skipPrev 옵션 또는 ENV로 강제 스킵 가능 (cron OOM/타임아웃 방지)
@@ -769,6 +819,7 @@ async function generateAndSend(account, type, customRange, opts) {
         prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
         // 이전 기간도 Stats API 보정 적용
         await calibrateWithStatsApi(prevData, client, prevRange);
+        await calibrateDimensionsWithStats(prevData, client, prevRange);
         console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
       } catch (e) {
         console.log(`  ⚠️ ${prevLabel} 데이터 실패:`, e.message);
@@ -857,6 +908,7 @@ async function collectReportData(account, type, customRange, opts) {
     const { rawAdDetail, rawConvDetail, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail);
     await calibrateWithStatsApi(data, client, dateRange);
+    await calibrateDimensionsWithStats(data, client, dateRange);
     return data;
   })();
 
@@ -886,6 +938,7 @@ async function collectReportData(account, type, customRange, opts) {
         const prev = await collectDetailData(client, prevRange, { light: true });
         const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, []);
         await calibrateWithStatsApi(pd, client, prevRange);
+        await calibrateDimensionsWithStats(pd, client, prevRange);
         return pd;
       })();
       prevData = await Promise.race([

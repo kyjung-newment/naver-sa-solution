@@ -276,6 +276,81 @@ function createApiClient(creds) {
       return totals;
     },
 
+    // ─── 대시보드 정합 차원 데이터 (/stats 기반: 일자별·광고그룹별 정확 집계) ───
+    // 핵심: 상세 리포트(AD_DETAIL/전환 리포트)는 과거기간(>약 2개월)·31일초과 breakdown이
+    // 막혀 일자별/광고그룹별 비용·전환이 누락된다. 네이버 대시보드와 동일한 /stats(캠페인·
+    // 광고그룹 단위, 일일 행)로 재구성해 다차원보고서와 오차 0을 보장한다.
+    getDashboardDimensions: async ({ startDate, endDate } = {}) => {
+      const dateRange = { since: startDate, until: endDate };
+      const trStr = JSON.stringify(dateRange);
+      const FIELDS = JSON.stringify(['clkCnt','impCnt','salesAmt','avgRnk','ccnt','convAmt','purchaseCcnt','purchaseConvAmt']);
+      const campaigns = await apiCall('GET', '/ncc/campaigns');
+
+      const addRow = (o, d) => {
+        o.imp += d.impCnt || 0;
+        o.clk += d.clkCnt || 0;
+        o.cost += d.salesAmt || 0;
+        o.purchaseCnt += d.purchaseCcnt || 0;
+        o.purchaseAmt += d.purchaseConvAmt || 0;
+        o.convCnt += d.ccnt || 0;
+        o.convAmt += d.convAmt || 0;
+        if (d.avgRnk > 0) { const w = d.impCnt || 1; o.rankSum += d.avgRnk * w; o.rankCount += w; }
+      };
+      const blank = (extra) => Object.assign({ imp:0, clk:0, cost:0, rankSum:0, rankCount:0, purchaseCnt:0, purchaseAmt:0, convCnt:0, convAmt:0 }, extra || {});
+
+      // 동시성 제한 헬퍼 (429 회피 — apiCall 자체 백오프 + 청크 병렬)
+      async function mapLimit(items, limit, fn) {
+        const out = [];
+        for (let i = 0; i < items.length; i += limit) {
+          const chunk = items.slice(i, i + limit);
+          const res = await Promise.allSettled(chunk.map(fn));
+          out.push(...res);
+        }
+        return out;
+      }
+
+      // 1) 일자별: 캠페인별 일일 행(default timeIncrement) 합산
+      const byDate = {};
+      const dailyRes = await mapLimit(campaigns || [], 8, (camp) =>
+        apiCall('GET', '/stats', { id: camp.nccCampaignId, fields: FIELDS, timeRange: trStr })
+      );
+      for (const sr of dailyRes) {
+        if (sr.status !== 'fulfilled') continue;
+        for (const d of (sr.value?.data || [])) {
+          const date = d.dateStart || d.date;
+          if (!date) continue;
+          if (!byDate[date]) byDate[date] = blank();
+          addRow(byDate[date], d);
+        }
+      }
+
+      // 2) 광고그룹별: 광고그룹 단위 /stats(allDays)
+      const agListRes = await mapLimit(campaigns || [], 8, (camp) =>
+        apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId }).then(ags => ({ camp, ags }))
+      );
+      const allAgs = [];
+      for (const r of agListRes) {
+        if (r.status !== 'fulfilled') continue;
+        for (const ag of (r.value.ags || [])) allAgs.push({ ag, camp: r.value.camp });
+      }
+      const byAdgroup = {};
+      const agStatRes = await mapLimit(allAgs, 8, ({ ag, camp }) =>
+        apiCall('GET', '/stats', { id: ag.nccAdgroupId, fields: FIELDS, timeRange: trStr, timeIncrement: 'allDays' })
+          .then(stat => ({ ag, camp, stat }))
+      );
+      for (const r of agStatRes) {
+        if (r.status !== 'fulfilled') continue;
+        const { ag, camp, stat } = r.value;
+        const rows = stat?.data || [];
+        if (!rows.length) continue;
+        const o = blank({ campaignId: camp.nccCampaignId, campaignName: camp.name, adgroupName: ag.name });
+        for (const d of rows) addRow(o, d);
+        byAdgroup[ag.nccAdgroupId] = o;
+      }
+
+      return { byDate, byAdgroup };
+    },
+
     // ─── 광고그룹별 통계 조회 ───────────────────────────────────────
     getKeywordStats: async ({ timeRange = 'yesterday', startDate, endDate } = {}) => {
       const campaigns = await apiCall('GET', '/ncc/campaigns');
