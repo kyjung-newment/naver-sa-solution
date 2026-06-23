@@ -7893,14 +7893,35 @@ router.get('/api/cron/cleanup-old-data', async (req, res) => {
     const logRes = await db.pool.query(`
       DELETE FROM sync_log WHERE stat_date < CURRENT_DATE - ($1 || ' days')::interval
     `, [RETENTION_DAYS]).catch(e => ({ rowCount: 0, error: e.message }));
+
+    // 네이버 리포트 job 정리 (계정당 100 한도 누적 방지 — master/stat 완료 job 삭제)
+    // 자동발송 후에도 정리하지만, 수동 생성·실패 누락분을 주기적으로 일괄 정리한다.
+    let jobAccounts = 0, jobDeleted = 0;
+    try {
+      const seen = new Set(); const accts = [];
+      for (const feat of ['daily_report', 'weekly_report', 'monthly_report']) {
+        try { for (const a of await db.getAllAccountsWithFeature(feat)) { if (a.api_key && a.secret_key && !seen.has(a.id)) { seen.add(a.id); accts.push(a); } } } catch (_) {}
+      }
+      for (const a of accts) {
+        if (Date.now() - startedAt > 600000) break; // 10분 가드
+        try {
+          const client = createApiClient({ apiKey: a.api_key, secretKey: a.secret_key, customerId: a.customer_id });
+          jobDeleted += await client.cleanupReportJobs();
+          jobAccounts++;
+        } catch (_) {}
+      }
+    } catch (_) {}
+
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
-    console.log(`✅ Cron [cleanup-old-data]: stat_daily_detail ${totalDeleted}행 (${batches}배치), sync_log ${logRes.rowCount || 0}행, ${elapsed}초`);
+    console.log(`✅ Cron [cleanup-old-data]: stat_daily_detail ${totalDeleted}행 (${batches}배치), sync_log ${logRes.rowCount || 0}행, 리포트job ${jobDeleted}개(${jobAccounts}계정), ${elapsed}초`);
     res.json({
       ok: true,
       retentionDays: RETENTION_DAYS,
       statDeleted: totalDeleted,
       batches,
       syncLogDeleted: logRes.rowCount || 0,
+      reportJobsDeleted: jobDeleted,
+      reportJobAccounts: jobAccounts,
       elapsed,
     });
   } catch (err) {

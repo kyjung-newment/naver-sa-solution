@@ -3,6 +3,7 @@ const { config } = require('../../config');
 const { generateAndSend } = require('../report/generator');
 const { runAutoBiddingForAccount } = require('./autoBid');
 const { runShoppingAutoBidForAccount } = require('./shoppingAutoBid');
+const { createApiClient } = require('../api/naverApi');
 const db = require('../db/database');
 
 function startScheduler() {
@@ -31,6 +32,24 @@ function startScheduler() {
     for (const account of accounts) await generateAndSend(account, 'monthly');
   }, { timezone: 'Asia/Seoul' });
   console.log(`  ✅ 월간 리포트: ${config.cron.monthly}`);
+
+  // ── 네이버 리포트 job 정리 (매일 06:30 KST, 계정당 100 한도 누적 방지) ──
+  cron.schedule('30 6 * * *', async () => {
+    console.log('\n🧹 리포트 job 정리 스케줄 실행');
+    const seen = new Set(); const accts = [];
+    for (const feat of ['daily_report', 'weekly_report', 'monthly_report']) {
+      try { for (const a of await db.getAllAccountsWithFeature(feat)) { if (a.api_key && a.secret_key && !seen.has(a.id)) { seen.add(a.id); accts.push(a); } } } catch (_) {}
+    }
+    let total = 0;
+    for (const a of accts) {
+      try {
+        const client = createApiClient({ apiKey: a.api_key, secretKey: a.secret_key, customerId: a.customer_id });
+        total += await client.cleanupReportJobs();
+      } catch (_) {}
+    }
+    console.log(`  ✅ 리포트 job 정리: ${accts.length}개 계정, ${total}개 삭제`);
+  }, { timezone: 'Asia/Seoul' });
+  console.log('  ✅ 리포트 job 정리: 매일 06:30');
 
   // ── 파워링크 자동입찰 (각 광고주별 설정 간격) ────────────────
   cron.schedule('* * * * *', async () => {

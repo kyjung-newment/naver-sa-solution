@@ -84,10 +84,40 @@ function createApiClient(creds) {
     return text;
   }
 
+  // ─── 리포트 job 정리 ───────────────────────────────────────────────
+  // master/stat 리포트 job은 계정당 100개 한도. 완료(BUILT/NONE/ERROR) job을
+  // 삭제해 누적으로 인한 POST 거부(키워드 미인식·수집 실패)를 방지한다.
+  async function cleanupReportJobs({ master = true, stat = true } = {}) {
+    let deleted = 0;
+    const sweep = async (path) => {
+      try {
+        const list = await apiCall('GET', path);
+        const done = (Array.isArray(list) ? list : []).filter(r => ['BUILT', 'NONE', 'ERROR'].includes(r.status));
+        for (let i = 0; i < done.length; i += 10) {
+          const chunk = done.slice(i, i + 10);
+          await Promise.allSettled(chunk.map(r => apiCall('DELETE', `${path}/${r.id || r.reportJobId}`)));
+          deleted += chunk.length;
+        }
+      } catch (_) {}
+    };
+    if (master) await sweep('/master-reports');
+    if (stat) await sweep('/stat-reports');
+    return deleted;
+  }
+
   // ─── Stat Report 공통 함수 ─────────────────────────────────────────
   async function createAndDownloadStatReport(reportTp, statDt) {
-    // 1. 리포트 생성
-    const report = await apiCall('POST', '/stat-reports', {}, { reportTp, statDt });
+    // 1. 리포트 생성 (job 100개 한도 초과 시 완료 job 정리 후 재시도)
+    let report;
+    try {
+      report = await apiCall('POST', '/stat-reports', {}, { reportTp, statDt });
+    } catch (e) {
+      const blob = `${e.message || ''} ${JSON.stringify(e.responseData || '')}`;
+      if (!/exceeded limit|numbers of .?job/i.test(blob)) throw e;
+      const n = await cleanupReportJobs({ master: false, stat: true });
+      console.log(`  🧹 stat-report job 한도 초과 → 완료 job ${n}개 정리 후 재시도 (${reportTp})`);
+      report = await apiCall('POST', '/stat-reports', {}, { reportTp, statDt });
+    }
     const reportId = report.reportJobId;
 
     // 2. 빌드 완료 대기 (최대 30초)
@@ -592,6 +622,7 @@ function createApiClient(creds) {
     // ─── Stat Report 직접 접근 ──────────────────────────────────────
     createAndDownloadStatReport,
     getPurchaseConversions,
+    cleanupReportJobs,
   };
 }
 

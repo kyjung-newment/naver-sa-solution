@@ -866,6 +866,12 @@ async function generateAndSend(account, type, customRange, opts) {
       isCustom,
     });
 
+    // 6. 발송 후 리포트 job 정리 (계정당 100 한도 누적 방지 — 특히 매일 도는 일간)
+    try {
+      const n = await client.cleanupReportJobs();
+      if (n > 0) console.log(`  🧹 발송 후 리포트 job ${n}개 정리`);
+    } catch (_) {}
+
     console.log(`✅ [${account.name}] ${type.toUpperCase()} 완료`);
     return true;
   } catch (err) {
