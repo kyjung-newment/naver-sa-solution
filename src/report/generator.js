@@ -907,10 +907,14 @@ async function collectReportData(account, type, customRange, opts) {
     for (const [kwId, info] of Object.entries(dbMaps.kwMap || {})) { kwNameMap[kwId] = info.keyword; if (info.qi) kwQiMap[kwId] = info.qi; }
   } catch (_) {}
 
-  // DB에 없으면 API 폴백 (타임아웃 15초)
-  if (Object.keys(campNameMap).length === 0) {
+  // DB에 캠페인이 없거나 '키워드 매핑이 부족'하면 API 마스터로 폴백.
+  // ※ 캠페인/그룹은 DB에 있어도 키워드가 0이면 파워링크 키워드가 ID로 남아 전부 '미인식'
+  //   처리되므로, 키워드 개수 기준도 함께 확인한다. (한촌설렁탕: 캠57/그룹308/키워드0 → 미인식)
+  // ※ Keyword 마스터는 대용량 계정에서 수 분 걸릴 수 있어 타임아웃 180초로 상향(기존 15초는 부족).
+  const kwCountDb = Object.keys(kwNameMap).length;
+  if (Object.keys(campNameMap).length === 0 || kwCountDb < 100) {
     try {
-      const masterTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('타임아웃')), 15000));
+      const masterTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('타임아웃')), 180000));
       const masterFetch = Promise.all([
         client.syncMaster('Campaign').catch(() => []),
         client.syncMaster('Adgroup').catch(() => []),
@@ -922,7 +926,8 @@ async function collectReportData(account, type, customRange, opts) {
       for (const r of agRows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
       for (const r of kwRows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
       for (const r of qiRows) { if (r.length >= 3) kwQiMap[r[1]] = parseInt(r[2]) || 0; }
-    } catch (e) {}
+      console.log(`  📋 API 마스터 보완: 캠페인 ${campRows.length} · 그룹 ${agRows.length} · 키워드 ${kwRows.length} (DB키워드 ${kwCountDb}개 → 보완)`);
+    } catch (e) { console.log('  ⚠️ API 마스터 폴백 실패:', e.message); }
   }
 
   // 전체 타임아웃: monthly 600s / weekly 300s / daily 180s

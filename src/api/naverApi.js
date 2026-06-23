@@ -521,9 +521,31 @@ function createApiClient(creds) {
     // 마스터 동기화 전체 프로세스 (Full 또는 Delta)
     // fromTime: ISO 8601 형식 → 해당 시점 이후 변경분만 다운로드 (Delta sync)
     syncMaster: async (item, fromTime) => {
+      // ⚠️ 마스터 리포트 job은 계정당 100개 한도. 누적되면 POST가
+      // "exceeded limit of '100' numbers of 'job'"로 거부되어 키워드/이름이
+      // 미해결(ID 미인식)된다. → 사용 후 job 삭제 + 한도 초과 시 자동 정리.
+      const delJob = async (id) => { try { await apiCall('DELETE', `/master-reports/${id}`); } catch (_) {} };
+      const cleanupCompleted = async () => {
+        try {
+          const ex = await apiCall('GET', '/master-reports');
+          const completed = (Array.isArray(ex) ? ex : []).filter(r => ['BUILT', 'NONE', 'ERROR'].includes(r.status));
+          for (const r of completed) await delJob(r.id);
+          return completed.length;
+        } catch (_) { return 0; }
+      };
+
       const body = { item };
       if (fromTime) body.fromTime = fromTime;
-      const report = await apiCall('POST', '/master-reports', {}, body);
+      let report;
+      try {
+        report = await apiCall('POST', '/master-reports', {}, body);
+      } catch (e) {
+        const blob = `${e.message || ''} ${JSON.stringify(e.responseData || '')}`;
+        if (!/exceeded limit|numbers of .?job/i.test(blob)) throw e;
+        const n = await cleanupCompleted();
+        console.log(`  🧹 마스터리포트 job 100개 한도 초과 → 완료 job ${n}개 정리 후 재시도 (${item})`);
+        report = await apiCall('POST', '/master-reports', {}, body);
+      }
       const reportId = report.id;
 
       let status = report.status;
@@ -531,19 +553,21 @@ function createApiClient(creds) {
       // 대용량 계정(5만+ 키워드 등) 대응: Keyword는 90회 × 2초 = 최대 3분 폴링
       const maxPolls = (item === 'Keyword') ? 90 : 30;
       for (let i = 0; i < maxPolls && status !== 'BUILT'; i++) {
-        if (status === 'NONE') return []; // 변경 데이터 없음 (Delta sync)
+        if (status === 'NONE') { await delJob(reportId); return []; } // 변경 데이터 없음 (Delta sync)
         await new Promise(r => setTimeout(r, 2000));
         const check = await apiCall('GET', `/master-reports/${reportId}`);
         status = check.status;
         downloadUrl = check.downloadUrl;
-        if (status === 'ERROR') throw new Error(`마스터 리포트 빌드 실패 (${item})`);
+        if (status === 'ERROR') { await delJob(reportId); throw new Error(`마스터 리포트 빌드 실패 (${item})`); }
       }
-      if (status === 'NONE') return []; // 변경분 없음
-      if (status !== 'BUILT') throw new Error(`마스터 리포트 타임아웃 (${item})`);
+      if (status === 'NONE') { await delJob(reportId); return []; } // 변경분 없음
+      if (status !== 'BUILT') { await delJob(reportId); throw new Error(`마스터 리포트 타임아웃 (${item})`); }
 
       const tsvText = await downloadReport(downloadUrl);
       const lines = tsvText.trim().split('\n').filter(l => l.trim());
-      return lines.map(line => line.split('\t'));
+      const result = lines.map(line => line.split('\t'));
+      await delJob(reportId); // 사용 완료 job 삭제 (누적 방지 — 핵심)
+      return result;
     },
 
     // ─── 키워드도구 (연관 키워드 + 월간 검색량) ──────────────────────
