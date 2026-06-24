@@ -320,6 +320,27 @@ async function initDb() {
     await safeQuery(`ALTER TABLE master_keywords ADD COLUMN IF NOT EXISTS mo_landing_url TEXT DEFAULT ''`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // ─── 광고주 열람 권한 (viewer) ─────────────────────────────────────
+  // users.role: 'marketer'(기본, API 소유자) | 'viewer'(특정 광고주 대시보드만 열람)
+  try {
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'marketer'`);
+  } catch (e) { /* 무시 */ }
+  // account_viewers: 광고주(ad_account)별 열람자 초대 + 권한 부여
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS account_viewers (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      invite_token TEXT UNIQUE,
+      status TEXT DEFAULT 'pending',
+      viewer_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      invited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      accepted_at TIMESTAMP,
+      UNIQUE(account_id, email)
+    )
+  `);
+
   // ─── 쇼핑검색 자동입찰 키워드 테이블 ──────────────────────────────
   await safeQuery(`
     CREATE TABLE IF NOT EXISTS shopping_bid_keywords (
@@ -388,7 +409,7 @@ async function getUserByUsername(username) {
 
 async function getUserById(id) {
   return get(
-    'SELECT id, username, name, is_admin, approved, api_key, secret_key, manager_customer_id, created_at FROM users WHERE id = $1',
+    'SELECT id, username, name, is_admin, approved, role, api_key, secret_key, manager_customer_id, created_at FROM users WHERE id = $1',
     [id]
   );
 }
@@ -397,7 +418,7 @@ async function authenticateUser(username, password) {
   const user = await getUserByUsername(username);
   if (!user) return null;
   if (!verifyPassword(password, user.password_hash)) return null;
-  return { id: user.id, username: user.username, name: user.name, is_admin: user.is_admin, approved: user.approved };
+  return { id: user.id, username: user.username, name: user.name, is_admin: user.is_admin, approved: user.approved, role: user.role || 'marketer' };
 }
 
 async function countUsers() {
@@ -459,20 +480,35 @@ async function getAgencyCredentialById(id, userId) {
 }
 
 async function getApiCredentials(userId, accountId) {
-  // accountId가 주어지면 해당 광고주가 연결된 agency_credential 우선 조회
+  // accountId가 주어지면 해당 광고주 '소유자'의 자격증명을 해석한다.
+  // 소유자(user_id) 또는 accepted 열람자(account_viewers)면 허용 → viewer도 소유자 자격증명 사용.
   if (accountId) {
-    const linked = await get(`
-      SELECT ac.id, ac.api_key, ac.secret_key, ac.manager_customer_id
+    const acc = await get(`
+      SELECT a.user_id AS owner_id, a.agency_credential_id
       FROM ad_accounts a
-      JOIN agency_credentials ac ON ac.id = a.agency_credential_id
-      WHERE a.id = $1 AND a.user_id = $2 AND ac.api_key != ''
+      WHERE a.id = $1 AND (a.user_id = $2 OR EXISTS (
+        SELECT 1 FROM account_viewers v
+        WHERE v.account_id = a.id AND v.viewer_user_id = $2 AND v.status = 'accepted'
+      ))
     `, [accountId, userId]);
-    if (linked) return linked;
+    if (acc) {
+      // 1. 계정에 직접 링크된 agency_credential
+      if (acc.agency_credential_id) {
+        const linked = await get(`SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND api_key != ''`, [acc.agency_credential_id]);
+        if (linked) return linked;
+      }
+      // 2. 소유자의 첫 번째 agency_credential
+      const ownerCred = await get('SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 AND api_key != \'\' ORDER BY id ASC LIMIT 1', [acc.owner_id]);
+      if (ownerCred) return ownerCred;
+      // 3. 소유자 users 테이블 레거시
+      const legacy = await _getApiCredentialsLegacy(acc.owner_id);
+      if (legacy) return legacy;
+    }
+    // 접근권한 없음/자격증명 없음 → 아래 요청자 본인 폴백
   }
-  // 폴백: 유저의 첫 번째 agency_credential
+  // 폴백: 요청자 본인의 자격증명 (마케터, accountId 없는 경우)
   const first = await get('SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC LIMIT 1', [userId]);
   if (first && first.api_key) return first;
-  // 레거시 폴백: users 테이블
   return _getApiCredentialsLegacy(userId);
 }
 async function _getApiCredentialsLegacy(userId) {
@@ -490,7 +526,17 @@ async function getAccountsByUser(userId) {
 }
 
 async function getAccountById(id, userId) {
-  return get('SELECT * FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, userId]);
+  // 소유자 또는 accepted 열람자(viewer)면 접근 허용
+  return get(`SELECT * FROM ad_accounts WHERE id = $1
+    AND (user_id = $2 OR EXISTS (
+      SELECT 1 FROM account_viewers v
+      WHERE v.account_id = ad_accounts.id AND v.viewer_user_id = $2 AND v.status = 'accepted'
+    ))`, [id, userId]);
+}
+
+// 소유자 전용 조회 (열람자 권한 부여 등 마케터 액션에서 소유 검증)
+async function getOwnedAccountById(id, ownerUserId) {
+  return get('SELECT * FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, ownerUserId]);
 }
 
 async function getAccountByCustomerId(customerId, userId) {
@@ -565,6 +611,74 @@ async function updateAccount(id, userId, data) {
 
 async function deleteAccount(id, userId) {
   return query('DELETE FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, userId]);
+}
+
+// ─── 광고주 열람 권한 (viewer 초대/부여) ──────────────────────────────
+// viewer가 열람 가능한 광고주 목록 (accepted)
+async function getViewerAccounts(viewerUserId) {
+  return all(`
+    SELECT a.* FROM ad_accounts a
+    JOIN account_viewers v ON v.account_id = a.id
+    WHERE v.viewer_user_id = $1 AND v.status = 'accepted'
+    ORDER BY a.name ASC
+  `, [viewerUserId]);
+}
+
+// 특정 광고주의 열람자/초대 목록 (소유자만)
+async function getAccountViewers(accountId, ownerUserId) {
+  return all(`
+    SELECT v.*, u.name AS viewer_name FROM account_viewers v
+    LEFT JOIN users u ON u.id = v.viewer_user_id
+    JOIN ad_accounts a ON a.id = v.account_id
+    WHERE v.account_id = $1 AND a.user_id = $2
+    ORDER BY v.created_at DESC
+  `, [accountId, ownerUserId]);
+}
+
+// 초대 생성 (소유자 검증, 같은 account+email 재초대 시 토큰 갱신)
+async function createAccountInvite(accountId, ownerUserId, email, token) {
+  const acct = await getOwnedAccountById(accountId, ownerUserId);
+  if (!acct) return null;
+  const r = await pool.query(`
+    INSERT INTO account_viewers (account_id, email, invite_token, status, invited_by)
+    VALUES ($1, $2, $3, 'pending', $4)
+    ON CONFLICT (account_id, email) DO UPDATE SET
+      invite_token = EXCLUDED.invite_token,
+      status = CASE WHEN account_viewers.status = 'accepted' THEN 'accepted' ELSE 'pending' END,
+      invited_by = EXCLUDED.invited_by, created_at = CURRENT_TIMESTAMP
+    RETURNING *
+  `, [accountId, String(email).toLowerCase().trim(), token, ownerUserId]);
+  return Object.assign(r.rows[0], { account_name: acct.name });
+}
+
+async function getInviteByToken(token) {
+  return get(`
+    SELECT v.*, a.name AS account_name, a.customer_id, a.user_id AS owner_id
+    FROM account_viewers v JOIN ad_accounts a ON a.id = v.account_id
+    WHERE v.invite_token = $1
+  `, [token]);
+}
+
+async function acceptInvite(token, viewerUserId) {
+  return query(`UPDATE account_viewers SET status = 'accepted', viewer_user_id = $1, accepted_at = CURRENT_TIMESTAMP WHERE invite_token = $2`, [viewerUserId, token]);
+}
+
+// 열람 권한 취소 (소유자만)
+async function revokeAccountViewer(id, ownerUserId) {
+  return query(`DELETE FROM account_viewers WHERE id = $1 AND account_id IN (SELECT id FROM ad_accounts WHERE user_id = $2)`, [id, ownerUserId]);
+}
+
+async function getViewerUserByEmail(email) {
+  return get(`SELECT * FROM users WHERE username = $1 AND role = 'viewer'`, [String(email).toLowerCase().trim()]);
+}
+
+async function createViewerUser(email, name, password) {
+  const passwordHash = hashPassword(password);
+  const r = await pool.query(`
+    INSERT INTO users (username, password_hash, name, is_admin, approved, role)
+    VALUES ($1, $2, $3, 0, 1, 'viewer') RETURNING *
+  `, [String(email).toLowerCase().trim(), passwordHash, name || email]);
+  return r.rows[0];
 }
 
 // ─── 리포트 커스터마이징 설정 (시트 on/off + 커스텀 시트) ───────────────
@@ -1103,8 +1217,9 @@ module.exports = Object.assign(module.exports, {
   getAllUsers, getPendingUsers, approveUser, rejectUser,
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
   listAgencyCredentials, addAgencyCredential, updateAgencyCredential, deleteAgencyCredential, getAgencyCredentialById,
-  getAccountsByUser, getAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
+  getAccountsByUser, getAccountById, getOwnedAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
+  getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
   resetAdminPassword, deleteAllUsers,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords, upsertMasterQi,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,

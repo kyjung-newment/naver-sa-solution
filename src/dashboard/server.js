@@ -5,6 +5,8 @@ const { config } = require('../../config');
 const db = require('../db/database');
 const { createApiClient } = require('../api/naverApi');
 const { generateAndSend } = require('../report/generator');
+const crypto = require('crypto');
+const { sendInviteEmail } = require('../email/sender');
 
 const router = express.Router();
 
@@ -34,6 +36,8 @@ router.use(session({
 
 router.use(express.json({ limit: '20mb' })); // 이미지 base64 업로드 대응
 router.use(express.urlencoded({ extended: true, limit: '20mb' }));
+// 열람자(viewer)는 허용된 경로 외 마케터 기능 전면 차단
+router.use((req, res, next) => viewerGuard(req, res, next));
 
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
@@ -49,9 +53,45 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// API 자격증명 등록 여부 체크 미들웨어
+// ─── 광고주 열람자(viewer) 권한 ────────────────────────────────────
+// viewer: 권한 부여된 특정 광고주의 대시보드/리포트 다운로드만 열람. 마케터 기능 전면 차단.
+function isViewer(req) { return req.session.role === 'viewer'; }
+
+function viewerForbidden() {
+  return '<div style="font-family:Pretendard,system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;padding:30px"><div style="font-size:40px;margin-bottom:8px">🔒</div><h2 style="color:#111827;margin-bottom:8px">접근 권한이 없습니다</h2><p style="color:#6b7280;margin:0 0 20px;font-size:14px">열람 권한이 부여된 광고주 대시보드만 이용할 수 있습니다.</p><a href="/smart-sa" style="color:#6366f1;font-weight:600">← 대시보드로 돌아가기</a></div>';
+}
+
+function requireMarketer(req, res, next) {
+  if (isViewer(req)) return res.status(403).send(viewerForbidden());
+  next();
+}
+
+// 열람자 허용 경로 (그 외는 모두 차단 = default deny)
+function viewerPathAllowed(p, method) {
+  if (['/', '/login', '/signup', '/logout', '/pending', '/profile'].includes(p)) return true;
+  if (p === '/reports' || p === '/api/select-account') return true;
+  if (p.startsWith('/invite')) return true;
+  // 대시보드 데이터(읽기 전용)
+  if (p === '/api/stats' || p === '/api/stats/trend' || p === '/api/keyword-stats' || p.startsWith('/api/tab/')) return true;
+  // 기간 리포트 다운로드/미리보기 (GET만)
+  if (method === 'GET' && (p === '/api/report/download-excel' || p === '/api/report/preview')) return true;
+  return false;
+}
+
+function viewerGuard(req, res, next) {
+  if (!isViewer(req)) return next();
+  if (viewerPathAllowed(req.path, req.method)) return next();
+  return res.status(403).send(viewerForbidden());
+}
+
+// API 자격증명 체크 (viewer는 부여된 광고주의 소유자 자격증명을 사용하므로 본인 키 불필요)
 async function requireApi(req, res, next) {
-  const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
+  if (isViewer(req)) {
+    const accts = await db.getViewerAccounts(req.session.userId);
+    if (!accts.length) return res.status(403).send(viewerForbidden());
+    return next();
+  }
+  const creds = await db.getApiCredentials(req.session.userId, null);
   if (!creds) return res.redirect('/smart-sa/api-settings?msg=need');
   req.apiCreds = creds;
   next();
@@ -189,31 +229,36 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const accounts = opts.accounts || [];
   const selectedAccountId = opts.selectedAccountId || '';
 
+  const isViewerUser = user?.role === 'viewer';
   const menuItems = [
     { id: 'dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label: 'SA 성과 대시보드', href: '/smart-sa' },
   ];
-  // DA 성과 대시보드: 공식 GFA API 연동 전까지 비활성화
-  if (FEATURES.DA) {
-    menuItems.push({ id: 'da-dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 13 10 9 13 12 17 7"/></svg>', label: 'DA 성과 대시보드', href: '/smart-sa/da-dashboard' });
+  if (!isViewerUser) {
+    // DA 성과 대시보드: 공식 GFA API 연동 전까지 비활성화
+    if (FEATURES.DA) {
+      menuItems.push({ id: 'da-dashboard', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 13 10 9 13 12 17 7"/></svg>', label: 'DA 성과 대시보드', href: '/smart-sa/da-dashboard' });
+    }
+    if (FEATURES.AUTOBID) {
+      menuItems.push({ id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' });
+    }
+    if (FEATURES.SHOPPING_BID) {
+      menuItems.push({ id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' });
+    }
   }
-  // 자동입찰: '원클릭 계정분석 제안'(증액/감액)으로 대체하여 비활성화
-  if (FEATURES.AUTOBID) {
-    menuItems.push({ id: 'autobid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>', label: '파워링크 자동입찰', href: '/smart-sa/autobid' });
-  }
-  if (FEATURES.SHOPPING_BID) {
-    menuItems.push({ id: 'shopping-bid', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>', label: '쇼핑검색 자동입찰', href: '/smart-sa/shopping-bid' });
-  }
-  menuItems.push(
-    { id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: '자동리포트', href: '/smart-sa/reports' },
-    { id: 'accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', label: '광고주 관리', href: '/smart-sa/accounts' },
-    { id: 'api', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>', label: 'API 설정', href: '/smart-sa/api-settings' },
-  );
-  if (user?.is_admin) {
-    menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
+  // 리포트: 마케터=자동리포트, 열람자=리포트 다운로드
+  menuItems.push({ id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: isViewerUser ? '리포트 다운로드' : '자동리포트', href: '/smart-sa/reports' });
+  if (!isViewerUser) {
+    menuItems.push(
+      { id: 'accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', label: '광고주 관리', href: '/smart-sa/accounts' },
+      { id: 'api', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>', label: 'API 설정', href: '/smart-sa/api-settings' },
+    );
+    if (user?.is_admin) {
+      menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
+    }
   }
 
-  // ─── 성과개선 전략 메뉴 그룹 ──────────────────────────────────────
-  const strategyItems = [
+  // ─── 성과개선 전략 메뉴 그룹 (열람자는 미노출) ─────────────────────
+  const strategyItems = isViewerUser ? [] : [
     { id: 'strategy-upsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>', label: '증액 (Upselling)', href: '/smart-sa/strategy/upsell' },
     { id: 'strategy-downsell', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>', label: '감액 (Downselling)', href: '/smart-sa/strategy/downsell' },
     { id: 'strategy-oneclick', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>', label: '원클릭 계정분석 제안', href: '/smart-sa/strategy/analysis' },
@@ -233,7 +278,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
       <label style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:6px;font-weight:600">광고주 선택</label>
       <select id="account-selector" onchange="switchAccount(this.value)"
         style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #e5e7eb;background:#f9fafb;color:#374151;font-size:13px;cursor:pointer;font-family:'Consolas','Monaco',monospace;outline:none">
-        <option value="" style="font-family:inherit">전체 광고주</option>
+        ${user?.role === 'viewer' ? '' : '<option value="" style="font-family:inherit">전체 광고주</option>'}
         ${accounts.map(a => `<option value="${a.id}" ${String(a.id) === String(selectedAccountId) ? 'selected' : ''}>${typeBadge(a)} ${a.name} (${a.customer_id})</option>`).join('')}
       </select>
     </div>
@@ -262,7 +307,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
         </a>
       `).join('')}
     </div>
-    <div class="sidebar-section">성과개선 전략</div>
+    ${strategyItems.length ? '<div class="sidebar-section">성과개선 전략</div>' : ''}
     <div style="padding:0 6px;flex:1">
       ${strategyItems.map(m => `
         <a href="${m.href}" class="sidebar-link ${activeMenu === m.id ? 'active' : ''}">
@@ -370,6 +415,7 @@ router.post('/login', async (req, res) => {
   req.session.userName = user.name;
   req.session.isAdmin = !!user.is_admin;
   req.session.approved = user.approved;
+  req.session.role = user.role || 'marketer';
   req.session.save(() => res.redirect(303, '/smart-sa'));
 });
 
@@ -820,18 +866,28 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
+// 현재 사용자가 접근 가능한 광고주 목록 (마케터=소유, 열람자=부여받은 광고주)
+async function getAccessibleAccounts(req) {
+  return isViewer(req) ? db.getViewerAccounts(req.session.userId) : db.getAccountsByUser(req.session.userId);
+}
+
 // 사용자의 API 자격증명으로 특정 광고주(customerId)용 API 클라이언트 생성
 // 레이아웃에 전달할 공통 옵션 (광고주 목록 + 선택된 광고주)
 async function getLayoutOpts(req) {
   if (!req.session.userId) return {};
   try {
-    const accounts = await db.getAccountsByUser(req.session.userId);
+    const accounts = await getAccessibleAccounts(req);
     // 세션에 저장된 selectedAccountId가 현재 사용자의 광고주 목록에 존재하는지 검증
     let selId = req.session.selectedAccountId || '';
     if (selId && !accounts.find(a => String(a.id) === String(selId))) {
       // 유효하지 않은 광고주 ID → 무시 (세션 쓰기 실패해도 안전)
       selId = '';
       try { req.session.selectedAccountId = ''; req.session.save(() => {}); } catch(_){}
+    }
+    // 열람자(viewer)는 '전체' 불가 → 미선택 시 첫 광고주 자동 선택
+    if (isViewer(req) && !selId && accounts.length) {
+      selId = String(accounts[0].id);
+      try { req.session.selectedAccountId = selId; req.session.save(() => {}); } catch(_){}
     }
     return {
       accounts,
@@ -1018,7 +1074,8 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                     ${!a.feat_daily_report && !a.feat_weekly_report && !a.feat_monthly_report && !a.feat_keyword_monitor ? '<span class="badge badge-gray">미설정</span>' : ''}
                   </td>
                   <td style="text-align:center">
-                    <a href="/smart-sa/accounts/${a.id}/edit" class="btn btn-outline btn-sm">설정</a>
+                    <a href="/smart-sa/accounts/${a.id}/viewers" class="btn btn-outline btn-sm" title="광고주에게 이 대시보드 열람 권한 초대">👥 열람 권한</a>
+                    <a href="/smart-sa/accounts/${a.id}/edit" class="btn btn-outline btn-sm" style="margin-left:4px">설정</a>
                     <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAccount(${a.id},'${a.name}')">제거</button>
                   </td>
                 </tr>
@@ -1664,6 +1721,137 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   data.has_da = 'has_da' in req.body;
   await db.updateAccount(req.params.id, user.id, data);
   res.redirect(303, '/smart-sa/accounts?msg=saved');
+});
+
+// ─── 광고주 열람 권한 관리 (마케터) ────────────────────────────────
+const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function viewersPageBody(account, viewers, msg) {
+  const rows = viewers.map(v => `
+    <tr>
+      <td>${escHtml(v.email)}</td>
+      <td>${v.status === 'accepted' ? '<span class="badge badge-green">열람 중</span>' : '<span class="badge badge-gray">초대 발송됨</span>'}</td>
+      <td style="color:#6b7280;font-size:12px">${v.viewer_name ? escHtml(v.viewer_name) : '-'}</td>
+      <td style="text-align:right">
+        <form method="post" action="/smart-sa/accounts/${account.id}/viewers/${v.id}/revoke" style="display:inline" onsubmit="return confirm('이 열람자의 권한을 해제할까요?')">
+          <button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#fecaca">권한 해제</button>
+        </form>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:24px">아직 초대한 열람자가 없습니다.</td></tr>';
+  return `
+  <div style="max-width:760px">
+    <a href="/smart-sa/accounts" style="color:#6b7280;font-size:13px">← 광고주 관리</a>
+    <h2 style="font-size:20px;font-weight:800;margin:8px 0 4px">${escHtml(account.name)} · 열람 권한</h2>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:18px">광고주(고객)를 초대하면 <b>이 광고주의 대시보드와 기간 리포트 다운로드만</b> 열람할 수 있습니다. 다른 광고주·설정·전략·발송 기능은 보이지 않습니다.</p>
+    ${msg === 'invited' ? '<div class="alert alert-ok">초대 메일을 발송했습니다.</div>' : ''}
+    ${msg === 'revoked' ? '<div class="alert alert-info">열람 권한을 해제했습니다.</div>' : ''}
+    ${msg === 'err' ? '<div class="alert alert-err">초대 메일 발송에 실패했습니다. 광고주 설정의 발신 이메일(SMTP)을 확인해주세요.</div>' : ''}
+    ${msg === 'noemail' ? '<div class="alert alert-err">이 광고주에 발신 이메일(SMTP)이 설정되어 있지 않습니다. <a href="/smart-sa/accounts/' + account.id + '/edit" style="color:#4f46e5;font-weight:600">광고주 설정</a>에서 이메일을 먼저 등록해주세요.</div>' : ''}
+    <div class="card" style="margin-bottom:20px"><div class="card-body">
+      <form method="post" action="/smart-sa/accounts/${account.id}/viewers" style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1"><label>초대할 광고주 이메일</label><input type="email" name="email" placeholder="advertiser@example.com" required></div>
+        <button class="btn btn-primary" style="white-space:nowrap">📧 초대 메일 발송</button>
+      </form>
+    </div></div>
+    <div class="card"><div class="card-header"><div class="card-title">열람자 목록</div></div>
+      <table><thead><tr><th>이메일</th><th>상태</th><th>이름</th><th style="text-align:right">관리</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+  </div>`;
+}
+
+router.get('/accounts/:id/viewers', requireLogin, requireMarketer, async (req, res) => {
+  const user = await getUser(req);
+  const account = await db.getOwnedAccountById(req.params.id, user.id);
+  if (!account) return res.redirect('/smart-sa/accounts');
+  const viewers = await db.getAccountViewers(account.id, user.id);
+  res.send(appLayout(account.name + ' 열람 권한', viewersPageBody(account, viewers, req.query.msg || ''), user, 'accounts', await getLayoutOpts(req)));
+});
+
+router.post('/accounts/:id/viewers', requireLogin, requireMarketer, async (req, res) => {
+  const user = await getUser(req);
+  const account = await db.getOwnedAccountById(req.params.id, user.id);
+  if (!account) return res.redirect('/smart-sa/accounts');
+  const base = `/smart-sa/accounts/${account.id}/viewers`;
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.redirect(303, base + '?msg=err');
+  if (!account.email_user || !account.email_pass) return res.redirect(303, base + '?msg=noemail');
+  try {
+    const token = crypto.randomBytes(24).toString('hex');
+    await db.createAccountInvite(account.id, user.id, email, token);
+    const base_url = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    const inviteUrl = `${base_url}/smart-sa/invite/${token}`;
+    await sendInviteEmail(account, { to: email, accountName: account.name, inviteUrl, inviterName: user.name || user.username });
+    res.redirect(303, base + '?msg=invited');
+  } catch (e) {
+    console.error('초대 발송 실패:', e.message);
+    res.redirect(303, base + '?msg=err');
+  }
+});
+
+router.post('/accounts/:id/viewers/:vid/revoke', requireLogin, requireMarketer, async (req, res) => {
+  await db.revokeAccountViewer(req.params.vid, req.session.userId);
+  res.redirect(303, `/smart-sa/accounts/${req.params.id}/viewers?msg=revoked`);
+});
+
+// ─── 광고주 초대 수락 (광고주/열람자) ──────────────────────────────
+function inviteStandalone(title, inner) {
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+  <style>${css}</style></head><body style="background:#f5f6fa;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:440px">${inner}</div></body></html>`;
+}
+
+router.get('/invite/:token', async (req, res) => {
+  const inv = await db.getInviteByToken(req.params.token);
+  if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:36px">⚠️</div><h2 style="margin:8px 0">유효하지 않은 초대 링크</h2><p style="color:#6b7280">링크가 만료되었거나 잘못되었습니다. 담당자에게 재발송을 요청해주세요.</p></div></div>'));
+  const existing = await db.getViewerUserByEmail(inv.email);
+  const inner = `
+    <div class="card"><div class="card-body">
+      <div style="text-align:center;margin-bottom:18px">
+        ${logoBase64 ? `<img src="${logoBase64}" style="height:26px;margin-bottom:10px" alt="NEWMENT">` : '<div style="font-weight:800;font-size:18px;color:#6366f1">NEWMENT</div>'}
+        <h2 style="font-size:19px;font-weight:800;margin-top:6px">${escHtml(inv.account_name)} 대시보드 열람</h2>
+        <p style="color:#6b7280;font-size:13px;margin-top:4px">${escHtml(inv.email)} 님을 초대했습니다.</p>
+      </div>
+      <form method="post" action="/smart-sa/invite/${req.params.token}">
+        ${req.query.err ? '<div class="alert alert-err">' + escHtml(req.query.err) + '</div>' : ''}
+        <div class="form-group"><label>이름</label><input name="name" value="${existing ? escHtml(existing.name) : ''}" placeholder="이름" required></div>
+        <div class="form-group"><label>비밀번호 ${existing ? '(기존 계정)' : '(새로 설정)'}</label><input type="password" name="password" placeholder="${existing ? '기존 비밀번호' : '비밀번호 설정'}" required minlength="4"></div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center">${existing ? '로그인하고 대시보드 열기' : '계정 만들고 대시보드 열기'}</button>
+      </form>
+      <p style="font-size:12px;color:#9ca3af;text-align:center;margin-top:14px">이 계정은 <b>${escHtml(inv.account_name)}</b> 대시보드 열람 전용입니다.</p>
+    </div></div>`;
+  res.send(inviteStandalone(inv.account_name + ' 열람 초대', inner));
+});
+
+router.post('/invite/:token', async (req, res) => {
+  const token = req.params.token;
+  const inv = await db.getInviteByToken(token);
+  const back = (err) => res.redirect(303, `/smart-sa/invite/${token}?err=${encodeURIComponent(err)}`);
+  if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><h2>유효하지 않은 초대입니다.</h2></div></div>'));
+  const name = String(req.body.name || '').trim();
+  const password = String(req.body.password || '');
+  if (!name || password.length < 4) return back('이름과 4자 이상 비밀번호를 입력해주세요.');
+  try {
+    let viewer = await db.getViewerUserByEmail(inv.email);
+    if (viewer) {
+      // 기존 열람자 계정 → 비밀번호 확인 후 연결
+      const auth = await db.authenticateUser(inv.email, password);
+      if (!auth) return back('이미 가입된 이메일입니다. 기존 비밀번호를 입력해주세요.');
+      viewer = auth;
+    } else {
+      viewer = await db.createViewerUser(inv.email, name, password);
+    }
+    await db.acceptInvite(token, viewer.id);
+    req.session.userId = viewer.id;
+    req.session.userName = viewer.name;
+    req.session.isAdmin = false;
+    req.session.approved = 1;
+    req.session.role = 'viewer';
+    req.session.selectedAccountId = '';
+    req.session.save(() => res.redirect(303, '/smart-sa'));
+  } catch (e) {
+    console.error('초대 수락 실패:', e.message);
+    back('처리 중 오류가 발생했습니다. 다시 시도해주세요.');
+  }
 });
 
 // DA 도움말 이미지 저장 (admin만, 전역 공유)
@@ -2720,7 +2908,7 @@ router.get('/api/da/tab/:tab', requireLogin, async (req, res) => {
 // ─── SA 성과 대시보드 ───────────────────────────────────────────────
 router.get('/', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
-  const accounts = await db.getAccountsByUser(user.id);
+  const accounts = await getAccessibleAccounts(req);
 
   const content = `
     <!-- 기간 선택 + 광고주 -->
@@ -6211,6 +6399,30 @@ function strategyPageContent(kind, selAccount) {
 // ─── 리포트 ─────────────────────────────────────────────────────────
 router.get('/reports', requireLogin, requireApi, async (req, res) => {
   const user = await getUser(req);
+  // 열람자(viewer): 다운로드 전용 간소 페이지
+  if (isViewer(req)) {
+    const vAccts = await db.getViewerAccounts(user.id);
+    const cards = vAccts.map(a => `
+      <div class="card" style="margin-bottom:16px"><div class="card-body">
+        <div style="font-weight:700;font-size:15px">${escHtml(a.name)}</div>
+        <div style="color:#9ca3af;font-size:12px;margin-bottom:14px">고객 ID: ${escHtml(a.customer_id)}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <a class="btn btn-outline btn-sm" href="/smart-sa/api/report/download-excel?type=daily&accountId=${a.id}">일간</a>
+          <a class="btn btn-outline btn-sm" href="/smart-sa/api/report/download-excel?type=weekly&accountId=${a.id}">주간</a>
+          <a class="btn btn-outline btn-sm" href="/smart-sa/api/report/download-excel?type=monthly&accountId=${a.id}">월간</a>
+          <span style="width:1px;height:26px;background:#e5e7eb;margin:0 4px"></span>
+          <div><label style="font-size:11px">시작일</label><input type="date" id="s-${a.id}" style="width:140px;padding:6px"></div>
+          <div><label style="font-size:11px">종료일</label><input type="date" id="e-${a.id}" style="width:140px;padding:6px"></div>
+          <button class="btn btn-primary btn-sm" onclick="dlCustom(${a.id})">기간 리포트 다운로드</button>
+        </div>
+      </div></div>`).join('') || '<div class="alert alert-info">열람 가능한 광고주가 없습니다.</div>';
+    const body = `
+      <h2 style="font-size:20px;font-weight:800;margin-bottom:6px">리포트 다운로드</h2>
+      <p style="color:#6b7280;font-size:13px;margin-bottom:18px">열람 권한이 부여된 광고주의 성과 리포트를 엑셀로 다운로드할 수 있습니다.</p>
+      ${cards}
+      <script>function dlCustom(id){var s=document.getElementById('s-'+id).value,e=document.getElementById('e-'+id).value;if(!s||!e||s>e){alert('기간을 올바르게 선택해주세요.');return;}window.location.href='/smart-sa/api/report/download-excel?type=monthly&custom=1&accountId='+id+'&startDate='+s+'&endDate='+e;}</script>`;
+    return res.send(appLayout('리포트 다운로드', body, user, 'reports', await getLayoutOpts(req)));
+  }
   const accounts = await db.getAccountsByUser(user.id);
   const selId = req.session.selectedAccountId || (accounts[0]?.id || '');
   const selAccount = accounts.find(a => String(a.id) === String(selId)) || accounts[0] || {};

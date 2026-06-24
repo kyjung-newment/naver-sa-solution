@@ -596,4 +596,42 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
   console.log(`✅ [${account.name}] ${typeLabel} 리포트 → ${recipients.join(', ')}${excelBuffer ? ' (엑셀 첨부)' : ''}`);
 }
 
-module.exports = { sendReport, buildHtmlReport, buildExcelReport, sendMailWithFallback };
+// ─── 광고주 열람 초대 메일 ────────────────────────────────────────
+async function sendInviteEmail(account, { to, accountName, inviteUrl, inviterName }) {
+  const from = account.email_user;
+  const html = `
+  <div style="max-width:520px;margin:0 auto;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f5f6fa;padding:28px">
+    <div style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
+      <div style="background:#6366f1;padding:24px 28px;color:#fff">
+        <div style="font-size:13px;opacity:.85;letter-spacing:.04em">NEWMENT · 뉴먼트 솔루션</div>
+        <div style="font-size:20px;font-weight:800;margin-top:4px">광고 대시보드 열람 초대</div>
+      </div>
+      <div style="padding:28px">
+        <p style="font-size:15px;color:#111827;margin:0 0 14px">안녕하세요,</p>
+        <p style="font-size:14px;color:#374151;line-height:1.7;margin:0 0 18px">
+          <b>${inviterName || '광고 담당자'}</b>님이 <b style="color:#4f46e5">${accountName}</b> 광고 성과 대시보드를
+          열람하실 수 있도록 초대했습니다. 아래 버튼을 눌러 계정을 만들고 대시보드를 확인하세요.
+        </p>
+        <div style="text-align:center;margin:24px 0">
+          <a href="${inviteUrl}" style="display:inline-block;background:#6366f1;color:#fff;font-weight:700;font-size:15px;padding:13px 32px;border-radius:10px;text-decoration:none">초대 수락하고 대시보드 열기</a>
+        </div>
+        <p style="font-size:12px;color:#9ca3af;line-height:1.6;margin:18px 0 0">
+          버튼이 작동하지 않으면 아래 주소를 복사해 브라우저에 붙여넣으세요.<br>
+          <span style="color:#6366f1;word-break:break-all">${inviteUrl}</span>
+        </p>
+        <p style="font-size:12px;color:#9ca3af;margin:16px 0 0;border-top:1px solid #f1f5f9;padding-top:14px">
+          본 초대는 ${accountName} 광고 대시보드 <b>열람(읽기 전용)</b> 권한만 부여합니다.
+        </p>
+      </div>
+    </div>
+  </div>`;
+  await sendMailWithFallback(account, {
+    from: `"뉴먼트 솔루션" <${from}>`,
+    to,
+    subject: `[뉴먼트 솔루션] ${accountName} 광고 대시보드 열람 초대`,
+    html,
+  });
+  console.log(`✅ [${account.name}] 열람 초대 메일 → ${to}`);
+}
+
+module.exports = { sendReport, buildHtmlReport, buildExcelReport, sendMailWithFallback, sendInviteEmail };
