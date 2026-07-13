@@ -1745,8 +1745,8 @@ function viewersPageBody(account, viewers, msg) {
     <p style="color:#6b7280;font-size:13px;margin-bottom:18px">광고주(고객)를 초대하면 <b>이 광고주의 대시보드와 기간 리포트 다운로드만</b> 열람할 수 있습니다. 다른 광고주·설정·전략·발송 기능은 보이지 않습니다.</p>
     ${msg === 'invited' ? '<div class="alert alert-ok">초대 메일을 발송했습니다.</div>' : ''}
     ${msg === 'revoked' ? '<div class="alert alert-info">열람 권한을 해제했습니다.</div>' : ''}
-    ${msg === 'err' ? '<div class="alert alert-err">초대 메일 발송에 실패했습니다. 광고주 설정의 발신 이메일(SMTP)을 확인해주세요.</div>' : ''}
-    ${msg === 'noemail' ? '<div class="alert alert-err">이 광고주에 발신 이메일(SMTP)이 설정되어 있지 않습니다. <a href="/smart-sa/accounts/' + account.id + '/edit" style="color:#4f46e5;font-weight:600">광고주 설정</a>에서 이메일을 먼저 등록해주세요.</div>' : ''}
+    ${msg === 'err' ? '<div class="alert alert-err">초대 메일 발송에 실패했습니다. <a href="/smart-sa/profile" style="color:#4f46e5;font-weight:600">내 정보</a>의 다우오피스 이메일/비밀번호를 확인해주세요.</div>' : ''}
+    ${msg === 'nodaou' ? '<div class="alert alert-err">초대 메일을 보낼 다우오피스 이메일이 연동되어 있지 않습니다. <a href="/smart-sa/profile" style="color:#4f46e5;font-weight:600">내 정보</a>에서 다우오피스 이메일/비밀번호를 먼저 등록해주세요.</div>' : ''}
     <div class="card" style="margin-bottom:20px"><div class="card-body">
       <form method="post" action="/smart-sa/accounts/${account.id}/viewers" style="display:flex;gap:10px;align-items:flex-end">
         <div style="flex:1"><label>초대할 광고주 이메일</label><input type="email" name="email" placeholder="advertiser@example.com" required></div>
@@ -1774,13 +1774,22 @@ router.post('/accounts/:id/viewers', requireLogin, requireMarketer, async (req, 
   const base = `/smart-sa/accounts/${account.id}/viewers`;
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.redirect(303, base + '?msg=err');
-  if (!account.email_user || !account.email_pass) return res.redirect(303, base + '?msg=noemail');
+  // 초대 메일은 가입 시 연동한 마케터의 다우오피스 SMTP로 발송 (광고주별 SMTP 불필요)
+  const smtp = await db.getSmtpCredentials(user.id);
+  if (!smtp || !smtp.daou_email || !smtp.smtp_pass) return res.redirect(303, base + '?msg=nodaou');
+  const mailAccount = {
+    name: account.name,
+    email_host: smtp.smtp_host || 'outbound.daouoffice.com',
+    email_port: 465,
+    email_user: smtp.daou_email,
+    email_pass: smtp.smtp_pass,
+  };
   try {
     const token = crypto.randomBytes(24).toString('hex');
     await db.createAccountInvite(account.id, user.id, email, token);
     const base_url = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     const inviteUrl = `${base_url}/smart-sa/invite/${token}`;
-    await sendInviteEmail(account, { to: email, accountName: account.name, inviteUrl, inviterName: user.name || user.username });
+    await sendInviteEmail(mailAccount, { to: email, accountName: account.name, inviteUrl, inviterName: user.name || user.username });
     res.redirect(303, base + '?msg=invited');
   } catch (e) {
     console.error('초대 발송 실패:', e.message);
