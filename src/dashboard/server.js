@@ -10,16 +10,21 @@ const { sendInviteEmail } = require('../email/sender');
 
 const router = express.Router();
 
-// ─── 기능 플래그 ────────────────────────────────────────────────────
-// DA(GFA) 대시보드/리포트: 쿠키 세션 기반이라 자동 토큰 갱신이 불가능하여
-//   공식 GFA 마케팅 API가 연동될 때까지 비활성화. (코드는 보존 → 플래그만 true로 재활성화)
-// 자동입찰(파워링크/쇼핑): 자동 입찰 대신 '원클릭 계정분석 제안'의 증액/감액 제안으로 대체.
-//   auto_bid_keywords / shopping_bid_keywords 데이터는 보존되므로 재활성화 시 그대로 복구됨.
-const FEATURES = {
-  DA: false,        // DA 성과 대시보드 + DA 리포트
-  AUTOBID: false,   // 파워링크 자동입찰
-  SHOPPING_BID: false, // 쇼핑검색 자동입찰
-};
+// ─── 기능 플래그 (config/index.js 에서 일원화 관리) ─────────────────
+const FEATURES = config.features;
+
+// ─── HTML 이스케이프 (사용자 입력값을 HTML에 삽입할 때 공용) ────────
+const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ─── 구매완료 전환 판별 (모든 경로 공용 — 영문/한국어/코드 허용) ────
+// dashboardSync.js 의 isPurchaseType 과 동일 기준을 유지할 것
+function isPurchaseConvType(ct) {
+  const lo = (ct || '').trim().toLowerCase();
+  const raw = (ct || '').trim();
+  return lo === 'purchase' || lo === 'purchase_complete' || lo === 'complete_purchase'
+    || lo === 'conversion' || lo === 'conv' || lo === '1'
+    || raw === '구매완료';
+}
 
 // ─── 세션 미들웨어 (Supabase PostgreSQL에 세션 저장) ───────────────
 router.use(session({
@@ -31,7 +36,13 @@ router.use(session({
   secret: config.sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 8 * 60 * 60 * 1000 },
+  proxy: true, // Vercel/프록시 뒤에서 secure 쿠키 인식
+  cookie: {
+    maxAge: 8 * 60 * 60 * 1000,
+    sameSite: 'lax',
+    secure: !!process.env.VERCEL, // HTTPS 환경에서만 전송
+    httpOnly: true,
+  },
 }));
 
 router.use(express.json({ limit: '20mb' })); // 이미지 base64 업로드 대응
@@ -206,6 +217,19 @@ const css = `
   .tab-bar{display:flex;gap:4px;background:#f5f6fa;border-radius:10px;padding:4px;margin-bottom:16px}
   .tab-btn{padding:8px 18px;border-radius:8px;border:none;background:transparent;font-size:13px;font-weight:500;cursor:pointer;color:#6b7280;transition:all .15s}
   .tab-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.08);font-weight:600}
+  .topbar-account{font-size:12px;color:#6b7280;background:#f5f6fa;border:1px solid #e5e7eb;border-radius:99px;padding:5px 14px;font-weight:600;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* ── 모바일/태블릿 기본 대응 ── */
+  @media(max-width:900px){
+    .sidebar{position:static;width:100%;min-height:0;border-right:none;border-bottom:1px solid #e5e7eb}
+    .main{margin-left:0}
+    .content{padding:16px}
+    .form-row{grid-template-columns:1fr}
+    .kpi-grid{grid-template-columns:repeat(2,1fr)}
+    .card{overflow-x:auto}
+    .topbar{padding:0 16px}
+    .topbar-account{max-width:160px}
+    .period-tabs{flex-wrap:wrap}
+  }
 `;
 
 function layout(title, body, user = null) {
@@ -221,6 +245,10 @@ function toast(msg, isErr=false){
   el.className='toast '+(isErr?'toast-err':'toast-ok');
   el.textContent=msg; w.appendChild(el);
   setTimeout(()=>el.remove(),3500);
+}
+// ?msg=/?err= 플래시 파라미터는 표시 후 URL에서 제거 (새로고침 시 중복 표시 방지)
+if(/[?&](msg|err|ok)=/.test(location.search)){
+  try{history.replaceState(null,'',location.pathname);}catch(e){}
 }
 </script></body></html>`;
 }
@@ -273,13 +301,17 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     if (da) return '[   DA]';
     return '[     ]';
   }
+  // 광고주가 많은 대행사 워크플로우 대응: 검색(필터) 입력 + 선택 드롭다운
   const accountSelector = accounts.length > 0 ? `
     <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6">
       <label style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:6px;font-weight:600">광고주 선택</label>
-      <select id="account-selector" onchange="switchAccount(this.value)"
+      ${accounts.length > 7 ? `<input id="account-filter" type="text" placeholder="광고주 검색..." autocomplete="off"
+        style="width:100%;padding:7px 12px;margin-bottom:6px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:12px"
+        oninput="filterAccounts(this.value)">` : ''}
+      <select id="account-selector" onchange="switchAccount(this.value)" ${accounts.length > 7 ? 'size="1"' : ''}
         style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #e5e7eb;background:#f9fafb;color:#374151;font-size:13px;cursor:pointer;font-family:'Consolas','Monaco',monospace;outline:none">
         ${user?.role === 'viewer' ? '' : '<option value="" style="font-family:inherit">전체 광고주</option>'}
-        ${accounts.map(a => `<option value="${a.id}" ${String(a.id) === String(selectedAccountId) ? 'selected' : ''}>${typeBadge(a)} ${a.name} (${a.customer_id})</option>`).join('')}
+        ${accounts.map(a => `<option value="${a.id}" ${String(a.id) === String(selectedAccountId) ? 'selected' : ''}>${typeBadge(a)} ${escHtml(a.name)} (${escHtml(a.customer_id)})</option>`).join('')}
       </select>
     </div>
     <script>
@@ -289,6 +321,31 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({accountId})
       }).then(() => location.reload());
+    }
+    function filterAccounts(q) {
+      q = (q || '').toLowerCase().trim();
+      var sel = document.getElementById('account-selector');
+      var first = null;
+      for (var i = 0; i < sel.options.length; i++) {
+        var opt = sel.options[i];
+        var hit = !q || opt.textContent.toLowerCase().indexOf(q) !== -1 || opt.value === '';
+        opt.hidden = !hit;
+        opt.disabled = !hit;
+        if (hit && opt.value !== '' && first === null) first = i;
+      }
+      // Enter로 첫 매치 선택
+      var inp = document.getElementById('account-filter');
+      if (inp && !inp._bound) {
+        inp._bound = true;
+        inp.addEventListener('keydown', function(e){
+          if (e.key === 'Enter') {
+            var s = document.getElementById('account-selector');
+            for (var j = 0; j < s.options.length; j++) {
+              if (!s.options[j].hidden && s.options[j].value !== '') { switchAccount(s.options[j].value); break; }
+            }
+          }
+        });
+      }
     }
     </script>
   ` : '';
@@ -327,11 +384,18 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     </div>
   </div>`;
 
+  // 상단바에 현재 선택된 광고주 표시 (사이드바를 보지 않아도 어떤 계정인지 즉시 인지)
+  const selAcct = accounts.find(a => String(a.id) === String(selectedAccountId));
+  const topbarAccount = selAcct
+    ? `<div class="topbar-account" title="${escHtml(selAcct.name)} (${escHtml(selAcct.customer_id)})">${escHtml(selAcct.name)} · ${escHtml(selAcct.customer_id)}</div>`
+    : (accounts.length > 0 ? '<div class="topbar-account" style="color:#9ca3af">전체 광고주</div>' : '');
+
   return layout(title, `
     ${sidebar}
     <div class="main">
       <div class="topbar">
         <div class="topbar-title">${title}</div>
+        ${topbarAccount}
       </div>
       <div class="content">${content}</div>
     </div>
@@ -1056,15 +1120,15 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                   ? '<span class="badge badge-blue">동기화 중...</span>'
                   : '<span class="badge badge-gray">미동기화</span>';
                 return `
-                <tr>
-                  <td><strong>${a.name}</strong><br>
+                <tr data-account-name="${escHtml(a.name)}">
+                  <td><strong>${escHtml(a.name)}</strong><br>
                     ${a.has_sa === false ? '' : '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;margin-right:3px;padding:1px 6px">SA</span>'}
                     ${a.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;padding:1px 6px">DA</span>' : ''}
                   </td>
                   <td style="font-family:monospace;font-size:13px;color:#64748b">${a.customer_id}</td>
                   <td>
                     ${syncBadge}<br>
-                    <button class="btn btn-outline btn-sm" style="margin-top:4px;font-size:11px" onclick="syncMaster(${a.id},'${a.name}',this)">🔄 동기화</button>
+                    <button class="btn btn-outline btn-sm" style="margin-top:4px;font-size:11px" onclick="syncMaster(${a.id},this.closest('tr').dataset.accountName,this)">동기화</button>
                   </td>
                   <td>
                     ${a.feat_daily_report ? '<span class="badge badge-green" style="margin:2px">일간</span>' : ''}
@@ -1076,7 +1140,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                   <td style="text-align:center">
                     <a href="/smart-sa/accounts/${a.id}/viewers" class="btn btn-outline btn-sm" title="광고주에게 이 대시보드 열람 권한 초대">👥 열람 권한</a>
                     <a href="/smart-sa/accounts/${a.id}/edit" class="btn btn-outline btn-sm" style="margin-left:4px">설정</a>
-                    <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAccount(${a.id},'${a.name}')">제거</button>
+                    <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteAccount(${a.id},this.closest('tr').dataset.accountName)">제거</button>
                   </td>
                 </tr>
               `}).join('')}
@@ -1724,7 +1788,7 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
 });
 
 // ─── 광고주 열람 권한 관리 (마케터) ────────────────────────────────
-const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// (escHtml은 파일 상단에서 정의 — 모든 렌더링 경로 공용)
 
 function viewersPageBody(account, viewers, msg) {
   const rows = viewers.map(v => `
@@ -2365,8 +2429,9 @@ router.get('/da-dashboard', requireLogin, async (req, res) => {
           var today = new Date();
           var end = new Date(today); end.setDate(end.getDate()-1);
           var start = new Date(today); start.setDate(start.getDate()-7);
-          document.getElementById('da-date-start').value = start.toISOString().slice(0,10);
-          document.getElementById('da-date-end').value = end.toISOString().slice(0,10);
+          var fmtLocal = function(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
+          document.getElementById('da-date-start').value = fmtLocal(start);
+          document.getElementById('da-date-end').value = fmtLocal(end);
           return;
         }
         document.getElementById('da-custom-date-wrap').style.display = 'none';
@@ -2927,22 +2992,17 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           <button class="period-btn active" data-period="yesterday">어제</button>
           <button class="period-btn" data-period="7days">최근 7일</button>
           <button class="period-btn" data-period="30days">최근 30일</button>
+          <button class="period-btn" data-period="thisMonth">이번 달</button>
           <button class="period-btn" data-period="lastMonth">전월</button>
           <button class="period-btn" data-period="custom" id="custom-period-btn">기간 선택</button>
         </div>
-        <div id="custom-date-wrap" style="display:none;align-items:center;gap:6px">
+        <div id="custom-date-wrap" style="display:none;align-items:center;gap:6px;flex-wrap:wrap">
           <input type="date" id="date-start" style="width:140px;padding:6px 10px;font-size:13px">
           <span style="color:#94a3b8">~</span>
           <input type="date" id="date-end" style="width:140px;padding:6px 10px;font-size:13px">
           <button class="btn btn-primary btn-sm" onclick="applyCustomDate()">적용</button>
+          <span style="font-size:11px;color:#94a3b8;flex-basis:100%">※ 시간대별 전환(구매·매출)은 네이버 정책상 최근 약 45일까지만 제공됩니다</span>
         </div>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="font-size:13px;color:#64748b" id="selected-account-label">
-          ${req.session.selectedAccountId
-            ? accounts.find(a => String(a.id) === String(req.session.selectedAccountId))?.name || '전체'
-            : '전체 광고주'}
-        </span>
       </div>
     </div>
 
@@ -3087,8 +3147,9 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
           const today = new Date();
           const end = new Date(today); end.setDate(end.getDate()-1);
           const start = new Date(today); start.setDate(start.getDate()-7);
-          document.getElementById('date-start').value = start.toISOString().slice(0,10);
-          document.getElementById('date-end').value = end.toISOString().slice(0,10);
+          const fmtLocal = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+          document.getElementById('date-start').value = fmtLocal(start);
+          document.getElementById('date-end').value = fmtLocal(end);
           return;
         }
         document.getElementById('custom-date-wrap').style.display = 'none';
@@ -4543,12 +4604,21 @@ function resolvePeriodDates(period, startDate, endDate) {
     return { since: fmtKST(start), until: fmtKST(end) };
   }
   if (period === 'lastMonth') {
-    // 전월 1일 ~ 말일 (KST 기준)
+    // 전월 1일 ~ 말일 (KST 기준, 호스트 타임존과 무관하게 UTC 메서드로 계산)
     const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-    const y = kst.getFullYear(), m = kst.getMonth(); // 현재 월
-    const firstDay = new Date(y, m - 1, 1); // 전월 1일
-    const lastDay = new Date(y, m, 0); // 전월 마지막 날
+    const y = kst.getUTCFullYear(), m = kst.getUTCMonth(); // 현재 월 (KST)
+    const firstDay = new Date(Date.UTC(y, m - 1, 1)); // 전월 1일
+    const lastDay = new Date(Date.UTC(y, m, 0)); // 전월 마지막 날
     return { since: firstDay.toISOString().slice(0, 10), until: lastDay.toISOString().slice(0, 10) };
+  }
+  if (period === 'thisMonth') {
+    // 이번 달 1일 ~ 어제 (당일 데이터는 네이버 리포트 미생성) — 월초 1일엔 1일~1일
+    const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const first = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), 1));
+    const yst = new Date(now); yst.setDate(yst.getDate() - 1);
+    const since = first.toISOString().slice(0, 10);
+    const until = fmtKST(yst) >= since ? fmtKST(yst) : since;
+    return { since, until };
   }
   const d = new Date(now); d.setDate(d.getDate() - 1);
   return { since: fmtKST(d), until: fmtKST(d) };
@@ -4564,7 +4634,8 @@ async function fetchAllStatRows(client, customerId, reportTp, dateRange) {
       batch.map(dt => cachedStatReport(client, customerId, reportTp, dt).then(rows => rows.map(r => ({ date: dt, cols: r }))))
     );
     for (const r of results) {
-      if (r.status === 'fulfilled') allRows.push(...r.value);
+      // 대용량 계정은 하루 수만 행 → 스프레드(push(...))는 콜스택 초과. 반드시 루프로 병합.
+      if (r.status === 'fulfilled') { for (const row of r.value) allRows.push(row); }
     }
   }
   return allRows;
@@ -4591,7 +4662,23 @@ const NAME_MAP_TTL = 5 * 60 * 1000;
  * - 개별 API 호출 대비 10배 이상 빠름 (3개 리포트 동시 다운로드)
  * - DB에도 자동 저장하여 이후 요청은 DB에서 즉시 조회
  */
+// 계정별 마스터 리포트 in-flight 가드: 동시 요청 시 리포트 job 중복 생성 방지
+// (네이버 계정당 리포트 job 100개 한도 보호 + 불필요한 폴링 대기 제거)
+const masterReportInFlight = new Map();
+
 async function buildNameMapsFromMasterReport(client, accountId) {
+  if (accountId && masterReportInFlight.has(accountId)) {
+    return masterReportInFlight.get(accountId);
+  }
+  const p = _buildNameMapsFromMasterReport(client, accountId);
+  if (accountId) {
+    masterReportInFlight.set(accountId, p);
+    p.finally(() => masterReportInFlight.delete(accountId));
+  }
+  return p;
+}
+
+async function _buildNameMapsFromMasterReport(client, accountId) {
   const campMap = {}, agMap = {}, kwMap = {};
   try {
     console.log(`📥 [account:${accountId}] 마스터 리포트 다운로드 시작...`);
@@ -5038,7 +5125,7 @@ router.get('/api/tab/hourly', requireLogin, async (req, res) => {
       if (cols.length < 15) continue;
       if (campSet && !campSet.has(String(cols[2]))) continue;
       const convType = cols[12];
-      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      if (!isPurchaseConvType(convType)) continue;
       const hour = parseInt(cols[7]) || 0;
       byHour[hour].purchaseCnt += parseInt(cols[13]) || 0;
       byHour[hour].purchaseAmt += parseInt(cols[14]) || 0;
@@ -5098,7 +5185,7 @@ router.get('/api/tab/device', requireLogin, async (req, res) => {
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
-      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      if (!isPurchaseConvType(convType)) continue;
       const dev = cols[10] === 'P' ? 'PC' : 'MO';
       byDevice[dev].purchaseCnt += parseInt(cols[13]) || 0;
       byDevice[dev].purchaseAmt += parseInt(cols[14]) || 0;
@@ -5212,7 +5299,7 @@ router.get('/api/tab/adgroups', requireLogin, async (req, res) => {
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
-      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      if (!isPurchaseConvType(convType)) continue;
       const agId = cols[3];
       if (!byAg[agId]) continue;
       byAg[agId].purchaseCnt += parseInt(cols[13]) || 0;
@@ -5295,7 +5382,7 @@ router.get('/api/tab/campaigns', requireLogin, async (req, res) => {
     for (const { cols } of convRows) {
       if (cols.length < 15) continue;
       const convType = cols[12];
-      if (convType !== 'purchase' && convType !== 'purchase_complete' && convType !== 'complete_purchase') continue;
+      if (!isPurchaseConvType(convType)) continue;
       const campId = cols[2];
       if (!byCamp[campId]) continue;
       byCamp[campId].purchaseCnt += parseInt(cols[13]) || 0;
@@ -8826,10 +8913,14 @@ router.get('/api/cron/autobid', async (req, res) => {
   try {
     const { runAutoBiddingForAccount } = require('../scheduler/autoBid');
     const accounts = await db.all(`
-      SELECT ad_accounts.*, users.api_key, users.secret_key
+      SELECT ad_accounts.*,
+             COALESCE(NULLIF(ac.api_key, ''), users.api_key) AS api_key,
+             COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) AS secret_key
       FROM ad_accounts
       JOIN users ON users.id = ad_accounts.user_id
-      WHERE users.api_key != '' AND users.secret_key != ''
+      LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
+      WHERE COALESCE(NULLIF(ac.api_key, ''), users.api_key) != ''
+        AND ad_accounts.feat_auto_bidding = 1
     `);
 
     let totalAdjusted = 0;
@@ -8859,11 +8950,14 @@ router.get('/api/cron/shopping-autobid', async (req, res) => {
   try {
     const { runShoppingAutoBidForAccount } = require('../scheduler/shoppingAutoBid');
     const accounts = await db.all(`
-      SELECT ad_accounts.*, users.api_key, users.secret_key
+      SELECT ad_accounts.*,
+             COALESCE(NULLIF(ac.api_key, ''), users.api_key) AS api_key,
+             COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) AS secret_key
       FROM ad_accounts
       JOIN users ON users.id = ad_accounts.user_id
-      WHERE users.api_key != '' AND users.secret_key != ''
-      AND ad_accounts.shopping_auto_bidding = 1
+      LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
+      WHERE COALESCE(NULLIF(ac.api_key, ''), users.api_key) != ''
+        AND ad_accounts.feat_shopping_auto_bidding = 1
     `);
 
     for (const account of accounts) {
@@ -8881,8 +8975,8 @@ router.get('/api/cron/shopping-autobid', async (req, res) => {
   }
 });
 
-// 수동 동기화 트리거 (관리자용)
-router.post('/api/sync/trigger', requireLogin, async (req, res) => {
+// 수동 동기화 트리거 (관리자용) — 전체 계정 동기화라 admin만 허용
+router.post('/api/sync/trigger', requireLogin, requireAdmin, async (req, res) => {
   try {
     const result = await runDashboardSync(50000);
     res.json({ ok: true, ...result });
