@@ -552,13 +552,12 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
   const today = new Date().toLocaleDateString('ko-KR');
   const recipients = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
 
+  // 미설정 시 조용히 리턴하면 크론이 '발송 성공'으로 집계·스탬프해 미발송이 은폐됨 → 명시적 실패
   if (!recipients.length) {
-    console.warn(`⚠️  [${account.name}] 수신 이메일 미설정`);
-    return;
+    throw new Error(`수신 이메일 미설정 — 광고주 설정에서 리포트 수신 이메일을 등록하세요`);
   }
   if (!account.email_user || !account.email_pass) {
-    console.warn(`⚠️  [${account.name}] SMTP 미설정`);
-    return;
+    throw new Error(`발신 SMTP 미설정 — 내 정보에서 다우오피스 이메일을 연동하세요`);
   }
 
   const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });

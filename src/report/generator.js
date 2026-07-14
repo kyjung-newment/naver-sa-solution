@@ -95,21 +95,27 @@ async function collectDetailData(client, dateRange, opts = {}) {
   const rawShopConvDetail = [];
   const rawQueryDetail = [];
 
+  // AD_CONVERSION_DETAIL(시간대 전환) 보존기간(~45일) 밖 날짜는 호출 자체를 생략
+  const hourConvCutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+
   // 날짜별 N개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
   const BATCH_SIZE = light ? 8 : 5;
   for (let i = 0; i < dates.length; i += BATCH_SIZE) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
       batch.map(async (dt) => {
+        // 시간대 전환(AD_CONVERSION_DETAIL)은 네이버 보존 ~45일 — 그 이전 날짜는 100% 실패(10004)라 호출 생략
+        const hourConvOk = dt >= hourConvCutoff;
         const reqs = [
           client.createAndDownloadStatReport('AD_DETAIL', dt),
           client.createAndDownloadStatReport('AD_CONVERSION', dt),                  // 주 전환(장기보존 ~8개월)
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
           client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
-          client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt),           // 시간대 전환(최근~45일, best-effort)
+          hourConvOk ? client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt) : Promise.resolve([]), // 시간대 전환(최근~45일)
         ];
-        if (!light) reqs.push(client.createAndDownloadStatReport('AD_QUERY_DETAIL', dt));
-        const [adResult, convResult, shopResult, shopConvResult, convHourResult, queryResult] = await Promise.allSettled(reqs);
+        // AD_QUERY_DETAIL(검색어): 네이버 개편으로 폐기되어 400(11001) 전면 실패 → 호출 제거(byQuery는 빈 값 유지)
+        const [adResult, convResult, shopResult, shopConvResult, convHourResult] = await Promise.allSettled(reqs);
+        const queryResult = null;
 
         // AD_DETAIL: 전체 성과 데이터 (파워링크+쇼핑 모두 포함, 필터 없음)
         const adRows = adResult.status === 'fulfilled' ? adResult.value : [];
@@ -404,8 +410,9 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     byAdgroup[adgroupId].cost += cost;
     if (rank > 0) { byAdgroup[adgroupId].rankSum += rank * imp; byAdgroup[adgroupId].rankCount += imp; }
 
-    // 키워드별 (SHOPPINGKEYWORD_DETAIL 사용 시 cols[4]에 검색어 텍스트)
-    if (keywordId && keywordId !== '0' && keywordId !== '' && keywordId !== '-') {
+    // 키워드별 (파워링크 등 비쇼핑만 — 쇼핑검색 키워드 성과는 SHOPPINGKEYWORD_DETAIL 텍스트 행 전담.
+    //  쇼핑 캠페인의 AD_DETAIL 행을 넣으면 ID 미해결·SHOPPINGKEYWORD와 이중집계 경로가 생김)
+    if (keywordId && keywordId !== '0' && keywordId !== '' && keywordId !== '-' && !isShopping(campaignId)) {
       const kwKey = `kw:${keywordId}`;
       if (!byKeyword[kwKey]) byKeyword[kwKey] = {
         name: kwNameMap[keywordId] || keywordId,
@@ -542,76 +549,79 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate, byQuery };
 }
 
-/**
- * Stats API를 활용하여 AD_DETAIL TSV 집계 데이터를 네이버 SA 대시보드와 일치하도록 보정
- * - Stats API는 네이버 검색광고 대시보드와 동일한 데이터 소스를 사용
- * - AD_DETAIL TSV는 세부 분석(시간대/키워드/디바이스)에만 사용하고
- *   총합·캠페인별 숫자는 Stats API로 교정
- */
-async function calibrateWithStatsApi(data, client, dateRange) {
-  try {
-    const stats = await client.getStats({
-      startDate: dateRange.since,
-      endDate: dateRange.until,
-    });
+// ─── /stats 보정·비교기간 공통 헬퍼 ─────────────────────────────────
+const TYPE_LABELS = {
+  '1': '파워링크', 'WEB_SITE': '파워링크',
+  '2': '쇼핑검색', 'SHOPPING': '쇼핑검색',
+  '3': '파워콘텐츠', 'POWER_CONTENTS': '파워콘텐츠',
+  '4': '브랜드검색', 'BRAND': '브랜드검색', 'BRAND_SEARCH': '브랜드검색',
+  '6': '로컬', 'LOCAL_SMB': '로컬',
+};
+function enrichStatsObj(o) {
+  o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
+  o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
+  o.avgRank = o.rankCount > 0 ? (o.rankSum / o.rankCount) : (o.avgRank || 0);
+  o.cartCnt = o.cartCnt || 0;
+  o.cartAmt = o.cartAmt || 0;
+  o.purchaseCnt = o.purchaseCnt || 0;
+  o.purchaseAmt = o.purchaseAmt || 0;
+  o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+  return o;
+}
 
-    if (!stats || !stats.campStats) {
-      console.log('  ⚠️ Stats API 보정 실패: 데이터 없음');
+/**
+ * /stats(대시보드 동일 소스) 1회 수집으로 총합·캠페인·캠페인유형·일자·광고그룹을 정확 보정.
+ * (기존 calibrateWithStatsApi + calibrateDimensionsWithStats 통합 — 캠페인별 /stats
+ *  중복 호출 제거로 리포트당 캠페인 수만큼의 API 콜 절감)
+ * - total/byCampaign/byCampaignType/byDate/byAdgroup: /stats 값으로 교체(다차원보고서 정합)
+ * - byDevice/byHour: 분포는 AD_DETAIL 유지, 합계만 /stats 총합에 비례 보정
+ */
+async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
+  try {
+    const dims = await client.getDashboardDimensions({ startDate: dateRange.since, endDate: dateRange.until });
+    const t = dims.total || {};
+    if ((t.imp || 0) === 0 && (t.clk || 0) === 0 && (t.cost || 0) === 0) {
+      console.log('  ⚠️ /stats 보정: 데이터 없음 (AD_DETAIL 집계 유지)');
       return data;
     }
+    console.log(`  🔄 /stats 보정: TSV cost=${data.total.cost} → 실제 cost=${t.cost}, 구매완료=${t.purchaseCnt}건/${t.purchaseAmt}원`);
 
-    console.log(`  🔄 Stats API 보정 시작: TSV 총합 imp=${data.total.imp}, clk=${data.total.clk}, cost=${data.total.cost}`);
-    console.log(`  🔄 Stats API 실제값:      imp=${stats.impCnt}, clk=${stats.clkCnt}, cost=${stats.salesAmt}`);
-
-    // 1. 캠페인별 보정 (Stats API 캠페인 ID 매핑)
-    const statsByCamp = {};
-    for (const cs of stats.campStats) {
-      statsByCamp[cs.id] = cs;
-    }
-
-    for (const campId of Object.keys(data.byCampaign)) {
-      const cs = statsByCamp[campId];
-      if (!cs) continue;
-      const camp = data.byCampaign[campId];
-      camp.imp = cs.impCnt;
-      camp.clk = cs.clkCnt;
-      camp.cost = cs.salesAmt;
-      camp.cpc = cs.clkCnt > 0 ? Math.round(cs.salesAmt / cs.clkCnt) : 0;
-      camp.ctr = cs.impCnt > 0 ? (cs.clkCnt / cs.impCnt * 100) : 0;
-      if (cs.avgRnk > 0) {
-        camp.avgRank = cs.avgRnk;
-        camp.rankSum = cs.avgRnk;
-        camp.rankCount = 1;
-      }
-      // 총전환 데이터 보정 (Stats API ccnt/convAmt)
-      if (typeof cs.ccnt === 'number') camp.convCnt = cs.ccnt;
-      if (typeof cs.convAmt === 'number') camp.convAmt = cs.convAmt;
-      // 구매완료 전환 데이터 보정 (Stats API purchaseCcnt/purchaseConvAmt)
-      if (typeof cs.purchaseCcnt === 'number') camp.purchaseCnt = cs.purchaseCcnt;
-      if (typeof cs.purchaseConvAmt === 'number') camp.purchaseAmt = cs.purchaseConvAmt;
-      // ROAS 재계산 (보정된 purchaseAmt 기준)
-      camp.roas = camp.cost > 0 ? Math.round((camp.purchaseAmt || 0) / camp.cost * 100) : 0;
-    }
-
-    // 2. 총합 보정 (Stats API 합계 → 네이버 대시보드와 동일)
-    data.total.imp = stats.impCnt;
-    data.total.clk = stats.clkCnt;
-    data.total.cost = stats.salesAmt;
-    data.total.cpc = stats.clkCnt > 0 ? Math.round(stats.salesAmt / stats.clkCnt) : 0;
-    data.total.ctr = stats.impCnt > 0 ? (stats.clkCnt / stats.impCnt * 100) : 0;
-    if (stats.avgRnk > 0) data.total.avgRank = stats.avgRnk;
-    // 총전환 데이터 (Stats API ccnt/convAmt)
-    data.total.convCnt = stats.ccnt || 0;
-    data.total.convAmt = stats.convAmt || 0;
-    // 구매완료 전환 데이터 (Stats API purchaseCcnt/purchaseConvAmt → 대시보드와 일치)
-    data.total.purchaseCnt = stats.purchaseCcnt || 0;
-    data.total.purchaseAmt = stats.purchaseConvAmt || 0;
-    // ROAS 재계산 (보정된 purchaseAmt 기준)
+    // 1) 총합 교체
+    data.total.imp = t.imp || 0;
+    data.total.clk = t.clk || 0;
+    data.total.cost = t.cost || 0;
+    data.total.purchaseCnt = t.purchaseCnt || 0;
+    data.total.purchaseAmt = t.purchaseAmt || 0;
+    data.total.convCnt = t.convCnt || 0;
+    data.total.convAmt = t.convAmt || 0;
+    if ((t.rankCount || 0) > 0) data.total.avgRank = t.rankSum / t.rankCount;
+    data.total.cpc = data.total.clk > 0 ? Math.round(data.total.cost / data.total.clk) : 0;
+    data.total.ctr = data.total.imp > 0 ? (data.total.clk / data.total.imp * 100) : 0;
     data.total.roas = data.total.cost > 0 ? Math.round((data.total.purchaseAmt || 0) / data.total.cost * 100) : 0;
 
-    console.log(`  🔄 구매완료 보정: TSV purchaseCnt → Stats API purchaseCcnt=${stats.purchaseCcnt}, purchaseConvAmt=${stats.purchaseConvAmt}`);
+    // 2) 캠페인별 교체 (유형은 기존 유지, 이름 미해결 시 /stats 이름으로 해석)
+    //    AD_DETAIL에 행이 없던 캠페인(수집 실패·노출0 비용발생 등)도 /stats에 있으면 신규 추가 — 합계 불일치 방지
+    for (const [cid, cs] of Object.entries(dims.byCampaign || {})) {
+      let camp = data.byCampaign[cid];
+      if (!camp) {
+        if ((cs.cost || 0) === 0 && (cs.imp || 0) === 0 && (cs.clk || 0) === 0) continue;
+        camp = data.byCampaign[cid] = {
+          name: cs.name || cid,
+          campaignType: TYPE_LABELS[String((campTypeMap || {})[cid] || '1')] || '기타',
+          imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0, cartCnt: 0, cartAmt: 0,
+        };
+      }
+      camp.imp = cs.imp; camp.clk = cs.clk; camp.cost = cs.cost;
+      camp.purchaseCnt = cs.purchaseCnt; camp.purchaseAmt = cs.purchaseAmt;
+      camp.convCnt = cs.convCnt || 0; camp.convAmt = cs.convAmt || 0;
+      if ((cs.rankCount || 0) > 0) { camp.avgRank = cs.rankSum / cs.rankCount; camp.rankSum = camp.avgRank; camp.rankCount = 1; }
+      camp.cpc = camp.clk > 0 ? Math.round(camp.cost / camp.clk) : 0;
+      camp.ctr = camp.imp > 0 ? (camp.clk / camp.imp * 100) : 0;
+      camp.roas = camp.cost > 0 ? Math.round((camp.purchaseAmt || 0) / camp.cost * 100) : 0;
+      if (camp.name === cid && cs.name) camp.name = cs.name; // ID 미해결 캠페인명 해석
+    }
 
-    // 3. 캠페인유형별 재집계 (보정된 byCampaign 기반)
+    // 3) 캠페인유형별 재집계 (보정된 byCampaign 기반)
     const newByCampType = {};
     for (const campId of Object.keys(data.byCampaign)) {
       const camp = data.byCampaign[campId];
@@ -632,51 +642,16 @@ async function calibrateWithStatsApi(data, client, dateRange) {
       newByCampType[ct].cartCnt += camp.cartCnt || 0;
       newByCampType[ct].cartAmt += camp.cartAmt || 0;
     }
-    for (const ct of Object.keys(newByCampType)) {
-      const d = newByCampType[ct];
-      d.cpc = d.clk > 0 ? Math.round(d.cost / d.clk) : 0;
-      d.ctr = d.imp > 0 ? (d.clk / d.imp * 100) : 0;
-      d.avgRank = d.rankCount > 0 ? (d.rankSum / d.rankCount) : 0;
-      d.roas = d.cost > 0 ? Math.round(d.purchaseAmt / d.cost * 100) : 0;
-    }
+    Object.values(newByCampType).forEach(enrichStatsObj);
     data.byCampaignType = newByCampType;
 
-    console.log(`  ✅ Stats API 보정 완료: imp=${data.total.imp}, clk=${data.total.clk}, cost=${data.total.cost}, 구매완료=${data.total.purchaseCnt}건/${data.total.purchaseAmt}원`);
-    return data;
-  } catch (e) {
-    console.log(`  ⚠️ Stats API 보정 실패:`, e.message);
-    return data;
-  }
-}
-
-/**
- * 일자별·광고그룹별 차원을 /stats(대시보드 동일 소스)로 정확 재구성.
- *
- * AD_DETAIL은 총비용이 대시보드 대비 ~9% 적고, 전환 상세 리포트(AD_CONVERSION_DETAIL)는
- * 과거기간(약 2개월 초과)·31일 초과 breakdown에서 막혀 일자별/광고그룹별 전환이 0이 된다.
- * → /stats 캠페인 일일행 합산(byDate) + 광고그룹 단위(byAdgroup)로 교체하여
- *    다차원보고서와 비용·전환 오차 0을 보장한다. (캠페인유형은 보정된 byCampaign에서 매핑)
- */
-async function calibrateDimensionsWithStats(data, client, dateRange) {
-  try {
-    const dims = await client.getDashboardDimensions({ startDate: dateRange.since, endDate: dateRange.until });
-    const enrich = (o) => {
-      o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
-      o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
-      o.avgRank = o.rankCount > 0 ? (o.rankSum / o.rankCount) : 0;
-      o.cartCnt = o.cartCnt || 0;
-      o.cartAmt = o.cartAmt || 0;
-      o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
-      return o;
-    };
-
-    // 1) 일자별 교체 (전환·비용 정확)
+    // 4) 일자별 교체 (전환·비용 정확)
     if (dims.byDate && Object.keys(dims.byDate).length) {
-      for (const k of Object.keys(dims.byDate)) enrich(dims.byDate[k]);
+      for (const k of Object.keys(dims.byDate)) enrichStatsObj(dims.byDate[k]);
       data.byDate = dims.byDate;
     }
 
-    // 2) 광고그룹별 교체 (이름은 API 신선값, 캠페인유형은 보정된 byCampaign에서)
+    // 5) 광고그룹별 교체 (이름은 API 신선값, 캠페인유형은 보정된 byCampaign에서)
     if (dims.byAdgroup && Object.keys(dims.byAdgroup).length) {
       const out = {};
       for (const [agId, o] of Object.entries(dims.byAdgroup)) {
@@ -684,13 +659,13 @@ async function calibrateDimensionsWithStats(data, client, dateRange) {
         o.name = o.adgroupName || agId;
         o.campaignName = o.campaignName || (camp && camp.name) || '';
         o.campaignType = (camp && camp.campaignType) || '파워링크';
-        enrich(o);
+        enrichStatsObj(o);
         out[agId] = o; // aggregateData와 동일하게 raw adgroupId 키 사용
       }
       data.byAdgroup = out;
     }
 
-    // 3) 기기별·시간대별: 비용 분포는 AD_DETAIL, 총합은 /stats에 정합되도록 비례 보정
+    // 6) 기기별·시간대별: 비용 분포는 AD_DETAIL, 총합은 /stats에 정합되도록 비례 보정
     //    (AD_DETAIL 비용이 대시보드 대비 ~9% 적은 알려진 차이 → 분포는 유지하며 총합을 일치).
     //    전환(purchaseCnt/Amt)은 AD_CONVERSION에서 이미 정확 → 그대로 두고 cost만 스케일.
     const scaleDimToTotal = (dim) => {
@@ -705,17 +680,109 @@ async function calibrateDimensionsWithStats(data, client, dateRange) {
         o.imp = Math.round((o.imp || 0) * rImp);
         o.clk = Math.round((o.clk || 0) * rClk);
         o.cost = Math.round((o.cost || 0) * rCost);
-        enrich(o);
+        enrichStatsObj(o);
       }
     };
     scaleDimToTotal(data.byDevice);
     scaleDimToTotal(data.byHour);
 
-    console.log(`  ✅ 차원 보정(/stats): 일자 ${Object.keys(data.byDate || {}).length}일, 광고그룹 ${Object.keys(data.byAdgroup || {}).length}개 (다차원보고서 정합)`);
+    console.log(`  ✅ /stats 보정 완료: cost=${data.total.cost}, 구매완료=${data.total.purchaseCnt}건/${data.total.purchaseAmt}원, 일자 ${Object.keys(data.byDate || {}).length}일 · 광고그룹 ${Object.keys(data.byAdgroup || {}).length}개`);
+    return data;
   } catch (e) {
-    console.log(`  ⚠️ 차원 보정 실패(AD_DETAIL 유지):`, e.message);
+    console.log(`  ⚠️ /stats 보정 실패(AD_DETAIL 집계 유지):`, e.message);
+    return data;
   }
-  return data;
+}
+
+/**
+ * 비교기간(prev) 데이터를 /stats만으로 구성 — 상세 리포트 수집 없이 수십 배 빠름.
+ * 리포트의 비교 시트는 total·byCampaignType·byAdgroup만 사용하므로(엑셀·HTML 공통 확인)
+ * 상세리포트 4종 × 일수 job 대신 /stats 한 번으로 충분하다.
+ */
+async function collectPrevViaStats(client, prevRange, campTypeMap, opts) {
+  // totalOnly: 일간 리포트처럼 비교시트가 없어 prev.total만 쓰는 경우 광고그룹 스윕 생략
+  const totalOnly = !!(opts && opts.totalOnly);
+  const dims = await client.getDashboardDimensions({ startDate: prevRange.since, endDate: prevRange.until, dateOnly: totalOnly });
+  const labelOf = (cid) => TYPE_LABELS[String((campTypeMap || {})[cid] || '1')] || '기타';
+
+  const byCampaign = {};
+  const byCampaignType = {};
+  for (const [cid, cs] of Object.entries(dims.byCampaign || {})) {
+    const camp = enrichStatsObj(Object.assign({}, cs, { name: cs.name || cid, campaignType: labelOf(cid) }));
+    byCampaign[cid] = camp;
+    const ct = camp.campaignType;
+    if (!byCampaignType[ct]) byCampaignType[ct] = { imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0, purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
+    const t = byCampaignType[ct];
+    t.imp += camp.imp; t.clk += camp.clk; t.cost += camp.cost;
+    t.purchaseCnt += camp.purchaseCnt; t.purchaseAmt += camp.purchaseAmt;
+    if (camp.avgRank > 0) { t.rankSum += camp.avgRank; t.rankCount += 1; }
+  }
+  Object.values(byCampaignType).forEach(enrichStatsObj);
+
+  const byAdgroup = {};
+  for (const [agId, o] of Object.entries(dims.byAdgroup || {})) {
+    byAdgroup[agId] = enrichStatsObj(Object.assign({}, o, {
+      name: o.adgroupName || agId,
+      campaignName: o.campaignName || '',
+      campaignType: labelOf(o.campaignId),
+    }));
+  }
+
+  const byDate = {};
+  for (const [d, o] of Object.entries(dims.byDate || {})) byDate[d] = enrichStatsObj(Object.assign({}, o));
+
+  const total = enrichStatsObj(Object.assign({ imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0, purchaseCnt: 0, purchaseAmt: 0 }, dims.total || {}));
+  return { total, byCampaign, byCampaignType, byAdgroup, byDate, byKeyword: {}, byDevice: {}, byHour: {}, byQuery: {} };
+}
+
+/**
+ * 미해결 이름(ID 그대로 노출) 재해석 — 'ID 미인식 제외' 발생 방지.
+ * DB 마스터가 오래되어(예: 키워드 100개 이상 있으나 최신 키워드 누락) 이름이 안 풀린
+ * 항목이 있으면 마스터 리포트를 재조회해 이름을 채우고, DB에도 백그라운드로 반영해
+ * 대시보드 탭까지 함께 치유한다.
+ */
+const UNRESOLVED_NAME_RE = /^(grp|cmp|adg|nkw|ncc|nccc|nad|nccad|bnc|cnv)[-_]/i;
+async function resolveUnresolvedNames(data, client, maps, account) {
+  const { campNameMap, agNameMap, kwNameMap } = maps;
+  const kwUnres = Object.keys(data.byKeyword || {}).filter(k => UNRESOLVED_NAME_RE.test((data.byKeyword[k] || {}).name || ''));
+  const agUnres = Object.keys(data.byAdgroup || {}).filter(k => UNRESOLVED_NAME_RE.test((data.byAdgroup[k] || {}).name || ''));
+  const campUnres = Object.keys(data.byCampaign || {}).filter(k => UNRESOLVED_NAME_RE.test((data.byCampaign[k] || {}).name || ''));
+  if (!kwUnres.length && !agUnres.length && !campUnres.length) return;
+  console.log(`  🔎 미해결 이름 감지: 키워드 ${kwUnres.length} · 그룹 ${agUnres.length} · 캠페인 ${campUnres.length} → 마스터 재조회`);
+  try {
+    if (kwUnres.length) {
+      const rows = await client.syncMaster('Keyword');
+      for (const r of rows) { if (r.length >= 4) kwNameMap[r[2]] = r[3]; }
+      if (account && account.id) db.upsertMasterKeywords(account.id, rows).catch(() => {});
+    }
+    if (agUnres.length) {
+      const rows = await client.syncMaster('Adgroup');
+      for (const r of rows) { if (r.length >= 4) agNameMap[r[1]] = r[3]; }
+      if (account && account.id) db.upsertMasterAdgroups(account.id, rows).catch(() => {});
+    }
+    if (campUnres.length) {
+      const rows = await client.syncMaster('Campaign');
+      for (const r of rows) { if (r.length >= 3) campNameMap[r[1]] = r[2]; }
+      if (account && account.id) db.upsertMasterCampaigns(account.id, rows).catch(() => {});
+    }
+  } catch (e) {
+    console.log('  ⚠️ 마스터 재조회 실패:', e.message);
+  }
+  // 재매핑
+  let fixed = 0;
+  for (const k of kwUnres) {
+    const d = data.byKeyword[k];
+    const kid = k.startsWith('kw:') ? k.slice(3) : k;
+    if (kwNameMap[kid]) { d.name = kwNameMap[kid]; fixed++; }
+  }
+  for (const agId of agUnres) {
+    if (agNameMap[agId]) { data.byAdgroup[agId].name = agNameMap[agId]; fixed++; }
+  }
+  for (const cid of campUnres) {
+    if (campNameMap[cid]) { data.byCampaign[cid].name = campNameMap[cid]; fixed++; }
+  }
+  const remain = kwUnres.length + agUnres.length + campUnres.length - fixed;
+  console.log(`  ✅ 이름 재해석: ${fixed}개 해결${remain > 0 ? `, ${remain}개 미해결(삭제된 항목 추정)` : ''}`);
 }
 
 /**
@@ -817,10 +884,10 @@ async function generateAndSend(account, type, customRange, opts) {
     // 3. 다차원 집계
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
 
-    // 3-1. Stats API로 총합·캠페인별 데이터 보정 (네이버 SA 대시보드와 일치)
-    await calibrateWithStatsApi(data, client, dateRange);
-    // 3-2. 일자별·광고그룹별 차원을 /stats로 정확 재구성 (다차원보고서 정합)
-    await calibrateDimensionsWithStats(data, client, dateRange);
+    // 3-1. 미해결 이름(ID 노출) 감지 시 마스터 재조회로 재해석 ('ID 미인식 제외' 방지)
+    await resolveUnresolvedNames(data, client, { campNameMap, agNameMap, kwNameMap }, account);
+    // 3-2. /stats 1회 수집으로 총합·캠페인·유형·일자·광고그룹 정확 보정 (다차원보고서 정합)
+    await calibrateAllWithStats(data, client, dateRange, campTypeMap);
 
     // 4. 이전 기간 데이터 (일간/주간/월간 모두)
     // skipPrev 옵션 또는 ENV로 강제 스킵 가능 (cron OOM/타임아웃 방지)
@@ -841,13 +908,11 @@ async function generateAndSend(account, type, customRange, opts) {
       const prevLabel = { daily: '전일', weekly: '전주', monthly: '전전월' }[type];
       console.log(`  📊 ${prevLabel} 데이터 수집: ${prevRange.since} ~ ${prevRange.until}`);
       try {
-        // 이전기간은 비교용(총합·유형·그룹)이라 AD_QUERY_DETAIL 생략(light)으로 가속
-        const prev = await collectDetailData(client, prevRange, { light: true });
-        prevData = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, [], prev.rawConvHourly);
-        // 이전 기간도 Stats API 보정 적용
-        await calibrateWithStatsApi(prevData, client, prevRange);
-        await calibrateDimensionsWithStats(prevData, client, prevRange);
-        console.log(`  ✅ ${prevLabel} 데이터 완료: ${prev.rawAdDetail.length}건`);
+        // 비교시트는 총합·캠페인유형·광고그룹만 사용 → 상세리포트 수집 없이 /stats만 조회 (수십 배 가속)
+        // 일간(비맞춤)은 비교시트가 없어 total만 필요 → 광고그룹 스윕까지 생략
+        const totalOnly = type === 'daily' && !(customRange && customRange.since);
+        prevData = await collectPrevViaStats(client, prevRange, campTypeMap, { totalOnly });
+        console.log(`  ✅ ${prevLabel} 데이터 완료 (/stats · 캠페인 ${Object.keys(prevData.byCampaign).length}개${totalOnly ? ' · 경량' : ''})`);
       } catch (e) {
         console.log(`  ⚠️ ${prevLabel} 데이터 실패:`, e.message);
       }
@@ -945,8 +1010,8 @@ async function collectReportData(account, type, customRange, opts) {
   const collectMain = (async () => {
     const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
-    await calibrateWithStatsApi(data, client, dateRange);
-    await calibrateDimensionsWithStats(data, client, dateRange);
+    await resolveUnresolvedNames(data, client, { campNameMap, agNameMap, kwNameMap }, account);
+    await calibrateAllWithStats(data, client, dateRange, campTypeMap);
     return data;
   })();
 
@@ -971,14 +1036,8 @@ async function collectReportData(account, type, customRange, opts) {
   if (prevRange) {
     const prevTimeout = type === 'monthly' ? 180000 : 90000;
     try {
-      const prevPromise = (async () => {
-        // 이전기간은 비교(총합·유형·그룹)용으로만 쓰므로 AD_QUERY_DETAIL 생략(light) → 수집 가속·타임아웃 방지
-        const prev = await collectDetailData(client, prevRange, { light: true });
-        const pd = aggregateData(prev.rawAdDetail, prev.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, prev.rawShopKwDetail, prev.rawShopConvDetail, kwQiMap, [], prev.rawConvHourly);
-        await calibrateWithStatsApi(pd, client, prevRange);
-        await calibrateDimensionsWithStats(pd, client, prevRange);
-        return pd;
-      })();
+      // 비교시트는 총합·캠페인유형·광고그룹만 사용 → 상세리포트 수집 없이 /stats만 조회 (수십 배 가속)
+      const prevPromise = collectPrevViaStats(client, prevRange, campTypeMap, { totalOnly: type === 'daily' && !(customRange && customRange.since) });
       prevData = await Promise.race([
         prevPromise,
         new Promise((_, rej) => setTimeout(() => rej(new Error('prev timeout')), prevTimeout)),

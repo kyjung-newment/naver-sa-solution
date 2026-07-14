@@ -130,24 +130,29 @@ function createApiClient(creds) {
       report = await apiCall('POST', '/stat-reports', {}, { reportTp, statDt });
     }
     const reportId = report.reportJobId;
+    const delStatJob = () => apiCall('DELETE', `/stat-reports/${reportId}`).catch(() => {});
 
-    // 2. 빌드 완료 대기 (최대 30초)
+    // 2. 빌드 완료 대기 (대용량 계정 AD_DETAIL은 15초로 부족 → 30회 × 2초 = 최대 60초)
     let status = report.status;
     let downloadUrl = report.downloadUrl;
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 30; i++) {
       if (status === 'BUILT' && downloadUrl) break;
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, i < 5 ? 1000 : 2000));
       const check = await apiCall('GET', `/stat-reports/${reportId}`);
       status = check.status;
       downloadUrl = check.downloadUrl;
-      if (status === 'ERROR') throw new Error(`Stat Report 빌드 실패 (${reportTp})`);
+      if (status === 'ERROR') { await delStatJob(); throw new Error(`Stat Report 빌드 실패 (${reportTp})`); }
     }
-    if (status !== 'BUILT') throw new Error(`Stat Report 타임아웃 (${reportTp})`);
+    if (status !== 'BUILT') { await delStatJob(); throw new Error(`Stat Report 타임아웃 (${reportTp})`); }
 
     // 3. 다운로드
     const text = await downloadReport(downloadUrl);
 
-    // 4. TSV 파싱
+    // 4. 사용 완료 job 즉시 삭제 (계정당 100 한도 — 월간 리포트 186 job이 한도를 넘던 원인)
+    //    다운로드 완료 후에는 job이 불필요하므로 fire-and-forget으로 지연 없이 정리
+    delStatJob();
+
+    // 5. TSV 파싱
     return text.trim().split('\n').filter(l => l.trim()).map(line => line.split('\t'));
   }
 
@@ -336,21 +341,29 @@ function createApiClient(creds) {
       };
       const blank = (extra) => Object.assign({ imp:0, clk:0, cost:0, rankSum:0, rankCount:0, purchaseCnt:0, purchaseAmt:0, convCnt:0, convAmt:0 }, extra || {});
 
-      // 1) 일자별: 캠페인별 일일 행(default timeIncrement) 합산
+      // 1) 일자별 + 캠페인별 + 전체: 캠페인별 일일 행(default timeIncrement) 1회 조회로 모두 산출
+      //    (기존에는 총합용 getStats가 같은 /stats를 캠페인마다 한 번 더 호출 — 중복 제거)
       const byDate = {};
+      const byCampaign = {};
+      const total = blank();
       const dailyRes = await mapLimit(campaigns || [], 8, (camp) =>
         apiCall('GET', '/stats', { id: camp.nccCampaignId, fields: FIELDS, timeRange: trStr })
+          .then(result => ({ camp, result }))
       );
       for (const sr of dailyRes) {
         if (sr.status !== 'fulfilled') continue;
-        for (const d of (sr.value?.data || [])) {
+        const { camp, result } = sr.value;
+        for (const d of (result?.data || [])) {
           const date = d.dateStart || d.date;
           if (!date) continue;
           if (!byDate[date]) byDate[date] = blank();
           addRow(byDate[date], d);
+          if (!byCampaign[camp.nccCampaignId]) byCampaign[camp.nccCampaignId] = blank({ name: camp.name });
+          addRow(byCampaign[camp.nccCampaignId], d);
+          addRow(total, d);
         }
       }
-      if (dateOnly) return { byDate, byAdgroup: {} };
+      if (dateOnly) return { byDate, byAdgroup: {}, byCampaign, total };
 
       // 2) 광고그룹별: 광고그룹 단위 /stats(allDays)
       const agListRes = await mapLimit(campaigns || [], 8, (camp) =>
@@ -376,7 +389,7 @@ function createApiClient(creds) {
         byAdgroup[ag.nccAdgroupId] = o;
       }
 
-      return { byDate, byAdgroup };
+      return { byDate, byAdgroup, byCampaign, total };
     },
 
     // ─── 광고그룹별 통계 조회 ───────────────────────────────────────

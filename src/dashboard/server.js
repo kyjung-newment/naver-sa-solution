@@ -1470,7 +1470,9 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
     // 백그라운드: 60일 데이터 + 마스터 데이터 동기화
     (async () => {
       try {
-        const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
+        // 주의: 기존 코드는 아래 const account(TDZ) 를 선언 전에 참조해 ReferenceError로
+        // 이 블록 전체가 한 번도 실행되지 못했음(신규 광고주 초기 동기화 미작동 버그).
+        const creds = await db.getApiCredentials(req.session.userId, id);
         if (!creds) return;
         const account = await db.getAccountById(id, req.session.userId);
         if (!account) return;
@@ -4468,13 +4470,15 @@ router.get('/api/stats', requireLogin, async (req, res) => {
 
     const client = makeClient(creds, account.customer_id);
 
-    const [statsResult, convResult] = await Promise.allSettled([
-      client.getStats({ startDate: dateRange.since, endDate: dateRange.until }),
-      fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange),
-    ]);
-
+    // getStats(/stats)는 purchaseCcnt/purchaseConvAmt를 항상 포함하므로 AD_CONVERSION_DETAIL은
+    // getStats 실패 시에만 지연 폴백 (기존: 매 요청 D일치 job을 받아놓고 결과를 버리던 낭비 제거)
+    const statsResult = await Promise.allSettled([client.getStats({ startDate: dateRange.since, endDate: dateRange.until })]).then(r => r[0]);
     const stats = statsResult.status === 'fulfilled' ? statsResult.value
       : { impCnt: 0, clkCnt: 0, salesAmt: 0, ctr: 0, avgRnk: 0 };
+    let convResult = { status: 'rejected' };
+    if (!(typeof stats.purchaseCcnt === 'number' && typeof stats.purchaseConvAmt === 'number')) {
+      convResult = await Promise.allSettled([fetchAllStatRows(client, account.customer_id, 'AD_CONVERSION_DETAIL', dateRange)]).then(r => r[0]);
+    }
 
     // 구매완료 전환 데이터: Stats API purchaseCcnt/purchaseConvAmt 우선 사용 (네이버 대시보드와 일치)
     if (typeof stats.purchaseCcnt === 'number' && typeof stats.purchaseConvAmt === 'number') {
@@ -4558,21 +4562,29 @@ const CACHE_TTL = 4 * 60 * 60 * 1000; // 4시간
 
 function getCacheKey(customerId, reportTp, dt) { return `${customerId}:${reportTp}:${dt}`; }
 
+const statInFlight = new Map(); // key → Promise (동시 요청 중복 다운로드 방지)
 async function cachedStatReport(client, customerId, reportTp, dt) {
   const key = getCacheKey(customerId, reportTp, dt);
   const cached = statCache.get(key);
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.rows;
-  const rows = await client.createAndDownloadStatReport(reportTp, dt);
-  // ⚠️ 빈 결과는 캐시하지 않음 (데이터 미생성 상태일 수 있음)
-  if (rows && rows.length > 0) {
-    statCache.set(key, { rows, ts: Date.now() });
-  }
-  // LRU: 500개 초과 시 오래된 것 제거
-  if (statCache.size > 500) {
-    const oldest = [...statCache.entries()].sort((a,b) => a[1].ts - b[1].ts)[0];
-    if (oldest) statCache.delete(oldest[0]);
-  }
-  return rows;
+  // 같은 키 다운로드가 진행 중이면 합류 (탭 빠른 전환/연쇄 호출 시 같은 job 중복 생성 방지)
+  const pending = statInFlight.get(key);
+  if (pending) return pending;
+  const p = (async () => {
+    const rows = await client.createAndDownloadStatReport(reportTp, dt);
+    // ⚠️ 빈 결과는 캐시하지 않음 (데이터 미생성 상태일 수 있음)
+    if (rows && rows.length > 0) {
+      statCache.set(key, { rows, ts: Date.now() });
+    }
+    // LRU: 500개 초과 시 오래된 것 제거
+    if (statCache.size > 500) {
+      const oldest = [...statCache.entries()].sort((a,b) => a[1].ts - b[1].ts)[0];
+      if (oldest) statCache.delete(oldest[0]);
+    }
+    return rows;
+  })();
+  statInFlight.set(key, p);
+  try { return await p; } finally { statInFlight.delete(key); }
 }
 
 function getDatesBetween(since, until) {
@@ -7583,7 +7595,8 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   };
   try {
     // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (단, 맞춤 기간은 비교 데이터 필수이므로 항상 prev 가져옴)
-    const skipPrev = customRange ? false : (req.body.skipPrev === true || (type === 'monthly' && !customRange));
+    // prev는 /stats만 조회(저비용) → 월간 수동 발송도 비교시트 포함
+    const skipPrev = req.body.skipPrev === true;
     const ok = await generateAndSend(enriched, type, customRange, { skipPrev, comparePeriod });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
@@ -8057,8 +8070,8 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
             account.email_port = 465;
             account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
             account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-            const skipPrev = (type === 'monthly');
-            const ok = await generateAndSend(account, type, null, { skipPrev }).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
+            // prev는 이제 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
+            const ok = await generateAndSend(account, type, null, {}).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
             if (ok) {
               sent++;
               await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
