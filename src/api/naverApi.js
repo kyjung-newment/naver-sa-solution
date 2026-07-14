@@ -310,7 +310,8 @@ function createApiClient(creds) {
     // 핵심: 상세 리포트(AD_DETAIL/전환 리포트)는 과거기간(>약 2개월)·31일초과 breakdown이
     // 막혀 일자별/광고그룹별 비용·전환이 누락된다. 네이버 대시보드와 동일한 /stats(캠페인·
     // 광고그룹 단위, 일일 행)로 재구성해 다차원보고서와 오차 0을 보장한다.
-    getDashboardDimensions: async ({ startDate, endDate } = {}) => {
+    // dateOnly=true면 일자별(byDate)만 수집 (트렌드 차트 등 — 광고그룹 API 콜 절약)
+    getDashboardDimensions: async ({ startDate, endDate, dateOnly } = {}) => {
       const dateRange = { since: startDate, until: endDate };
       const trStr = JSON.stringify(dateRange);
       const FIELDS = JSON.stringify(['clkCnt','impCnt','salesAmt','avgRnk','ccnt','convAmt','purchaseCcnt','purchaseConvAmt']);
@@ -353,6 +354,7 @@ function createApiClient(creds) {
           addRow(byDate[date], d);
         }
       }
+      if (dateOnly) return { byDate, byAdgroup: {} };
 
       // 2) 광고그룹별: 광고그룹 단위 /stats(allDays)
       const agListRes = await mapLimit(campaigns || [], 8, (camp) =>

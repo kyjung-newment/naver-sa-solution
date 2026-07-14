@@ -4945,23 +4945,18 @@ router.get('/api/stats/trend', requireLogin, async (req, res) => {
       return res.json({ ok: true, trend, source: 'db' });
     }
 
-    // Fallback: API에서 일별 데이터 구성
+    // Fallback: /stats 캠페인 일일행으로 일별 데이터 구성
+    // (기존 AD_DETAIL 폴백은 전환 미포함 → 구매전환매출·ROAS가 0으로 표기되던 버그.
+    //  /stats는 네이버 대시보드와 동일 소스라 비용·전환 모두 정확)
     const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
     if (!creds) return res.status(400).json({ ok: false, error: 'API 미등록' });
     const client = makeClient(creds, account.customer_id);
 
-    const adRows = await fetchAllStatRows(client, account.customer_id, 'AD_DETAIL', dateRange);
-    const byDate = {};
-    for (const { date, cols } of adRows) {
-      if (cols.length < 14) continue;
-      if (!byDate[date]) byDate[date] = { imp: 0, clk: 0, cost: 0, purchaseAmt: 0, purchaseCnt: 0 };
-      byDate[date].imp += parseInt(cols[11]) || 0;
-      byDate[date].clk += parseInt(cols[12]) || 0;
-      byDate[date].cost += parseInt(cols[13]) || 0;
-    }
-    const trend = Object.entries(byDate).sort((a,b) => a[0].localeCompare(b[0])).map(([date, d]) => ({
+    const dims = await client.getDashboardDimensions({ startDate: dateRange.since, endDate: dateRange.until, dateOnly: true });
+    const trend = Object.entries(dims.byDate || {}).sort((a,b) => a[0].localeCompare(b[0])).map(([date, d]) => ({
       date,
-      ...d,
+      imp: d.imp, clk: d.clk, cost: d.cost,
+      purchaseAmt: d.purchaseAmt, purchaseCnt: d.purchaseCnt,
       ctr: d.imp > 0 ? (d.clk / d.imp * 100) : 0,
       cpc: d.clk > 0 ? Math.round(d.cost / d.clk) : 0,
       roas: d.cost > 0 ? Math.round(d.purchaseAmt / d.cost * 100) : 0,
