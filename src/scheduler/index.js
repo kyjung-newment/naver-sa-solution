@@ -52,28 +52,41 @@ function startScheduler() {
   console.log('  ✅ 리포트 job 정리: 매일 06:30');
 
   // ── 파워링크 자동입찰 (각 광고주별 설정 간격) ────────────────
-  cron.schedule('* * * * *', async () => {
-    const accounts = await db.getAllAccountsWithFeature('auto_bidding');
-    const now = Date.now();
-    for (const account of accounts) {
-      const intervalMs = (account.auto_bid_interval || 5) * 60 * 1000;
-      const lastRun = autoBidLastRun.get(account.id) || 0;
-      if (now - lastRun >= intervalMs) {
-        autoBidLastRun.set(account.id, now);
-        runAutoBiddingForAccount(account).catch(console.error);
+  // 기능 플래그 비활성 시 크론 자체를 등록하지 않음 (불필요한 DB 조회/에러 방지)
+  if (config.features.AUTOBID) {
+    cron.schedule('* * * * *', async () => {
+      try {
+        const accounts = await db.getAllAccountsWithFeature('auto_bidding');
+        const now = Date.now();
+        for (const account of accounts) {
+          const intervalMs = (account.auto_bid_interval || 5) * 60 * 1000;
+          const lastRun = autoBidLastRun.get(account.id) || 0;
+          if (now - lastRun >= intervalMs) {
+            autoBidLastRun.set(account.id, now);
+            runAutoBiddingForAccount(account).catch(console.error);
+          }
+        }
+      } catch (e) {
+        console.error('❌ 파워링크 자동입찰 크론 오류:', e.message);
       }
-    }
-  }, { timezone: 'Asia/Seoul' });
-  console.log('  ✅ 파워링크 자동입찰: 활성 광고주별 개별 간격');
+    }, { timezone: 'Asia/Seoul' });
+    console.log('  ✅ 파워링크 자동입찰: 활성 광고주별 개별 간격');
+  }
 
   // ── 쇼핑검색 자동입찰 (5분마다) ──────────────────────────────
-  cron.schedule('*/5 * * * *', async () => {
-    const accounts = await db.getAllAccountsWithFeature('shopping_auto_bidding');
-    for (const account of accounts) {
-      runShoppingAutoBidForAccount(account).catch(console.error);
-    }
-  }, { timezone: 'Asia/Seoul' });
-  console.log('  ✅ 쇼핑검색 자동입찰: 5분 간격\n');
+  if (config.features.SHOPPING_BID) {
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        const accounts = await db.getAllAccountsWithFeature('shopping_auto_bidding');
+        for (const account of accounts) {
+          runShoppingAutoBidForAccount(account).catch(console.error);
+        }
+      } catch (e) {
+        console.error('❌ 쇼핑 자동입찰 크론 오류:', e.message);
+      }
+    }, { timezone: 'Asia/Seoul' });
+    console.log('  ✅ 쇼핑검색 자동입찰: 5분 간격\n');
+  }
 }
 
 const autoBidLastRun = new Map();

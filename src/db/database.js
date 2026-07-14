@@ -287,6 +287,8 @@ async function initDb() {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_daily_report TIMESTAMP`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_weekly_report TIMESTAMP`);
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS last_da_monthly_report TIMESTAMP`);
+    // 쇼핑검색 자동입찰 기능 플래그 (크론/스케줄러에서 참조 — 컬럼 부재 시 SQL 에러 방지)
+    await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS feat_shopping_auto_bidding INTEGER DEFAULT 0`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
   // master_keywords에 품질지수(Qi) 컬럼 추가

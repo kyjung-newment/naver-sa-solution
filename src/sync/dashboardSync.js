@@ -102,9 +102,68 @@ async function syncAccountDate(account, date) {
   for (const cols of remappedShopConv) addConvRow(cols);
   if (convTypeSet.size > 0) console.log(`  📊 [${account.name}] ${date} 전환 타입: ${[...convTypeSet].join(', ')} (AD:${convRows.length}행 + SHOP:${remappedShopConv.length}행)`);
 
-  // 4. AD_DETAIL 행 + 전환 데이터 병합 후 DB에 저장
-  // 먼저 기존 데이터 삭제
-  await db.pool.query(
+  // 4. 캠페인별 Stats API 데이터 선조회 (DB 트랜잭션 밖에서 API 호출)
+  //    구매전환은 convRows를 1회만 스캔해 캠페인별 집계 (기존: 캠페인수 × 전환행수 반복 스캔)
+  const campConvMap = {};
+  for (const cols of convRows) {
+    if (cols.length < 15) continue;
+    if (!isPurchaseType(cols[12])) continue;
+    const cid = cols[2];
+    if (!campConvMap[cid]) campConvMap[cid] = { cnt: 0, amt: 0 };
+    campConvMap[cid].cnt += parseInt(cols[13]) || 0;
+    campConvMap[cid].amt += parseInt(cols[14]) || 0;
+  }
+
+  const campValues = [];
+  const campParams = [];
+  let campFetchOk = false;
+  try {
+    const campaigns = await client.getCampaigns();
+    // 동시 8개 제한 (캠페인 수가 많은 계정에서 429 방지)
+    const statsResults = [];
+    const campList = campaigns || [];
+    for (let i = 0; i < campList.length; i += 8) {
+      const chunk = campList.slice(i, i + 8);
+      const res = await Promise.allSettled(chunk.map(camp =>
+        client.getStatById(camp.nccCampaignId, { startDate: date, endDate: date })
+          .then(result => ({ camp, result }))
+      ));
+      statsResults.push(...res);
+    }
+    campFetchOk = true;
+
+    let cpIdx = 1;
+    for (const sr of statsResults) {
+      if (sr.status !== 'fulfilled') continue;
+      const { camp, result } = sr.value;
+      if (!result?.data?.length) continue;
+
+      let imp = 0, clk = 0, salesAmt = 0, convAmt = 0, avgRnk = 0, rkCnt = 0;
+      for (const d of result.data) {
+        imp += d.impCnt || 0;
+        clk += d.clkCnt || 0;
+        salesAmt += d.salesAmt || 0;
+        convAmt += d.convAmt || 0;
+        if (d.avgRnk > 0) { avgRnk += d.avgRnk; rkCnt++; }
+      }
+      if (rkCnt > 0) avgRnk = avgRnk / rkCnt;
+
+      const cc = campConvMap[camp.nccCampaignId] || { cnt: 0, amt: 0 };
+      campValues.push(`($${cpIdx},$${cpIdx+1},$${cpIdx+2},$${cpIdx+3},$${cpIdx+4},$${cpIdx+5},$${cpIdx+6},$${cpIdx+7},$${cpIdx+8},$${cpIdx+9})`);
+      campParams.push(account.id, date, camp.nccCampaignId, camp.name, imp, clk, salesAmt, avgRnk, cc.cnt, cc.amt);
+      cpIdx += 10;
+    }
+  } catch (e) {
+    console.log(`  ⚠️ Stats API 캠페인 조회 실패 (${date}):`, e.message);
+  }
+
+  // 5. DB 저장 — 단일 트랜잭션으로 원자적 DELETE→INSERT
+  //    (크론 중복/동시 실행 시 이중 집계 방지: 계정+날짜 advisory lock)
+  const tx = await db.pool.connect();
+  try {
+  await tx.query('BEGIN');
+  await tx.query('SELECT pg_advisory_xact_lock($1, $2)', [account.id, parseInt(date.replace(/-/g, ''), 10)]);
+  await tx.query(
     'DELETE FROM stat_daily_detail WHERE account_id = $1 AND stat_date = $2',
     [account.id, date]
   );
@@ -141,7 +200,7 @@ async function syncAccountDate(account, date) {
     }
 
     if (values.length > 0) {
-      await db.pool.query(
+      await tx.query(
         `INSERT INTO stat_daily_detail (account_id, stat_date, campaign_id, adgroup_id, keyword_id, ad_id, hour, device, imp, clk, cost, rank_val, purchase_cnt, purchase_amt, cart_cnt)
          VALUES ${values.join(',')}`,
         params
@@ -181,7 +240,7 @@ async function syncAccountDate(account, date) {
     }
 
     if (values.length > 0) {
-      await db.pool.query(
+      await tx.query(
         `INSERT INTO stat_daily_detail (account_id, stat_date, campaign_id, adgroup_id, keyword_id, ad_id, hour, device, imp, clk, cost, rank_val, purchase_cnt, purchase_amt, cart_cnt)
          VALUES ${values.join(',')}`,
         params
@@ -190,78 +249,37 @@ async function syncAccountDate(account, date) {
   }
   if (remappedShopKw.length > 0) console.log(`  ✅ SHOPPINGKEYWORD_DETAIL ${remappedShopKw.length}행 DB 저장 완료`);
 
-  // 5. Stats API로 캠페인별 정확한 salesAmt 저장
-  try {
-    const campaigns = await client.getCampaigns();
-    const statsResults = await Promise.allSettled(
-      (campaigns || []).map(camp =>
-        client.getStatById(camp.nccCampaignId, { startDate: date, endDate: date })
-          .then(result => ({ camp, result }))
-      )
-    );
-
-    // 기존 캠페인 일별 데이터 삭제
-    await db.pool.query(
+  // 5-1. 캠페인 일별 데이터 (Stats API 조회 성공 시에만 교체)
+  if (campFetchOk) {
+    await tx.query(
       'DELETE FROM stat_campaign_daily WHERE account_id = $1 AND stat_date = $2',
       [account.id, date]
     );
-
-    const campValues = [];
-    const campParams = [];
-    let cpIdx = 1;
-
-    for (const sr of statsResults) {
-      if (sr.status !== 'fulfilled') continue;
-      const { camp, result } = sr.value;
-      if (!result?.data?.length) continue;
-
-      let imp = 0, clk = 0, salesAmt = 0, convAmt = 0, avgRnk = 0, rkCnt = 0;
-      for (const d of result.data) {
-        imp += d.impCnt || 0;
-        clk += d.clkCnt || 0;
-        salesAmt += d.salesAmt || 0;
-        convAmt += d.convAmt || 0;
-        if (d.avgRnk > 0) { avgRnk += d.avgRnk; rkCnt++; }
-      }
-      if (rkCnt > 0) avgRnk = avgRnk / rkCnt;
-
-      // 전환 데이터 (구매완료)
-      let purchaseCnt = 0, purchaseAmt = 0;
-      for (const cols of convRows) {
-        if (cols.length < 15) continue;
-        if (cols[2] !== camp.nccCampaignId) continue;
-        const ct = (cols[12] || '').trim().toLowerCase();
-        const ctRaw = (cols[12] || '').trim();
-        if (ct === 'purchase' || ct === 'purchase_complete' || ct === 'complete_purchase' || ct === 'conversion' || ct === 'conv' || ct === '1' || ctRaw === '구매완료') {
-          purchaseCnt += parseInt(cols[13]) || 0;
-          purchaseAmt += parseInt(cols[14]) || 0;
-        }
-      }
-
-      campValues.push(`($${cpIdx},$${cpIdx+1},$${cpIdx+2},$${cpIdx+3},$${cpIdx+4},$${cpIdx+5},$${cpIdx+6},$${cpIdx+7},$${cpIdx+8},$${cpIdx+9})`);
-      campParams.push(account.id, date, camp.nccCampaignId, camp.name, imp, clk, salesAmt, avgRnk, purchaseCnt, purchaseAmt);
-      cpIdx += 10;
-    }
-
     if (campValues.length > 0) {
-      await db.pool.query(
+      await tx.query(
         `INSERT INTO stat_campaign_daily (account_id, stat_date, campaign_id, campaign_name, imp, clk, sales_amt, avg_rnk, purchase_cnt, purchase_amt)
          VALUES ${campValues.join(',')}`,
         campParams
       );
     }
-  } catch (e) {
-    console.log(`  ⚠️ Stats API 캠페인 동기화 실패 (${date}):`, e.message);
   }
 
   // 6. 동기화 로그 업데이트
-  await db.pool.query(
+  await tx.query(
     `INSERT INTO sync_log (account_id, sync_type, stat_date, status, row_count, completed_at)
      VALUES ($1, 'detail', $2, 'done', $3, CURRENT_TIMESTAMP)
      ON CONFLICT (account_id, sync_type, stat_date)
      DO UPDATE SET status = 'done', row_count = $3, completed_at = CURRENT_TIMESTAMP`,
     [account.id, date, adRows.length]
   );
+
+  await tx.query('COMMIT');
+  } catch (e) {
+    await tx.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    tx.release();
+  }
 
   console.log(`  ✅ [${account.name}] ${date} 동기화 완료 (${adRows.length}행)`);
   return adRows.length;
@@ -316,10 +334,14 @@ async function runDashboardSync(timeoutMs = 50000) {
 
   // 모든 계정 조회 (API 키가 설정된)
   const accounts = await db.all(`
-    SELECT ad_accounts.*, users.api_key, users.secret_key
+    SELECT ad_accounts.*,
+           COALESCE(NULLIF(ac.api_key, ''), users.api_key) AS api_key,
+           COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) AS secret_key
     FROM ad_accounts
     JOIN users ON users.id = ad_accounts.user_id
-    WHERE users.api_key != '' AND users.secret_key != ''
+    LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
+    WHERE COALESCE(NULLIF(ac.api_key, ''), users.api_key) != ''
+      AND COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) != ''
   `);
 
   const now = new Date();
@@ -387,10 +409,14 @@ async function runBackfill(timeoutMs = 50000, days = 60) {
   console.log(`🔄 백필 동기화 시작 (${days}일)...`);
 
   const accounts = await db.all(`
-    SELECT ad_accounts.*, users.api_key, users.secret_key
+    SELECT ad_accounts.*,
+           COALESCE(NULLIF(ac.api_key, ''), users.api_key) AS api_key,
+           COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) AS secret_key
     FROM ad_accounts
     JOIN users ON users.id = ad_accounts.user_id
-    WHERE users.api_key != '' AND users.secret_key != ''
+    LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
+    WHERE COALESCE(NULLIF(ac.api_key, ''), users.api_key) != ''
+      AND COALESCE(NULLIF(ac.secret_key, ''), users.secret_key) != ''
   `);
 
   const now = new Date();
@@ -430,3 +456,4 @@ async function runBackfill(timeoutMs = 50000, days = 60) {
 }
 
 module.exports = { syncAccountDate, runDashboardSync, runBackfill };
+

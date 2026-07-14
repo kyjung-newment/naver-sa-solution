@@ -4,6 +4,17 @@ const zlib = require('zlib');
 
 const BASE_URL = 'https://api.searchad.naver.com';
 
+// 동시성 제한 헬퍼 (429 회피 — Promise.allSettled와 동일한 결과 형태 반환)
+async function mapLimit(items, limit, fn) {
+  const out = [];
+  for (let i = 0; i < items.length; i += limit) {
+    const chunk = items.slice(i, i + limit);
+    const res = await Promise.allSettled(chunk.map(fn));
+    out.push(...res);
+  }
+  return out;
+}
+
 /**
  * 광고주 계정 자격증명을 받아 API 클라이언트 생성
  * @param {{ apiKey: string, secretKey: string, customerId: string }} creds
@@ -204,16 +215,14 @@ function createApiClient(creds) {
       const dateRange = resolveDateRange(timeRange, startDate, endDate);
       const byBreakdown = {};
 
-      const statsResults = await Promise.allSettled(
-        (campaigns || []).map(camp =>
-          apiCall('GET', '/stats', {
-            id: camp.nccCampaignId,
-            fields: JSON.stringify(['clkCnt', 'impCnt', 'salesAmt', 'cpc', 'ccnt']),
-            timeRange: JSON.stringify(dateRange),
-            timeIncrement: 'allDays',
-            breakdown,
-          }).then(result => ({ camp, result }))
-        )
+      const statsResults = await mapLimit(campaigns || [], 8, camp =>
+        apiCall('GET', '/stats', {
+          id: camp.nccCampaignId,
+          fields: JSON.stringify(['clkCnt', 'impCnt', 'salesAmt', 'cpc', 'ccnt']),
+          timeRange: JSON.stringify(dateRange),
+          timeIncrement: 'allDays',
+          breakdown,
+        }).then(result => ({ camp, result }))
       );
 
       for (const sr of statsResults) {
@@ -255,15 +264,13 @@ function createApiClient(creds) {
       let campCount = 0;
       const campStats = [];
 
-      // 모든 캠페인 Stats API 병렬 호출 (purchaseCcnt, purchaseConvAmt 포함)
-      const statsResults = await Promise.allSettled(
-        (campaigns || []).map(camp =>
-          apiCall('GET', '/stats', {
-            id: camp.nccCampaignId,
-            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto','purchaseCcnt','purchaseConvAmt']),
-            timeRange: JSON.stringify(dateRange),
-          }).then(result => ({ camp, result }))
-        )
+      // 모든 캠페인 Stats API 호출 (purchaseCcnt, purchaseConvAmt 포함) — 동시 8개 제한
+      const statsResults = await mapLimit(campaigns || [], 8, camp =>
+        apiCall('GET', '/stats', {
+          id: camp.nccCampaignId,
+          fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc','crto','purchaseCcnt','purchaseConvAmt']),
+          timeRange: JSON.stringify(dateRange),
+        }).then(result => ({ camp, result }))
       );
 
       for (const sr of statsResults) {
@@ -329,17 +336,6 @@ function createApiClient(creds) {
       };
       const blank = (extra) => Object.assign({ imp:0, clk:0, cost:0, rankSum:0, rankCount:0, purchaseCnt:0, purchaseAmt:0, convCnt:0, convAmt:0 }, extra || {});
 
-      // 동시성 제한 헬퍼 (429 회피 — apiCall 자체 백오프 + 청크 병렬)
-      async function mapLimit(items, limit, fn) {
-        const out = [];
-        for (let i = 0; i < items.length; i += limit) {
-          const chunk = items.slice(i, i + limit);
-          const res = await Promise.allSettled(chunk.map(fn));
-          out.push(...res);
-        }
-        return out;
-      }
-
       // 1) 일자별: 캠페인별 일일 행(default timeIncrement) 합산
       const byDate = {};
       const dailyRes = await mapLimit(campaigns || [], 8, (camp) =>
@@ -389,12 +385,10 @@ function createApiClient(creds) {
       const dateRange = resolveDateRange(timeRange, startDate, endDate);
       const results = [];
 
-      // 모든 캠페인의 광고그룹을 병렬 조회
-      const agResults = await Promise.allSettled(
-        (campaigns || []).map(camp =>
-          apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId })
-            .then(ags => ({ camp, ags }))
-        )
+      // 모든 캠페인의 광고그룹 조회 — 동시 8개 제한
+      const agResults = await mapLimit(campaigns || [], 8, camp =>
+        apiCall('GET', '/ncc/adgroups', { nccCampaignId: camp.nccCampaignId })
+          .then(ags => ({ camp, ags }))
       );
 
       const allAgs = [];
@@ -405,15 +399,13 @@ function createApiClient(creds) {
         }
       }
 
-      // 모든 광고그룹 Stats를 병렬 조회
-      const statResults = await Promise.allSettled(
-        allAgs.map(({ ag, camp }) =>
-          apiCall('GET', '/stats', {
-            id: ag.nccAdgroupId,
-            fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc']),
-            timeRange: JSON.stringify(dateRange),
-          }).then(stat => ({ ag, camp, stat }))
-        )
+      // 모든 광고그룹 Stats 조회 — 동시 8개 제한
+      const statResults = await mapLimit(allAgs, 8, ({ ag, camp }) =>
+        apiCall('GET', '/stats', {
+          id: ag.nccAdgroupId,
+          fields: JSON.stringify(['clkCnt','impCnt','salesAmt','ctr','avgRnk','convAmt','ccnt','cpc']),
+          timeRange: JSON.stringify(dateRange),
+        }).then(stat => ({ ag, camp, stat }))
       );
 
       for (const r of statResults) {

@@ -1,7 +1,7 @@
 {
   "name": "naver-sa-solution",
   "version": "1.0.0",
-  "description": "네이버 SA API 리포트 자동화 + 방문자 로그 분석 솔루션",
+  "description": "네이버 SA API 리포트 자동화 솔루션 (광고대행사 멀티계정 관리)",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -14,16 +14,13 @@
     "axios": "^1.6.7",
     "cheerio": "^1.2.0",
     "connect-pg-simple": "^10.0.0",
-    "crypto": "^1.0.1",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.18.3",
     "express-session": "^1.19.0",
-    "geoip-lite": "^1.4.10",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.9",
-    "pg": "^8.20.0",
-    "sqlite3": "^5.1.7"
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
