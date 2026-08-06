@@ -101,16 +101,27 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
-// 접근 가능한 광고주 목록: 마케터=본인 소유 전체, 초대 계정=초대받은 계정 + (마스터가 직접 연동 등록한) 본인 소유 계정
+// 접근 가능한 광고주 목록
+// - 광고주(client): 초대받은 계정만
+// - 마스터: 본인 소유 + 초대받은 계정 + "입찰관리에 연동된 광고주 전체" (마스터 간 공유 —
+//   누가 연동했든 입찰 데이터(bid_materials)나 설정(bid_settings)이 있는 계정은 모든 마스터가 조회·수정 가능)
 async function getAccessibleAccounts(req) {
-  if (isInvited(req)) {
-    const viewer = await db.getViewerAccounts(req.session.userId);
-    if (isClient(req)) return viewer;
-    const owned = await db.getAccountsByUser(req.session.userId);
-    const seen = new Set(viewer.map(a => String(a.id)));
-    return [...viewer, ...owned.filter(a => !seen.has(String(a.id)))];
+  if (isClient(req)) return db.getViewerAccounts(req.session.userId);
+  const viewer = isInvited(req) ? await db.getViewerAccounts(req.session.userId) : [];
+  const owned = await db.getAccountsByUser(req.session.userId);
+  const shared = (await bidDb.pool.query(`
+    SELECT DISTINCT a.* FROM ad_accounts a
+    WHERE EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id)
+       OR EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id)
+  `)).rows;
+  const seen = new Set();
+  const out = [];
+  for (const a of [...viewer, ...owned, ...shared]) {
+    if (seen.has(String(a.id))) continue;
+    seen.add(String(a.id));
+    out.push(a);
   }
-  return db.getAccountsByUser(req.session.userId);
+  return out.sort((x, y) => String(x.name).localeCompare(String(y.name), 'ko'));
 }
 
 async function getSelectedAccount(req) {
@@ -122,9 +133,34 @@ async function getSelectedAccount(req) {
 }
 
 async function getCreds(req, accountId) {
+  // 마스터는 공유 계정(다른 마스터가 연동한 광고주)도 소유자 자격증명으로 자동 해석
+  if (accountId && !isClient(req)) {
+    const owner = await resolveOwnerCreds(accountId);
+    if (owner) return owner;
+  }
   const creds = await db.getApiCredentials(req.session.userId, accountId);
   if (!creds) return null;
   return creds;
+}
+
+// 광고주 소유자의 자격증명 해석: 계정 연결 credential → 소유자 첫 credential → 소유자 users 레거시
+async function resolveOwnerCreds(accountId) {
+  const acc = (await bidDb.pool.query('SELECT user_id, agency_credential_id FROM ad_accounts WHERE id = $1', [accountId])).rows[0];
+  if (!acc) return null;
+  if (acc.agency_credential_id) {
+    const linked = (await bidDb.pool.query(
+      `SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND api_key != ''`,
+      [acc.agency_credential_id])).rows[0];
+    if (linked) return linked;
+  }
+  const first = (await bidDb.pool.query(
+    `SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 AND api_key != '' ORDER BY id ASC LIMIT 1`,
+    [acc.user_id])).rows[0];
+  if (first) return first;
+  const legacy = (await bidDb.pool.query(
+    `SELECT api_key, secret_key, manager_customer_id FROM users WHERE id = $1 AND api_key != ''`,
+    [acc.user_id])).rows[0];
+  return legacy || null;
 }
 
 // ─── 공통 레이아웃 ─────────────────────────────────────────────────
@@ -1326,6 +1362,8 @@ router.post('/api/settings/connect-account', requireLogin, requireMaster, async 
     if (creds.id) {
       await bidDb.pool.query('UPDATE ad_accounts SET agency_credential_id = $2 WHERE id = $1 AND agency_credential_id IS NULL', [accountId, creds.id]);
     }
+    // 입찰관리 연동 마커 — 소재가 0개여도 모든 마스터에게 공유되도록 bid_settings에 기록
+    await bidDb.setSetting(accountId, 'app_account', '1', req.session.userName || '');
     req.session.bidAccountId = accountId;
 
     // 4) 데이터 자동 저장: 소재 동기화 + 4주 성과 수집
