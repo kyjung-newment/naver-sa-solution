@@ -36,17 +36,30 @@ async function syncMaterials(account, creds) {
   const targets = (campaigns || []).filter(c => (c.status === 'ELIGIBLE' || !c.status) && isShopping(c));
 
   // 광고그룹 조회 (그룹 기본입찰가 → useGroupBidAmt 소재의 현재가)
+  // 쇼핑 캠페인 안에서도 '쇼핑몰 상품형(SHOPPING_GROUP_PRODUCT)'만 대상 —
+  // 쇼핑 브랜드형(키워드 운용)·카탈로그형 등은 소재 입찰 조정 대상이 아니므로 제외
+  const isProductGroup = (ag) => {
+    const t = ag.adgroupType ?? ag.adGroupType ?? ag.type;
+    if (t == null) return true; // 타입 미제공 응답 폴백
+    return String(t).toUpperCase().includes('SHOPPING_GROUP_PRODUCT');
+  };
   const agRes = await mapLimit(targets, 5, c => client.getAdGroups(c.nccCampaignId).then(ags => ({ camp: c, ags: ags || [] })));
   const allAgs = [];
   for (const r of agRes) {
     if (r.status !== 'fulfilled') continue;
     for (const ag of r.value.ags) {
       if (ag.status && ag.status !== 'ELIGIBLE') continue;
+      if (!isProductGroup(ag)) continue;
       allAgs.push({ camp: r.value.camp, ag });
     }
   }
 
-  // 소재 조회
+  // 소재 조회 — 쇼핑몰 상품 소재(SHOPPING_PRODUCT_AD)만
+  const isProductAd = (ad) => {
+    const t = ad.type ?? ad.adTp;
+    if (t == null) return true; // 타입 미제공 응답 폴백
+    return String(t).toUpperCase().includes('SHOPPING_PRODUCT');
+  };
   const adRes = await mapLimit(allAgs, 5, ({ camp, ag }) => client.getAds(ag.nccAdgroupId).then(ads => ({ camp, ag, ads: ads || [] })));
   let count = 0;
   const seenAdIds = new Set();
@@ -55,6 +68,7 @@ async function syncMaterials(account, creds) {
     const { camp, ag, ads } = r.value;
     for (const ad of ads) {
       if (ad.status && ad.status !== 'ELIGIBLE') continue;
+      if (!isProductAd(ad)) continue;
       const adAttr = ad.adAttr || {};
       const useGroupBid = adAttr.useGroupBidAmt !== false; // 쇼핑 소재 기본: 그룹입찰가 사용
       const bid = (!useGroupBid && adAttr.bidAmt) ? adAttr.bidAmt : (ag.adgroupAttrJson?.bidAmt || ag.bidAmt || adAttr.bidAmt || 0);

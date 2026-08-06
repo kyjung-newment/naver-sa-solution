@@ -11,21 +11,26 @@ const wkKey = (w) => (w instanceof Date) ? w.toISOString().slice(0, 10) : String
  * 주간 계산: 4주 성과 기반 판정 → bid_adjustments upsert
  * @returns {{weekStart, rows: [...]}} 계산 결과 (미리보기 데이터와 동일)
  */
-async function computeWeekly(account, { save = true } = {}) {
+async function computeWeekly(account, { save = true, base = null } = {}) {
+  if (base) save = false; // 과거 주간 조회는 조정안을 덮어쓰지 않음
   const settings = await bidDb.getSettings(account.id);
   const rules = await bidDb.getCategoryRules(account.id);
-  const weeks = logic.last4Weeks();
+  const weeks = logic.last4Weeks(base);
   const weekStarts = weeks.map(w => w.start);
   const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
 
-  // 4주 누적 매출 → 핵심소재
+  // 4주 누적 매출 → 핵심소재 (+수동 오버라이드: core_override '1'=핵심 고정, '0'=제외 고정)
   const items = materials.map(m => {
     const ws = statsMap[m.id] || {};
     const revenue4w = weekStarts.reduce((a, k) => a + parseInt(ws[k]?.revenue || 0), 0);
     return { id: m.id, revenue4w };
   });
   const coreSet = logic.coreMaterialIds(items, settings.core_share);
+  for (const m of materials) {
+    if (m.core_override === '1') coreSet.add(m.id);
+    else if (m.core_override === '0') coreSet.delete(m.id);
+  }
 
   const rows = [];
   for (const m of materials) {

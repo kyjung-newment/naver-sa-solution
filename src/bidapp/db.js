@@ -171,6 +171,8 @@ async function initBidDb() {
 
   // v2: 기준매출(지난달 주간평균, 100원 단위) — null = 전월 데이터 없는 신규 소재
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS baseline_weekly_revenue BIGINT DEFAULT NULL`);
+  // v2.1: 핵심소재 수동 오버라이드 ('' 자동판별 / '1' 핵심 고정 / '0' 제외 고정)
+  await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS core_override TEXT NOT NULL DEFAULT ''`);
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
   // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
@@ -259,15 +261,16 @@ async function upsertMaterial(accountId, m) {
   return r.rows[0].id;
 }
 
-async function updateMaterialMeta(id, accountId, { category, target_roas, enabled, mode_override }) {
+async function updateMaterialMeta(id, accountId, { category, target_roas, enabled, mode_override, core_override }) {
   return pool.query(`
     UPDATE bid_materials SET
       category = COALESCE($3, category),
       target_roas = COALESCE($4, target_roas),
       enabled = COALESCE($5, enabled),
-      mode_override = COALESCE($6, mode_override)
+      mode_override = COALESCE($6, mode_override),
+      core_override = COALESCE($7, core_override)
     WHERE id = $1 AND account_id = $2
-  `, [id, accountId, category ?? null, target_roas ?? null, enabled ?? null, mode_override ?? null]);
+  `, [id, accountId, category ?? null, target_roas ?? null, enabled ?? null, mode_override ?? null, core_override ?? null]);
 }
 
 async function setMaterialBid(id, bid) {

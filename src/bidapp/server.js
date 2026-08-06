@@ -454,8 +454,101 @@ router.get('/', requireLogin, async (req, res) => {
     </div>
     ${alertsHtml}
     ${!rows.length && !isClient(req) ? `<div class="alert alert-info">소재가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "소재 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
+    <div class="card">
+      <div class="card-header"><span class="card-title">📑 소재별 주차 누적 데이터</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="mx-q" placeholder="캠페인/그룹/소재 검색..." style="width:220px" oninput="renderMx()">
+          <button class="btn btn-outline btn-sm" onclick="mxCsv()">📥 CSV</button>
+        </div></div>
+      <div id="mx-wrap" style="overflow:auto;max-height:640px"><div class="empty"><span class="spinner"></span> 불러오는 중...</div></div>
+    </div>
+    <script>
+    var MX={weeks:[],rows:[]};
+    fetch('${BASE}/api/matrix').then(function(r){return r.json()}).then(function(j){
+      if(!j.ok){document.getElementById('mx-wrap').innerHTML='<div class="empty">'+(j.error||'오류')+'</div>';return;}
+      MX=j;renderMx();
+      var w=document.getElementById('mx-wrap');w.scrollLeft=w.scrollWidth; // 최신 주가 오른쪽 — 기본 스크롤 끝으로
+    });
+    function mxNum(n){return n?Math.round(n).toLocaleString('ko-KR'):'0';}
+    function mxRows(){
+      var q=(document.getElementById('mx-q').value||'').toLowerCase();
+      return MX.rows.filter(function(r){return !q||(r.campaign+' '+r.adgroup+' '+r.name).toLowerCase().indexOf(q)!==-1;});
+    }
+    function renderMx(){
+      if(!MX.weeks.length){document.getElementById('mx-wrap').innerHTML='<div class="empty">주차 데이터가 없습니다. 소재 동기화 + 성과 수집을 먼저 실행해주세요.</div>';return;}
+      var stTh='position:sticky;top:0;z-index:5;background:#f8fafc;';
+      var s1='position:sticky;left:0;min-width:150px;max-width:150px;background:#fff;z-index:2;';
+      var s2='position:sticky;left:150px;min-width:150px;max-width:150px;background:#fff;z-index:2;';
+      var s3='position:sticky;left:300px;min-width:220px;max-width:220px;background:#fff;z-index:2;';
+      var h='<table style="border-collapse:separate;border-spacing:0"><thead><tr>'
+        +'<th style="'+stTh+s1+'z-index:6">캠페인</th>'
+        +'<th style="'+stTh+s2+'z-index:6">광고그룹</th>'
+        +'<th style="'+stTh+s3+'z-index:6">소재</th>'
+        +MX.weeks.map(function(w){var wk=w.slice(5);
+          return '<th class="num" style="'+stTh+'border-left:2px solid #e2e8f0">'+wk+'<br>비용</th>'
+            +'<th class="num" style="'+stTh+'">'+wk+'<br>매출</th>'
+            +'<th class="num" style="'+stTh+'">'+wk+'<br>ROAS</th>';}).join('')
+        +'</tr></thead><tbody>';
+      var rows=mxRows();
+      h+=rows.map(function(r){
+        return '<tr>'
+        +'<td style="'+s1+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.campaign+'">'+r.campaign+'</td>'
+        +'<td style="'+s2+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.adgroup+'">'+r.adgroup+'</td>'
+        +'<td style="'+s3+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.name+'"><b>'+r.name+'</b></td>'
+        +MX.weeks.map(function(w){
+          var d=r.d[w]||{c:0,r:0};
+          var roas=d.c>0?(d.r/d.c*100).toFixed(0)+'%':'-';
+          return '<td class="num" style="border-left:2px solid #f1f5f9">'+mxNum(d.c)+'</td>'
+            +'<td class="num">'+mxNum(d.r)+'</td>'
+            +'<td class="num" style="font-weight:600;color:#7c3aed">'+roas+'</td>';}).join('')
+        +'</tr>';
+      }).join('');
+      h+='</tbody></table>';
+      if(!rows.length)h='<div class="empty">검색 결과 없음</div>';
+      document.getElementById('mx-wrap').innerHTML=h;
+    }
+    function mxCsv(){
+      var head=['캠페인','광고그룹','소재','소재ID'];
+      MX.weeks.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS');});
+      var rows=mxRows().map(function(r){
+        var line=[r.campaign,r.adgroup,r.name,r.adId];
+        MX.weeks.forEach(function(w){var d=r.d[w]||{c:0,r:0};line.push(d.c,d.r,d.c>0?(d.r/d.c).toFixed(3):'');});
+        return line;});
+      csvExport([head].concat(rows),'이고진_소재별_주차누적.csv');
+    }
+    </script>
   `;
   res.send(appLayout(req, '대시보드', content, 'dashboard', { accounts, account, user, pendingCount: pend }));
+});
+
+// 소재별 주차 누적 매트릭스 (대시보드 시트형 테이블) — 캠페인명, 광고그룹명 순 정렬
+router.get('/api/matrix', requireLogin, async (req, res) => {
+  try {
+    const { account } = await getSelectedAccount(req);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const mats = await bidDb.getMaterials(account.id, { enabledOnly: true }); // ORDER BY campaign_name, adgroup_name, name
+    const stat = (await bidDb.pool.query(`
+      SELECT ws.material_id, ws.week_start, ws.cost, ws.revenue
+      FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
+      WHERE m.account_id = $1
+    `, [account.id])).rows;
+    const weekSet = new Set();
+    const map = {};
+    for (const r of stat) {
+      const wk = wkKey(r.week_start);
+      weekSet.add(wk);
+      if (!map[r.material_id]) map[r.material_id] = {};
+      map[r.material_id][wk] = { c: parseInt(r.cost) || 0, r: parseInt(r.revenue) || 0 };
+    }
+    const weeks = [...weekSet].sort(); // 과거 → 최신 (누적식, 새 주가 오른쪽에 추가)
+    res.json({
+      ok: true, weeks,
+      rows: mats.map(m => ({
+        id: m.id, campaign: m.campaign_name, adgroup: m.adgroup_name, name: m.name, adId: m.ncc_ad_id,
+        d: map[m.id] || {},
+      })),
+    });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -468,9 +561,25 @@ router.get('/weekly', requireLogin, async (req, res) => {
   const pend = await pendingCount(account.id);
   const settings = await bidDb.getSettings(account.id);
   const blendN = Math.round(parseFloat(settings.blend_recent_weight) || 0);
+  const master = !isClient(req);
+
+  // 조회 가능한 주간 목록 (최신 완료 주부터 12주)
+  const weekOpts = [];
+  {
+    const mon = new Date(logic.last4Weeks()[0].start + 'T00:00:00Z');
+    for (let i = 0; i < 12; i++) {
+      const start = logic.fmtDate(mon);
+      const end = new Date(mon); end.setUTCDate(end.getUTCDate() + 6);
+      weekOpts.push({ start, end: logic.fmtDate(end) });
+      mon.setUTCDate(mon.getUTCDate() - 7);
+    }
+  }
 
   const content = `
     <div class="toolbar">
+      <select id="f-week" title="1주차(기준 주) 선택 — 선택한 주 기준으로 4주 블렌딩·판정을 계산합니다">
+        ${weekOpts.map((w, i) => `<option value="${w.start}">${w.start} ~ ${w.end}${i === 0 ? ' (최신)' : ''}</option>`).join('')}
+      </select>
       <select id="f-cat"><option value="">전체 분류</option>${logic.CATEGORIES.map(c => `<option>${c}</option>`).join('')}</select>
       <select id="f-verdict"><option value="">전체 판정</option>${Object.values(logic.VERDICT).map(v => `<option>${v}</option>`).join('')}</select>
       <input id="f-q" placeholder="소재/캠페인 검색..." style="width:220px">
@@ -478,41 +587,82 @@ router.get('/weekly', requireLogin, async (req, res) => {
       <button class="btn btn-outline btn-sm" onclick="exportCsv()">📥 CSV 내보내기</button>
     </div>
     <div class="tbl-wrap"><table id="wk-table"><thead><tr>
-      <th>소재</th><th>분류</th><th class="num">목표</th><th class="num">보정목표</th>
-      <th class="num">1주차 비용 (${blendN}%)</th><th class="num">1주차 매출</th>
-      <th class="num">2~4주차 비용 (${100 - blendN}%)</th><th class="num">2~4주차 매출</th>
-      <th class="num sortable" data-k="blended">블렌딩ROAS</th><th class="num">노출순위</th><th class="num sortable" data-k="share">매출비중</th>
-      <th>핵심</th><th>판정</th><th class="num">현재입찰가</th><th class="num">권장입찰가</th>
+      <th class="sortable" data-k="name">소재</th><th class="sortable" data-k="category">분류</th>
+      <th class="num sortable" data-k="targetRoas">목표</th><th class="num sortable" data-k="adjustedTarget">보정목표</th>
+      <th class="num sortable" data-k="w1cost">1주차 비용 (${blendN}%)</th><th class="num sortable" data-k="w1rev">1주차 매출</th>
+      <th class="num sortable" data-k="w24cost">2~4주차 비용 (${100 - blendN}%)</th><th class="num sortable" data-k="w24rev">2~4주차 매출</th>
+      <th class="num sortable" data-k="blended">블렌딩ROAS</th><th class="num sortable" data-k="rank1">노출순위</th><th class="num sortable" data-k="share">매출비중</th>
+      <th class="sortable" data-k="isCore">핵심</th><th class="sortable" data-k="verdict">판정</th>
+      <th class="num sortable" data-k="currentBid">현재입찰가</th><th class="num sortable" data-k="calcBid">권장입찰가</th>
     </tr></thead><tbody id="wk-body"><tr><td colspan="15" class="empty"><span class="spinner"></span> 불러오는 중...</td></tr></tbody></table></div>
     <div id="trend-modal" style="display:none"></div>
     <script>
-    var DATA=[];
-    fetch('${BASE}/api/weekly').then(function(r){return r.json()}).then(function(j){
-      if(!j.ok){document.getElementById('wk-body').innerHTML='<tr><td colspan="15" class="empty">'+(j.error||'오류')+'</td></tr>';return;}
-      DATA=j.rows;render();
-      document.getElementById('f-cat').onchange=render;document.getElementById('f-verdict').onchange=render;
-      document.getElementById('f-q').oninput=render;
-      document.querySelectorAll('th.sortable').forEach(function(th){th.onclick=function(){var k=th.dataset.k;DATA.sort(function(a,b){return (b[k]||0)-(a[k]||0)});render();};});
-    });
+    var DATA=[],SORT_K='',SORT_DIR=-1,MASTER=${master ? 'true' : 'false'};
+    var CATS=${JSON.stringify(logic.CATEGORIES)};
+    function loadData(){
+      var wk=document.getElementById('f-week').value;
+      document.getElementById('wk-body').innerHTML='<tr><td colspan="15" class="empty"><span class="spinner"></span> 불러오는 중...</td></tr>';
+      fetch('${BASE}/api/weekly'+(wk?'?week='+wk:'')).then(function(r){return r.json()}).then(function(j){
+        if(!j.ok){document.getElementById('wk-body').innerHTML='<tr><td colspan="15" class="empty">'+(j.error||'오류')+'</td></tr>';return;}
+        DATA=j.rows.map(function(r){
+          r.w1cost=r.w[0].cost;r.w1rev=r.w[0].revenue;
+          r.w24cost=r.w[1].cost+r.w[2].cost+r.w[3].cost;r.w24rev=r.w[1].revenue+r.w[2].revenue+r.w[3].revenue;
+          return r;});
+        render();
+      });
+    }
+    loadData();
+    document.getElementById('f-week').onchange=loadData;
+    document.getElementById('f-cat').onchange=function(){render()};
+    document.getElementById('f-verdict').onchange=function(){render()};
+    document.getElementById('f-q').oninput=function(){render()};
+    document.querySelectorAll('th.sortable').forEach(function(th){th.onclick=function(){
+      var k=th.dataset.k;
+      if(SORT_K===k){SORT_DIR=-SORT_DIR;}else{SORT_K=k;SORT_DIR=-1;}
+      document.querySelectorAll('th.sortable').forEach(function(t){t.textContent=t.textContent.replace(/ [▲▼]$/,'');});
+      th.textContent=th.textContent.replace(/ [▲▼]$/,'')+(SORT_DIR<0?' ▼':' ▲');
+      render();
+    };});
     function fnum(n){return n==null?'-':Math.round(n).toLocaleString('ko-KR');}
     function froas(r){return r==null?'-':(r*100).toFixed(0)+'%';}
     function filtered(){
       var cat=document.getElementById('f-cat').value,vd=document.getElementById('f-verdict').value,q=document.getElementById('f-q').value.toLowerCase();
-      return DATA.filter(function(r){
+      var rows=DATA.filter(function(r){
         if(cat&&r.category!==cat)return false;
         if(vd&&r.verdict!==vd)return false;
         if(q&&(r.name+' '+r.campaignName+' '+r.adgroupName).toLowerCase().indexOf(q)===-1)return false;
         return true;});
+      if(SORT_K){
+        var strKeys={name:1,category:1,verdict:1};
+        rows=rows.slice().sort(function(a,b){
+          var x=a[SORT_K],y=b[SORT_K];
+          if(strKeys[SORT_K])return String(x||'').localeCompare(String(y||''),'ko')*(-SORT_DIR);
+          x=(x==null||x===false)?-Infinity:(x===true?1:x);y=(y==null||y===false)?-Infinity:(y===true?1:y);
+          return (y-x)*(SORT_DIR<0?1:-1);});
+      }
+      return rows;
     }
     function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':(v==='데이터부족'||v.indexOf('감액보류')===0)?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
+    function catCell(r){
+      if(!MASTER)return r.category;
+      return '<select onclick="event.stopPropagation()" onchange="catChange('+r.id+',this)" style="width:100px;padding:5px 8px;font-size:12px">'
+        +CATS.map(function(c){return '<option '+(r.category===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select>';
+    }
+    async function catChange(id,sel){
+      var v=sel.value;
+      var mats={};mats[id]={category:v};
+      var j=await api('${BASE}/api/settings/materials',{materials:mats});
+      if(j.ok){toast('분류 저장 완료 — 미리보기/판정은 새로고침 시 반영');var r=DATA.find(function(x){return x.id===id});if(r)r.category=v;}
+      else toast(j.error||'저장 실패',true);
+    }
     function render(){
       var rows=filtered();
       document.getElementById('wk-body').innerHTML=rows.length?rows.map(function(r){
         return '<tr style="cursor:pointer" onclick="showTrend('+r.id+')">'
         +'<td><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+' · '+r.adgroupName+'</span></td>'
-        +'<td>'+r.category+'</td><td class="num">'+froas(r.targetRoas)+'</td><td class="num">'+froas(r.adjustedTarget)+'</td>'
-        +'<td class="num">'+fnum(r.w[0].cost)+'</td><td class="num">'+fnum(r.w[0].revenue)+'</td>'
-        +'<td class="num">'+fnum(r.w[1].cost+r.w[2].cost+r.w[3].cost)+'</td><td class="num">'+fnum(r.w[1].revenue+r.w[2].revenue+r.w[3].revenue)+'</td>'
+        +'<td>'+catCell(r)+'</td><td class="num">'+froas(r.targetRoas)+'</td><td class="num">'+froas(r.adjustedTarget)+'</td>'
+        +'<td class="num">'+fnum(r.w1cost)+'</td><td class="num">'+fnum(r.w1rev)+'</td>'
+        +'<td class="num">'+fnum(r.w24cost)+'</td><td class="num">'+fnum(r.w24rev)+'</td>'
         +'<td class="num" style="font-weight:700">'+froas(r.blended)+'</td>'
         +'<td class="num">'+(r.rank1?r.rank1.toFixed(1):'-')+'</td>'
         +'<td class="num">'+(r.share*100).toFixed(1)+'%</td>'
@@ -524,8 +674,8 @@ router.get('/weekly', requireLogin, async (req, res) => {
     }
     function exportCsv(){
       var head=['소재','캠페인','광고그룹','분류','목표ROAS','보정목표','1주차비용','1주차매출','2~4주차비용','2~4주차매출','블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가'];
-      var rows=filtered().map(function(r){return [r.name,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget,r.w[0].cost,r.w[0].revenue,r.w[1].cost+r.w[2].cost+r.w[3].cost,r.w[1].revenue+r.w[2].revenue+r.w[3].revenue,r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid];});
-      csvExport([head].concat(rows),'입찰조정_주차별데이터.csv');
+      var rows=filtered().map(function(r){return [r.name,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget,r.w1cost,r.w1rev,r.w24cost,r.w24rev,r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid];});
+      csvExport([head].concat(rows),'입찰조정_주차별데이터_'+document.getElementById('f-week').value+'.csv');
     }
     // 소재 클릭 → 주차별 추이 차트 (SVG)
     async function showTrend(id){
@@ -562,7 +712,15 @@ router.get('/api/weekly', requireLogin, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const { rows } = await engine.computeWeekly(account, { save: false });
+    // week=선택한 1주차 월요일 → base(그 다음 주 임의 일자) 기준으로 4주 계산
+    let base = null;
+    const week = String(req.query.week || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(week)) {
+      const d = new Date(week + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + 7);
+      base = logic.fmtDate(d);
+    }
+    const { rows } = await engine.computeWeekly(account, { save: false, base });
     const totalRev = rows.reduce((a, r) => a + r.revenue4w, 0);
     res.json({
       ok: true,
@@ -618,15 +776,19 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
         <span id="sync-status" style="margin-left:10px;font-size:13px;color:#64748b"></span>
       </div></div>
     <div class="card"><div class="card-header"><span class="card-title">2) 계산 결과 미리보기 → 적용</span>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="pv-q" placeholder="소재 이름 검색..." style="width:200px" oninput="renderPv()">
         <button class="btn btn-outline btn-sm" onclick="loadPreview()">미리보기 새로고침</button>
         <button class="btn btn-green btn-sm" id="btn-apply-sel" onclick="applySelected()" disabled>선택 적용</button>
         <button class="btn btn-danger btn-sm" id="btn-apply-all" onclick="applyAll()" disabled>전체 적용 (모드 규칙 준수)</button>
       </div></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table><thead><tr>
         <th><input type="checkbox" id="chk-all" style="width:auto" onclick="toggleAll(this)"></th>
-        <th>소재</th><th>분류</th><th class="num">블렌딩ROAS</th><th class="num">보정목표</th><th>핵심</th><th>판정</th>
-        <th class="num">현재</th><th class="num">권장</th><th class="num">변경폭</th><th>비고</th>
+        <th class="sortable" data-k="name">소재</th><th class="sortable" data-k="category">분류</th>
+        <th class="num sortable" data-k="blended">블렌딩ROAS</th><th class="num sortable" data-k="adjustedTarget">보정목표</th>
+        <th class="sortable" data-k="isCore">핵심</th><th class="sortable" data-k="verdict">판정</th>
+        <th class="num sortable" data-k="prevBid">현재</th><th class="num sortable" data-k="calcBid">권장</th>
+        <th class="num sortable" data-k="delta">변경폭</th><th>비고</th>
       </tr></thead><tbody id="pv-body"><tr><td colspan="11" class="empty">미리보기를 실행해주세요.</td></tr></tbody></table></div>
     </div>
     <script>
@@ -645,15 +807,49 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
       document.getElementById('pv-body').innerHTML='<tr><td colspan="11" class="empty"><span class="spinner"></span> 계산 중...</td></tr>';
       var j=await api('${BASE}/api/run/compute',{});
       if(!j.ok){document.getElementById('pv-body').innerHTML='<tr><td colspan="11" class="empty">'+(j.error||'오류')+'</td></tr>';return;}
-      PV=j.rows;renderPv();
+      PV=j.rows.map(function(r){r.delta=r.prevBid>0?((r.calcBid-r.prevBid)/r.prevBid*100):0;return r;});
+      renderPv();
       document.getElementById('btn-apply-sel').disabled=false;
       document.getElementById('btn-apply-all').disabled=false;
+    }
+    var PV_K='',PV_DIR=-1;
+    var CATS=${JSON.stringify(logic.CATEGORIES)};
+    document.querySelectorAll('th.sortable').forEach(function(th){th.onclick=function(){
+      var k=th.dataset.k;
+      if(PV_K===k){PV_DIR=-PV_DIR;}else{PV_K=k;PV_DIR=-1;}
+      document.querySelectorAll('th.sortable').forEach(function(t){t.textContent=t.textContent.replace(/ [▲▼]$/,'');});
+      th.textContent=th.textContent.replace(/ [▲▼]$/,'')+(PV_DIR<0?' ▼':' ▲');
+      renderPv();
+    };});
+    function pvRows(){
+      var q=(document.getElementById('pv-q').value||'').toLowerCase();
+      var rows=PV.filter(function(r){return !q||(r.name+' '+r.campaignName).toLowerCase().indexOf(q)!==-1;});
+      if(PV_K){
+        var strKeys={name:1,category:1,verdict:1};
+        rows=rows.slice().sort(function(a,b){
+          var x=a[PV_K],y=b[PV_K];
+          if(strKeys[PV_K])return String(x||'').localeCompare(String(y||''),'ko')*(-PV_DIR);
+          x=(x==null||x===false)?-Infinity:(x===true?1:x);y=(y==null||y===false)?-Infinity:(y===true?1:y);
+          return (y-x)*(PV_DIR<0?1:-1);});
+      }
+      return rows;
+    }
+    function catCell(r){
+      return '<select onchange="catChange('+r.materialId+',this)" style="width:100px;padding:5px 8px;font-size:12px">'
+        +CATS.map(function(c){return '<option '+(r.category===c?'selected':'')+'>'+c+'</option>';}).join('')+'</select>';
+    }
+    async function catChange(id,sel){
+      var mats={};mats[id]={category:sel.value};
+      var j=await api('${BASE}/api/settings/materials',{materials:mats});
+      if(j.ok){toast('분류 저장 완료 — 판정은 미리보기 새로고침 시 반영');var r=PV.find(function(x){return x.materialId===id});if(r)r.category=sel.value;}
+      else toast(j.error||'저장 실패',true);
     }
     function fnum(n){return n==null?'-':Math.round(n).toLocaleString('ko-KR');}
     function froas(r){return r==null?'-':(r*100).toFixed(0)+'%';}
     function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':(v==='데이터부족'||v.indexOf('감액보류')===0)?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
     function renderPv(){
-      document.getElementById('pv-body').innerHTML=PV.length?PV.map(function(r){
+      var LIST=pvRows();
+      document.getElementById('pv-body').innerHTML=LIST.length?LIST.map(function(r){
         var delta=r.prevBid>0?((r.calcBid-r.prevBid)/r.prevBid*100):0;
         var changeable=r.adjId&&(r.verdict==='증액'||r.verdict==='감액')&&r.status==='pending';
         var forceAppr=Math.abs(delta)>${Math.round(settings.force_approval_delta * 100)};
@@ -661,7 +857,7 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
         return '<tr>'
         +'<td>'+(changeable?'<input type="checkbox" class="pv-chk" value="'+r.adjId+'" style="width:auto">':'')+'</td>'
         +'<td><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+'</span></td>'
-        +'<td>'+r.category+'</td><td class="num">'+froas(r.blended)+'</td><td class="num">'+froas(r.adjustedTarget)+'</td>'
+        +'<td>'+catCell(r)+'</td><td class="num">'+froas(r.blended)+'</td><td class="num">'+froas(r.adjustedTarget)+'</td>'
         +'<td>'+(r.isCore?'<span class="badge b-core">핵심</span>':'')+'</td><td>'+vbadge(r.verdict)+'</td>'
         +'<td class="num">'+fnum(r.prevBid)+'</td><td class="num" style="font-weight:700">'+fnum(r.calcBid)+'</td>'
         +'<td class="num" style="color:'+(delta>0?'#059669':delta<0?'#dc2626':'#94a3b8')+'">'+(delta?delta.toFixed(1)+'%':'-')+'</td>'
@@ -1129,6 +1325,16 @@ router.get('/settings', requireLogin, async (req, res) => {
   const rules = await bidDb.getCategoryRules(account.id);
   const materials = await bidDb.getMaterials(account.id);
   const pend = await pendingCount(account.id);
+  // 소재별 4주 매출·비중 + 자동 핵심 판별 (소재별 설정 탭 표시용)
+  const weeks4 = logic.last4Weeks();
+  const statsMap4 = await bidDb.getWeeklyStatsMap(account.id, weeks4.map(w => w.start));
+  const revMap = {}; let totalRev4 = 0;
+  for (const m of materials) {
+    const ws = statsMap4[m.id] || {};
+    const rev = weeks4.reduce((a, w) => a + parseInt(ws[w.start]?.revenue || 0), 0);
+    revMap[m.id] = rev; totalRev4 += rev;
+  }
+  const coreAuto = logic.coreMaterialIds(materials.map(m => ({ id: m.id, revenue4w: revMap[m.id] })), settings.core_share);
   const ro = isClient(req); // 광고주 = 열람 전용 (입력 disabled, 저장 버튼 미노출)
   const dis = ro ? 'disabled' : '';
   const blendN = Math.max(0, Math.min(100, Math.round(parseFloat(settings.blend_recent_weight) || 0)));
@@ -1158,7 +1364,11 @@ router.get('/settings', requireLogin, async (req, res) => {
       <td><input class="rule-in" data-cat="${c}" data-f="down" value="${r.down}" type="number" step="0.01" style="width:80px" ${dis}></td></tr>`;
   }).join('');
 
-  const matRows = materials.map(m => `<tr>
+  const matRows = materials.map(m => {
+    const isCoreNow = m.core_override === '1' || (m.core_override !== '0' && coreAuto.has(m.id));
+    const share = totalRev4 > 0 ? (revMap[m.id] / totalRev4 * 100) : 0;
+    return `<tr>
+    ${ro ? '' : `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>`}
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
     <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${dis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
     <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${dis}></td>
@@ -1168,8 +1378,15 @@ router.get('/settings', requireLogin, async (req, res) => {
       <option value="approval" ${m.mode_override === 'approval' ? 'selected' : ''}>승인</option></select></td>
     <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px" ${dis}>
       <option value="1" ${m.enabled ? 'selected' : ''}>활성</option><option value="0" ${!m.enabled ? 'selected' : ''}>제외</option></select></td>
+    <td style="white-space:nowrap"><select class="mat-in" data-id="${m.id}" data-f="core_override" style="width:110px" ${dis}>
+      <option value="" ${!m.core_override ? 'selected' : ''}>자동 판별</option>
+      <option value="1" ${m.core_override === '1' ? 'selected' : ''}>핵심 고정</option>
+      <option value="0" ${m.core_override === '0' ? 'selected' : ''}>제외 고정</option></select>
+      ${isCoreNow ? '<span class="badge b-core" style="margin-left:4px">핵심</span>' : ''}</td>
+    <td class="num" style="${share >= 1 ? 'font-weight:700' : ''}">${totalRev4 > 0 ? share.toFixed(1) + '%' : '-'}</td>
     <td class="num">${m.baseline_weekly_revenue == null ? '<span style="color:#cbd5e1">-</span>' : fmtNum(m.baseline_weekly_revenue) + '원'}</td>
-    <td class="num">${fmtNum(m.current_bid)}원</td></tr>`).join('');
+    <td class="num">${fmtNum(m.current_bid)}원</td></tr>`;
+  }).join('');
 
   const TABS = [
     { id: 'params', title: '🧮 조정 기준' },
@@ -1234,7 +1451,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
               <input type="checkbox" name="app_enabled" style="width:auto" ${settings.app_enabled === '1' ? 'checked' : ''} ${dis}> 이 광고주에 주기 자동 실행(크론) 사용</label>
-            <span style="font-size:12px;color:#94a3b8">크론 시각(KST): 매주 월 06:00 주간 조정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 기준매출 산출+월간 리포트</span>
+            <span style="font-size:12px;color:#94a3b8">크론 시각(KST): 매주 월 08:00 동기화+성과 수집+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 기준매출 산출+월간 리포트</span>
           </div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
         </div></div>
@@ -1245,17 +1462,30 @@ router.get('/settings', requireLogin, async (req, res) => {
     <!-- ④ 소재별 설정 -->
     <div class="tab-pane" id="pane-materials">
       <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
+      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성·핵심)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
+        ${ro ? '' : `
+        <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
+          <b style="font-size:12.5px;color:#334155;white-space:nowrap">✔ 선택 일괄 변경:</b>
+          <select id="bulk-cat" style="width:110px"><option value="">분류 유지</option>${logic.CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+          <input id="bulk-roas" type="number" step="0.1" placeholder="목표ROAS 유지" style="width:120px">
+          <select id="bulk-mode" style="width:110px"><option value="">모드 유지</option><option value="__global">전역 따름</option><option value="auto">자동</option><option value="approval">승인</option></select>
+          <select id="bulk-enabled" style="width:100px"><option value="">상태 유지</option><option value="1">활성</option><option value="0">제외</option></select>
+          <select id="bulk-core" style="width:110px"><option value="">핵심 유지</option><option value="__auto">자동 판별</option><option value="1">핵심 고정</option><option value="0">제외 고정</option></select>
+          <button class="btn btn-primary btn-sm" onclick="bulkApply()">선택 적용 + 저장</button>
+          <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
+        </div>`}
         <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr><th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || '<tr><td colspan="7" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>'}</table></div></div>
+          <tr>${ro ? '' : '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>'}<th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          ${matRows || `<tr><td colspan="${ro ? 9 : 10}" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
     </div>
 
     <script>
     function showTab(id){
       document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===id);});
       document.querySelectorAll('.tab-pane').forEach(function(p){p.classList.toggle('active',p.id==='pane-'+id);});
+      try{history.replaceState(null,'','#'+id);}catch(e){}
     }
+    (function(){var h=location.hash.replace('#','');if(h&&document.getElementById('pane-'+h))showTab(h);})();
     // N% 슬라이더 ↔ 직접입력 동기화 + 2~4주차 자동 표시
     (function(){
       var r=document.getElementById('bw-range'),n=document.getElementById('bw-num'),rest=document.getElementById('bw-rest');
@@ -1284,6 +1514,32 @@ router.get('/settings', requireLogin, async (req, res) => {
       document.querySelectorAll('.mat-in').forEach(function(i){var id=i.dataset.id;if(!mats[id])mats[id]={};mats[id][i.dataset.f]=i.value;});
       var j=await api('${BASE}/api/settings/materials',{materials:mats});
       toast(j.ok?'소재 설정 저장 완료':'오류: '+(j.error||''),!j.ok);
+    }
+    function bulkCount(){
+      var n=document.querySelectorAll('.mat-chk:checked').length;
+      var el=document.getElementById('bulk-count');if(el)el.textContent=n?n+'개 선택됨':'';
+    }
+    document.querySelectorAll('.mat-chk').forEach(function(c){c.onchange=bulkCount;});
+    async function bulkApply(){
+      var ids=Array.prototype.slice.call(document.querySelectorAll('.mat-chk:checked')).map(function(c){return c.value});
+      if(!ids.length){toast('일괄 변경할 소재를 선택해주세요',true);return;}
+      var cat=document.getElementById('bulk-cat').value,roas=document.getElementById('bulk-roas').value.trim();
+      var mode=document.getElementById('bulk-mode').value,en=document.getElementById('bulk-enabled').value,core=document.getElementById('bulk-core').value;
+      if(!cat&&!roas&&!mode&&!en&&!core){toast('변경할 값을 하나 이상 선택해주세요',true);return;}
+      if(!confirm(ids.length+'개 소재에 선택한 값을 일괄 적용하고 저장할까요?'))return;
+      var mats={};
+      ids.forEach(function(id){
+        var o={};
+        if(cat)o.category=cat;
+        if(roas)o.target_roas=roas;
+        if(mode)o.mode_override=(mode==='__global'?'':mode);
+        if(en)o.enabled=en;
+        if(core)o.core_override=(core==='__auto'?'':core);
+        mats[id]=o;
+      });
+      var j=await api('${BASE}/api/settings/materials',{materials:mats});
+      toast(j.ok?('일괄 저장 완료 ('+ids.length+'개)'):'오류: '+(j.error||''),!j.ok);
+      if(j.ok)setTimeout(function(){location.reload()},900);
     }
     ${ro ? '' : API_SECTION_SCRIPT}
     async function recalcBaseline(){
@@ -1432,6 +1688,7 @@ router.post('/api/settings/materials', requireLogin, requireMaster, async (req, 
         target_roas: m.target_roas != null ? parseFloat(m.target_roas) : undefined,
         enabled: m.enabled != null ? parseInt(m.enabled) : undefined,
         mode_override: m.mode_override != null ? m.mode_override : undefined,
+        core_override: ['', '1', '0'].includes(m.core_override) ? m.core_override : undefined,
       });
     }
     await bidDb.audit(account.id, req.session.userName, '소재 설정 일괄 변경', { count: Object.keys(req.body.materials || {}).length });
@@ -1675,8 +1932,8 @@ router.get('/api/cron/tick', async (req, res) => {
     for (const account of accounts) {
       const creds = { api_key: account.api_key, secret_key: account.secret_key, manager_customer_id: account.manager_customer_id };
 
-      // 주간: 월요일 06시 (KST)
-      if (dow === 1 && hour === 6) {
+      // 주간: 월요일 08시 (KST) — 소재 동기화 + 4주 성과 수집 + 증액/감액 판정 자동 실행
+      if (dow === 1 && hour === 8) {
         const weekStart = logic.last4Weeks()[0].start;
         if (await bidDb.tryClaimCronRun(`weekly:${account.id}:${weekStart}`)) {
           try {
