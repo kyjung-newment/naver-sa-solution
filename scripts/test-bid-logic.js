@@ -84,7 +84,7 @@ t('핵심소재 누적기여: 전체 1,000만 중 상위 누적 70% 도달까지
   ], 0.70);
   assert.ok(core.has('A') && core.has('B') && !core.has('C') && !core.has('D'));
 });
-t('core_share=0 → 자동 판별 끔 (핵심 없음)', () => {
+t('(참고용 함수) 기준 0 → 핵심 없음', () => {
   assert.strictEqual(coreMaterialIds([{ id: 1, revenue4w: 100 }], 0).size, 0);
 });
 

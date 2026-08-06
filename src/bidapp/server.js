@@ -1253,8 +1253,7 @@ const SETTING_TAB_PARAMS = {
   volume: [
     { k: 'volume_drop_threshold', label: '볼륨하락 임계 (일반소재)', tip: '일반소재 감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락' },
     { k: 'volume_drop_threshold_core', label: '볼륨하락 임계 (핵심소재)', tip: '핵심소재에 별도 적용되는 볼륨하락 임계. 예: 0.05로 두면 핵심소재는 5%만 하락해도 감액을 보류' },
-    { k: 'core_share', label: '핵심소재 누적기여 기준', tip: '개별 소재 기준이 아니라 "누적 기여" 기준: 4주 매출 상위 소재부터 차례로 더해, 누적합이 전체 매출×이 비율(0.70=70%)에 도달할 때까지 포함된 소재들이 핵심. 예: 전체 1,000만원이면 상위 소재부터 누적 700만원을 채우는 소재들. 0으로 설정하면 자동 판별 끔(소재별 설정의 수동 고정만 사용)' },
-    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 예: 일반 규칙이 -10%여도 핵심소재는 0.05면 최대 -5%까지만' },
+    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 예: 일반 규칙이 -10%여도 핵심소재는 0.05면 최대 -5%까지만. 핵심소재는 자동 분류 없이 소재별 설정에서 수동 지정' },
   ],
   limits: [
     { k: 'min_bid', label: '최저입찰가 (원)', tip: '권장입찰가가 이 값 아래로 내려가지 않습니다.' },
@@ -1371,7 +1370,6 @@ router.get('/settings', requireLogin, async (req, res) => {
     const rev = weeks4.reduce((a, w) => a + parseInt(ws[w.start]?.revenue || 0), 0);
     revMap[m.id] = rev; totalRev4 += rev;
   }
-  const coreAuto = logic.coreMaterialIds(materials.map(m => ({ id: m.id, revenue4w: revMap[m.id] })), settings.core_share);
   const ro = isClient(req); // 광고주 = 열람 전용 (입력 disabled, 저장 버튼 미노출)
   const dis = ro ? 'disabled' : '';
   const blendN = Math.max(0, Math.min(100, Math.round(parseFloat(settings.blend_recent_weight) || 0)));
@@ -1402,7 +1400,7 @@ router.get('/settings', requireLogin, async (req, res) => {
   }).join('');
 
   const matRows = materials.map(m => {
-    const isCoreNow = m.core_override === '1' || (m.core_override !== '0' && coreAuto.has(m.id));
+    const isCoreNow = m.core_override === '1'; // 핵심 = 수동 지정만
     const share = totalRev4 > 0 ? (revMap[m.id] / totalRev4 * 100) : 0;
     return `<tr>
     ${ro ? '' : `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>`}
@@ -1415,10 +1413,9 @@ router.get('/settings', requireLogin, async (req, res) => {
       <option value="approval" ${m.mode_override === 'approval' ? 'selected' : ''}>승인</option></select></td>
     <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px" ${dis}>
       <option value="1" ${m.enabled ? 'selected' : ''}>활성</option><option value="0" ${!m.enabled ? 'selected' : ''}>제외</option></select></td>
-    <td style="white-space:nowrap"><select class="mat-in" data-id="${m.id}" data-f="core_override" style="width:110px" ${dis}>
-      <option value="" ${!m.core_override ? 'selected' : ''}>자동 판별</option>
-      <option value="1" ${m.core_override === '1' ? 'selected' : ''}>핵심 고정</option>
-      <option value="0" ${m.core_override === '0' ? 'selected' : ''}>제외 고정</option></select>
+    <td style="white-space:nowrap"><select class="mat-in" data-id="${m.id}" data-f="core_override" style="width:100px" ${dis}>
+      <option value="" ${m.core_override !== '1' ? 'selected' : ''}>일반</option>
+      <option value="1" ${m.core_override === '1' ? 'selected' : ''}>핵심</option></select>
       ${isCoreNow ? '<span class="badge b-core" style="margin-left:4px">핵심</span>' : ''}</td>
     <td class="num" style="${share >= 1 ? 'font-weight:700' : ''}">${totalRev4 > 0 ? share.toFixed(1) + '%' : '-'}</td>
     <td class="num">${m.baseline_weekly_revenue == null ? '<span style="color:#cbd5e1">-</span>' : fmtNum(m.baseline_weekly_revenue) + '원'}</td>
@@ -1512,7 +1509,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <input id="bulk-roas" type="number" step="0.1" placeholder="목표ROAS 유지" style="width:120px">
           <select id="bulk-mode" style="width:110px"><option value="">모드 유지</option><option value="__global">전역 따름</option><option value="auto">자동</option><option value="approval">승인</option></select>
           <select id="bulk-enabled" style="width:100px"><option value="">상태 유지</option><option value="1">활성</option><option value="0">제외</option></select>
-          <select id="bulk-core" style="width:110px"><option value="">핵심 유지</option><option value="__auto">자동 판별</option><option value="1">핵심 고정</option><option value="0">제외 고정</option></select>
+          <select id="bulk-core" style="width:100px"><option value="">핵심 유지</option><option value="__none">일반</option><option value="1">핵심</option></select>
           <button class="btn btn-primary btn-sm" onclick="bulkApply()">선택 적용 + 저장</button>
           <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
         </div>`}
@@ -1576,7 +1573,7 @@ router.get('/settings', requireLogin, async (req, res) => {
         if(roas)o.target_roas=roas;
         if(mode)o.mode_override=(mode==='__global'?'':mode);
         if(en)o.enabled=en;
-        if(core)o.core_override=(core==='__auto'?'':core);
+        if(core)o.core_override=(core==='__none'?'':core);
         mats[id]=o;
       });
       var j=await api('${BASE}/api/settings/materials',{materials:mats});

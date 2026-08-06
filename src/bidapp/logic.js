@@ -23,8 +23,7 @@ const DEFAULT_SETTINGS = {
   volume_drop_threshold_core: 0.10, // 볼륨하락 임계 (핵심소재) — 별도 설정
   band_up: 0.10,           // 판정 밴드 상단 +10%
   band_down: 0.10,         // 판정 밴드 하단 -10%
-  core_share: 0.70,        // 핵심소재: 4주 누적 매출 상위 누적기여 70%
-  core_down_cap: 0.05,     // 핵심소재 감액 상한 5%
+  core_down_cap: 0.05,     // 핵심소재 감액 상한 5% (핵심소재는 자동 분류 없음 — 소재별 수동 지정만)
   min_bid: 300,            // 최저입찰가
   min_cost: 30000,         // 최소 데이터 기준: 4주 누적비용
   rank_floor: 6,           // 노출순위 하한 (이보다 순위값이 크면=낮으면 감액 보류)
@@ -103,10 +102,11 @@ function calcBaselineWeekly(periodRevenue, daysInPeriod) {
 }
 
 /**
- * 핵심소재 판별: 4주 누적 매출 내림차순으로 누적기여 core_share(70%) 이내 소재
+ * (참고용 — 현재 미사용) 핵심소재 자동 판별: 4주 누적 매출 내림차순 누적기여 방식.
+ * v2.4부터 핵심소재는 소재별 설정의 수동 지정(core_override='1')만 사용한다.
  * items: [{id, revenue4w}] → Set(id)
  */
-function coreMaterialIds(items, coreShare = DEFAULT_SETTINGS.core_share) {
+function coreMaterialIds(items, coreShare = 0.70) {
   const total = items.reduce((a, m) => a + (m.revenue4w || 0), 0);
   const core = new Set();
   if (total <= 0) return core;

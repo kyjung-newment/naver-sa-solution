@@ -23,17 +23,8 @@ async function computeWeekly(account, { save = true, base = null } = {}) {
     .filter(m => !logic.isExcludedCampaign(m.campaign_name, excluded));
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
 
-  // 4주 누적 매출 → 핵심소재 (+수동 오버라이드: core_override '1'=핵심 고정, '0'=제외 고정)
-  const items = materials.map(m => {
-    const ws = statsMap[m.id] || {};
-    const revenue4w = weekStarts.reduce((a, k) => a + parseInt(ws[k]?.revenue || 0), 0);
-    return { id: m.id, revenue4w };
-  });
-  const coreSet = logic.coreMaterialIds(items, settings.core_share);
-  for (const m of materials) {
-    if (m.core_override === '1') coreSet.add(m.id);
-    else if (m.core_override === '0') coreSet.delete(m.id);
-  }
+  // 핵심소재 = 수동 지정만 (자동 분류 없음) — 소재별 설정에서 core_override='1' 로 지정
+  const coreSet = new Set(materials.filter(m => m.core_override === '1').map(m => m.id));
 
   const rows = [];
   for (const m of materials) {
