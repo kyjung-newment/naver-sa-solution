@@ -52,13 +52,23 @@ async function computeWeekly(account, { save = true } = {}) {
       currentBid,
     }, settings);
 
+    // 매출볼륨 감액 보류 (후처리): 감액 판정 + 기준매출 대비 최신주 매출 하락 → 승인 대기 강제
+    const baseline = m.baseline_weekly_revenue == null ? null : parseInt(m.baseline_weekly_revenue);
+    const verdict = logic.volumeHold(j.verdict, weekData[0].revenue, baseline, settings);
+    let note = '';
+    if (verdict === logic.VERDICT.DOWN_HOLD) {
+      const dropPct = baseline > 0 ? ((1 - weekData[0].revenue / baseline) * 100).toFixed(1) : '-';
+      note = `기준매출 ${baseline.toLocaleString('ko-KR')}원 · 최신주 ${weekData[0].revenue.toLocaleString('ko-KR')}원 (▼${dropPct}%) — 볼륨하락 감액보류`;
+    }
+
     const row = {
       materialId: m.id, material: m,
       weekStart: weekStarts[0],
       prevBid: currentBid, calcBid: j.recommendedBid,
-      verdict: j.verdict, adjustRate: j.adjustRate,
+      verdict, adjustRate: j.adjustRate,
       blendedRoas: blended, adjustedTarget: j.adjustedTarget,
-      isCore, cost4w, revenue4w, weekData,
+      isCore, cost4w, revenue4w, weekData, note,
+      baselineWeeklyRevenue: baseline,
     };
     rows.push(row);
 
@@ -66,10 +76,11 @@ async function computeWeekly(account, { save = true } = {}) {
       await bidDb.upsertAdjustment({
         accountId: account.id, materialId: m.id, weekStart: weekStarts[0],
         prevBid: currentBid, calcBid: j.recommendedBid,
-        verdict: j.verdict, adjustRate: j.adjustRate,
+        verdict, adjustRate: j.adjustRate,
         blendedRoas: blended, adjustedTarget: j.adjustedTarget, isCore,
-        status: (j.verdict === logic.VERDICT.UP || j.verdict === logic.VERDICT.DOWN) ? 'pending' : 'skipped',
-        note: '',
+        status: (verdict === logic.VERDICT.UP || verdict === logic.VERDICT.DOWN) ? 'pending'
+          : verdict === logic.VERDICT.DOWN_HOLD ? 'hold_volume' : 'skipped',
+        note,
       });
     }
   }
@@ -135,6 +146,7 @@ async function runWeekly(account, creds, { actor = 'cron' } = {}) {
   const { weekStart, rows, settings } = await computeWeekly(account, { save: true });
 
   let applied = 0, pending = 0, failed = 0;
+  // hold_volume(감액보류)은 auto 모드여도 자동 적용 대상에서 제외 — 승인함에서만 처리
   const adjustables = await bidDb.getAdjustments(account.id, { weekStart, status: 'pending' });
   for (const adj of adjustables) {
     const m = await bidDb.getMaterialById(adj.material_id, account.id);
@@ -148,10 +160,12 @@ async function runWeekly(account, creds, { actor = 'cron' } = {}) {
       pending++; // 승인 대기 유지 (auto 모드여도 ±20% 초과는 무조건 승인)
     }
   }
+  const held = (await bidDb.getAdjustments(account.id, { weekStart, status: 'hold_volume' })).length;
+  pending += held;
   await bidDb.audit(account.id, actor, '주간 조정 실행', {
-    weekStart, materials: stats.materials, statOk: stats.ok, statFail: stats.fail, applied, pending, failed,
+    weekStart, materials: stats.materials, statOk: stats.ok, statFail: stats.fail, applied, pending, held, failed,
   });
-  return { weekStart, materials: stats.materials, applied, pending, failed, rows: rows.length };
+  return { weekStart, materials: stats.materials, applied, pending, held, failed, rows: rows.length };
 }
 
 /**
@@ -184,6 +198,28 @@ async function runDailyMonitor(account, creds, dateStr) {
   }
   await bidDb.audit(account.id, 'cron', '일간 모니터 실행', { date: dateStr, checked: daily.length, alerts });
   return { checked: daily.length, alerts };
+}
+
+/**
+ * 기준매출 산출 (매월 1일 크론 + 설정 화면 수동 실행):
+ * 소재별 전월(달력 기준) 매출 합계 ÷ 전월 일수 × 7 → 주간 환산, 100원 단위 반올림.
+ * 전월 데이터가 전무한 신규 소재는 null (볼륨 보류 조건 미적용).
+ * @param {string} month 'YYYY-MM' (전월)
+ */
+async function computeBaselines(account, creds, month, { actor = 'cron' } = {}) {
+  const [y, mo] = month.split('-').map(Number);
+  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  const since = `${month}-01`;
+  const until = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+  const collected = await collector.collectMonthlyRevenue(account, creds, since, until);
+  let updated = 0, nulled = 0;
+  for (const { material: m, revenue, hasData } of collected) {
+    const baseline = hasData ? logic.calcBaselineWeekly(revenue, daysInMonth) : null;
+    await bidDb.setMaterialBaseline(m.id, account.id, baseline, { materialName: m.name, changedBy: actor });
+    if (baseline == null) nulled++; else updated++;
+  }
+  await bidDb.audit(account.id, actor, '기준매출 산출', { month, since, until, updated, noData: nulled });
+  return { month, updated, noData: nulled };
 }
 
 /**
@@ -232,4 +268,4 @@ async function createManualAdjustment(account, materialId, rate, { actor = '', n
   return { ok: true, id, calcBid };
 }
 
-module.exports = { computeWeekly, applyAdjustment, runWeekly, runDailyMonitor, runMonthlyReport, createManualAdjustment };
+module.exports = { computeWeekly, applyAdjustment, runWeekly, runDailyMonitor, runMonthlyReport, computeBaselines, createManualAdjustment };

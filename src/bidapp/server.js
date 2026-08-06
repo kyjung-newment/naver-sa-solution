@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
 //  이고진 네이버SA 입찰관리 웹앱  (/egojin-bid)
 //  쇼핑검색 소재 입찰가 주기 자동 조정·관리 (데스크톱 우선 UI)
-//  역할: admin(운영자=마케터, 전체 설정/실행) / client(광고주 열람자, 조회+승인)
+//  역할: master(마스터=마케터·마스터 초대 계정, 전체 설정/실행/승인)
+//       / client(광고주, 조회+승인, 설정은 열람만)
 // ═══════════════════════════════════════════════════════════════════
 const express = require('express');
 const session = require('express-session');
@@ -9,6 +10,7 @@ const pgSession = require('connect-pg-simple')(session);
 const crypto = require('crypto');
 const { config } = require('../../config');
 const db = require('../db/database');
+const { createApiClient } = require('../api/naverApi');
 const bidDb = require('./db');
 const logic = require('./logic');
 const engine = require('./engine');
@@ -35,8 +37,30 @@ router.use(session({
 router.use(express.json({ limit: '2mb' }));
 router.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// ─── 권한 ──────────────────────────────────────────────────────────
-function isClient(req) { return req.session.role === 'viewer'; }
+// ─── 권한 (역할 2종: master=마스터 / client=광고주) ─────────────────
+// 초대 계정(users.role='viewer')은 account_viewers.role 로 마스터/광고주 구분.
+// 뉴먼트 솔루션 계정(마케터)은 항상 마스터. (기존 admin → 마스터 자동 이관)
+function isInvited(req) { return req.session.role === 'viewer'; }
+function isClient(req) {
+  if (req.session.bidRole) return req.session.bidRole === 'client';
+  return isInvited(req); // 미해석 시 폴백: 초대 계정=광고주
+}
+
+async function resolveBidRole(req) {
+  if (!req.session.userId) return null;
+  if (!isInvited(req)) { req.session.bidRole = 'master'; return 'master'; }
+  const master = await bidDb.isInvitedMaster(req.session.userId);
+  req.session.bidRole = master ? 'master' : 'client';
+  return req.session.bidRole;
+}
+
+// SSO(기존 솔루션과 세션 공유)로 들어온 세션도 최초 요청 시 역할 해석
+router.use(async (req, res, next) => {
+  try {
+    if (req.session.userId && !req.session.bidRole) await resolveBidRole(req);
+  } catch (e) { /* 역할 해석 실패 → 폴백 규칙 사용 */ }
+  next();
+});
 
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect(`${BASE}/login`);
@@ -44,11 +68,13 @@ function requireLogin(req, res, next) {
   next();
 }
 
-const forbidden = () => `<div style="font-family:Pretendard,system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;padding:30px"><div style="font-size:40px;margin-bottom:8px">🔒</div><h2 style="color:#111827;margin-bottom:8px">접근 권한이 없습니다</h2><p style="color:#6b7280;margin:0 0 20px;font-size:14px">광고주 계정은 조회·승인 기능만 이용할 수 있습니다.</p><a href="${BASE}" style="color:#0ea5e9;font-weight:600">← 대시보드로 돌아가기</a></div>`;
+const forbidden = () => `<div style="font-family:Pretendard,system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;padding:30px"><div style="font-size:40px;margin-bottom:8px">🔒</div><h2 style="color:#111827;margin-bottom:8px">접근 권한이 없습니다</h2><p style="color:#6b7280;margin:0 0 20px;font-size:14px">광고주 계정은 조회·승인 기능만 이용할 수 있습니다. (설정은 열람만 가능)</p><a href="${BASE}" style="color:#0ea5e9;font-weight:600">← 대시보드로 돌아가기</a></div>`;
 
 // 광고주(client) 허용 경로 — 그 외 전면 차단 (default deny)
+// 설정은 GET(열람)만 허용 — 저장 API(POST /api/settings/*)는 차단되어 403
 function clientPathAllowed(p, method) {
   if (['/', '/login', '/logout', '/weekly', '/approvals', '/history'].includes(p)) return true;
+  if (method === 'GET' && p === '/settings') return true;
   if (p.startsWith('/invite')) return true;
   if (p === '/api/select-account') return true;
   if (method === 'GET' && (p === '/api/weekly' || p === '/api/history' || p === '/api/material-trend')) return true;
@@ -58,11 +84,15 @@ function clientPathAllowed(p, method) {
 router.use((req, res, next) => {
   if (!isClient(req)) return next();
   if (clientPathAllowed(req.path, req.method)) return next();
+  if (req.path.startsWith('/api/')) return res.status(403).json({ ok: false, error: '권한 없음 (광고주 계정)' });
   return res.status(403).send(forbidden());
 });
 
-function requireAdmin(req, res, next) {
-  if (isClient(req)) return res.status(403).send(forbidden());
+function requireMaster(req, res, next) {
+  if (isClient(req)) {
+    if (req.path.startsWith('/api/')) return res.status(403).json({ ok: false, error: '권한 없음 (광고주 계정)' });
+    return res.status(403).send(forbidden());
+  }
   next();
 }
 
@@ -71,9 +101,9 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
-// 접근 가능한 광고주 목록: 운영자=본인 소유 전체, 광고주=열람 권한 계정
+// 접근 가능한 광고주 목록: 마케터=본인 소유 전체, 초대 계정(마스터/광고주)=초대받은 계정
 async function getAccessibleAccounts(req) {
-  if (isClient(req)) return db.getViewerAccounts(req.session.userId);
+  if (isInvited(req)) return db.getViewerAccounts(req.session.userId);
   return db.getAccountsByUser(req.session.userId);
 }
 
@@ -154,6 +184,13 @@ const css = `
   th.sortable{cursor:pointer;user-select:none}
   th.sortable:hover{background:#eef6fb}
   .empty{text-align:center;padding:44px;color:#94a3b8;font-size:13.5px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+  .tab-btn{padding:9px 16px;border-radius:9px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#475569;cursor:pointer;font-family:inherit;transition:all .15s}
+  .tab-btn:hover{background:#f0f9ff;border-color:#bae6fd}
+  .tab-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
+  .tab-pane{display:none}.tab-pane.active{display:block}
+  .tab-desc{font-size:12.5px;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:9px;padding:10px 14px;margin-bottom:14px}
+  label .tip{cursor:help;border-bottom:1px dotted #94a3b8;font-weight:400;color:#94a3b8}
   .modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px}
   .modal{background:#fff;border-radius:16px;max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:24px}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -187,8 +224,8 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
   }
   menu.push({ id: 'approvals', label: `✅ 승인함${pendingCount ? ` (${pendingCount})` : ''}`, href: `${BASE}/approvals` });
   menu.push({ id: 'history', label: '🕘 히스토리', href: `${BASE}/history` });
+  menu.push({ id: 'settings', label: client ? '⚙️ 설정 (열람)' : '⚙️ 설정', href: `${BASE}/settings` });
   if (!client) {
-    menu.push({ id: 'settings', label: '⚙️ 설정', href: `${BASE}/settings` });
     menu.push({ id: 'viewers', label: '✉️ 광고주 초대', href: `${BASE}/viewers` });
   }
 
@@ -213,7 +250,7 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
       ${menu.map(m => `<a href="${m.href}" class="sb-link ${activeMenu === m.id ? 'active' : ''}">${m.label}</a>`).join('')}
     </div>
     <div class="sb-foot">
-      <div style="color:#94a3b8;font-size:12.5px;padding:4px 14px 8px">${escHtml(user?.name || '')} <span style="color:#475569">· ${client ? '광고주' : '운영자'}</span></div>
+      <div style="color:#94a3b8;font-size:12.5px;padding:4px 14px 8px">${escHtml(user?.name || '')} <span style="color:#475569">· ${client ? '광고주' : '마스터'}</span></div>
       <a href="${BASE}/logout" class="sb-link">🚪 로그아웃</a>
     </div>
   </div>
@@ -228,13 +265,14 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
 
 function verdictBadge(v) {
   const cls = v === logic.VERDICT.UP ? 'b-up' : v === logic.VERDICT.DOWN ? 'b-down'
-    : v === logic.VERDICT.NO_DATA ? 'b-warn' : v === logic.VERDICT.KEEP_RANK || v === logic.VERDICT.KEEP_NO_DOWN ? 'b-blue' : 'b-keep';
+    : v === logic.VERDICT.DOWN_HOLD || v === logic.VERDICT.NO_DATA ? 'b-warn'
+    : v === logic.VERDICT.KEEP_RANK || v === logic.VERDICT.KEEP_NO_DOWN ? 'b-blue' : 'b-keep';
   return `<span class="badge ${cls}">${escHtml(v)}</span>`;
 }
 
 function statusBadge(s) {
   const map = {
-    pending: ['승인 대기', 'b-warn'], approved: ['승인됨', 'b-blue'], rejected: ['반려', 'b-keep'],
+    pending: ['승인 대기', 'b-warn'], hold_volume: ['감액보류', 'b-warn'], approved: ['승인됨', 'b-blue'], rejected: ['반려', 'b-keep'],
     applied: ['적용 완료', 'b-up'], auto_applied: ['자동 적용', 'b-up'], failed: ['실패', 'b-down'], skipped: ['해당 없음', 'b-keep'],
   };
   const [label, cls] = map[s] || [s, 'b-keep'];
@@ -242,8 +280,8 @@ function statusBadge(s) {
 }
 
 async function pendingCount(accountId) {
-  const rows = await bidDb.getAdjustments(accountId, { status: 'pending', limit: 1000 });
-  return rows.filter(r => r.verdict === logic.VERDICT.UP || r.verdict === logic.VERDICT.DOWN).length;
+  const rows = await bidDb.getAdjustments(accountId, { statusIn: ['pending', 'hold_volume'], limit: 1000 });
+  return rows.filter(r => [logic.VERDICT.UP, logic.VERDICT.DOWN, logic.VERDICT.DOWN_HOLD].includes(r.verdict)).length;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -282,6 +320,8 @@ router.post('/login', async (req, res) => {
   req.session.isAdmin = !!user.is_admin;
   req.session.approved = user.approved;
   req.session.role = user.role || 'marketer';
+  req.session.bidRole = null;
+  await resolveBidRole(req);
   req.session.save(() => res.redirect(303, BASE));
 });
 
@@ -309,7 +349,8 @@ router.get('/', requireLogin, async (req, res) => {
   }
 
   const weeks = logic.last4Weeks();
-  const { rows } = await engine.computeWeekly(account, { save: false });
+  const { rows, settings } = await engine.computeWeekly(account, { save: false });
+  const blendN = Math.round(parseFloat(settings.blend_recent_weight) || 0);
   const pend = await pendingCount(account.id);
   const alerts = await bidDb.getAlerts(account.id, { unresolvedOnly: true, limit: 30 });
 
@@ -321,9 +362,6 @@ router.get('/', requireLogin, async (req, res) => {
     cost4 += r.cost4w; rev4 += r.revenue4w;
     dist[r.verdict] = (dist[r.verdict] || 0) + 1;
   }
-  const blendedAll = logic.blendedRoas([
-    { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 },
-  ]);
   const totalBlendedNum = rows.reduce((a, r) => a + (r.blendedRoas != null ? r.blendedRoas * r.cost4w : 0), 0);
   const totalBlendedDen = rows.reduce((a, r) => a + (r.blendedRoas != null ? r.cost4w : 0), 0);
   const weightedBlended = totalBlendedDen > 0 ? totalBlendedNum / totalBlendedDen : null;
@@ -364,7 +402,7 @@ router.get('/', requireLogin, async (req, res) => {
     <div class="kpis">
       <div class="kpi"><div class="kpi-l">최신 완료 주 비용 (${weeks[0].start} ~)</div><div class="kpi-v">${fmtNum(cost1)}원</div><div class="kpi-s">4주 누적 ${fmtNum(cost4)}원</div></div>
       <div class="kpi g"><div class="kpi-l">최신 완료 주 전환매출</div><div class="kpi-v">${fmtNum(rev1)}원</div><div class="kpi-s">4주 누적 ${fmtNum(rev4)}원</div></div>
-      <div class="kpi p"><div class="kpi-l">가중 블렌딩 ROAS (전체)</div><div class="kpi-v">${fmtRoas(weightedBlended)}</div><div class="kpi-s">주차 가중 40/30/30</div></div>
+      <div class="kpi p"><div class="kpi-l">가중 블렌딩 ROAS (전체)</div><div class="kpi-v">${fmtRoas(weightedBlended)}</div><div class="kpi-s">1주차 ${blendN}% · 2~4주차 ${100 - blendN}%</div></div>
       <div class="kpi o"><div class="kpi-l">승인 대기</div><div class="kpi-v">${pend}건</div><div class="kpi-s"><a href="${BASE}/approvals" style="color:#0ea5e9;font-weight:600">승인함 바로가기 →</a></div></div>
     </div>
     <div class="card"><div class="card-header"><span class="card-title">판정 분포 (최신 주차 기준 계산)</span>
@@ -385,6 +423,8 @@ router.get('/weekly', requireLogin, async (req, res) => {
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
   const pend = await pendingCount(account.id);
+  const settings = await bidDb.getSettings(account.id);
+  const blendN = Math.round(parseFloat(settings.blend_recent_weight) || 0);
 
   const content = `
     <div class="toolbar">
@@ -396,16 +436,16 @@ router.get('/weekly', requireLogin, async (req, res) => {
     </div>
     <div class="tbl-wrap"><table id="wk-table"><thead><tr>
       <th>소재</th><th>분류</th><th class="num">목표</th><th class="num">보정목표</th>
-      <th class="num">1주 비용</th><th class="num">1주 매출</th><th class="num">2주 비용</th><th class="num">2주 매출</th>
-      <th class="num">3~4주 비용</th><th class="num">3~4주 매출</th>
+      <th class="num">1주차 비용 (${blendN}%)</th><th class="num">1주차 매출</th>
+      <th class="num">2~4주차 비용 (${100 - blendN}%)</th><th class="num">2~4주차 매출</th>
       <th class="num sortable" data-k="blended">블렌딩ROAS</th><th class="num">노출순위</th><th class="num sortable" data-k="share">매출비중</th>
       <th>핵심</th><th>판정</th><th class="num">현재입찰가</th><th class="num">권장입찰가</th>
-    </tr></thead><tbody id="wk-body"><tr><td colspan="17" class="empty"><span class="spinner"></span> 불러오는 중...</td></tr></tbody></table></div>
+    </tr></thead><tbody id="wk-body"><tr><td colspan="15" class="empty"><span class="spinner"></span> 불러오는 중...</td></tr></tbody></table></div>
     <div id="trend-modal" style="display:none"></div>
     <script>
     var DATA=[];
     fetch('${BASE}/api/weekly').then(function(r){return r.json()}).then(function(j){
-      if(!j.ok){document.getElementById('wk-body').innerHTML='<tr><td colspan="17" class="empty">'+(j.error||'오류')+'</td></tr>';return;}
+      if(!j.ok){document.getElementById('wk-body').innerHTML='<tr><td colspan="15" class="empty">'+(j.error||'오류')+'</td></tr>';return;}
       DATA=j.rows;render();
       document.getElementById('f-cat').onchange=render;document.getElementById('f-verdict').onchange=render;
       document.getElementById('f-q').oninput=render;
@@ -421,7 +461,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         if(q&&(r.name+' '+r.campaignName+' '+r.adgroupName).toLowerCase().indexOf(q)===-1)return false;
         return true;});
     }
-    function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':v==='데이터부족'?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
+    function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':(v==='데이터부족'||v.indexOf('감액보류')===0)?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
     function render(){
       var rows=filtered();
       document.getElementById('wk-body').innerHTML=rows.length?rows.map(function(r){
@@ -429,8 +469,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         +'<td><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+' · '+r.adgroupName+'</span></td>'
         +'<td>'+r.category+'</td><td class="num">'+froas(r.targetRoas)+'</td><td class="num">'+froas(r.adjustedTarget)+'</td>'
         +'<td class="num">'+fnum(r.w[0].cost)+'</td><td class="num">'+fnum(r.w[0].revenue)+'</td>'
-        +'<td class="num">'+fnum(r.w[1].cost)+'</td><td class="num">'+fnum(r.w[1].revenue)+'</td>'
-        +'<td class="num">'+fnum(r.w[2].cost+r.w[3].cost)+'</td><td class="num">'+fnum(r.w[2].revenue+r.w[3].revenue)+'</td>'
+        +'<td class="num">'+fnum(r.w[1].cost+r.w[2].cost+r.w[3].cost)+'</td><td class="num">'+fnum(r.w[1].revenue+r.w[2].revenue+r.w[3].revenue)+'</td>'
         +'<td class="num" style="font-weight:700">'+froas(r.blended)+'</td>'
         +'<td class="num">'+(r.rank1?r.rank1.toFixed(1):'-')+'</td>'
         +'<td class="num">'+(r.share*100).toFixed(1)+'%</td>'
@@ -438,11 +477,11 @@ router.get('/weekly', requireLogin, async (req, res) => {
         +'<td>'+vbadge(r.verdict)+'</td>'
         +'<td class="num">'+fnum(r.currentBid)+'원</td>'
         +'<td class="num" style="font-weight:700;color:'+(r.calcBid>r.currentBid?'#059669':r.calcBid<r.currentBid?'#dc2626':'#334155')+'">'+fnum(r.calcBid)+'원</td></tr>';
-      }).join(''):'<tr><td colspan="17" class="empty">데이터 없음</td></tr>';
+      }).join(''):'<tr><td colspan="15" class="empty">데이터 없음</td></tr>';
     }
     function exportCsv(){
-      var head=['소재','캠페인','광고그룹','분류','목표ROAS','보정목표','1주비용','1주매출','2주비용','2주매출','3~4주비용','3~4주매출','블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가'];
-      var rows=filtered().map(function(r){return [r.name,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget,r.w[0].cost,r.w[0].revenue,r.w[1].cost,r.w[1].revenue,r.w[2].cost+r.w[3].cost,r.w[2].revenue+r.w[3].revenue,r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid];});
+      var head=['소재','캠페인','광고그룹','분류','목표ROAS','보정목표','1주차비용','1주차매출','2~4주차비용','2~4주차매출','블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가'];
+      var rows=filtered().map(function(r){return [r.name,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget,r.w[0].cost,r.w[0].revenue,r.w[1].cost+r.w[2].cost+r.w[3].cost,r.w[1].revenue+r.w[2].revenue+r.w[3].revenue,r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid];});
       csvExport([head].concat(rows),'입찰조정_주차별데이터.csv');
     }
     // 소재 클릭 → 주차별 추이 차트 (SVG)
@@ -517,7 +556,7 @@ router.get('/api/material-trend', requireLogin, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 //  조정 실행 (운영자)
 // ═══════════════════════════════════════════════════════════════════
-router.get('/run', requireLogin, requireAdmin, async (req, res) => {
+router.get('/run', requireLogin, requireMaster, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
@@ -569,12 +608,13 @@ router.get('/run', requireLogin, requireAdmin, async (req, res) => {
     }
     function fnum(n){return n==null?'-':Math.round(n).toLocaleString('ko-KR');}
     function froas(r){return r==null?'-':(r*100).toFixed(0)+'%';}
-    function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':v==='데이터부족'?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
+    function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':(v==='데이터부족'||v.indexOf('감액보류')===0)?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
     function renderPv(){
       document.getElementById('pv-body').innerHTML=PV.length?PV.map(function(r){
         var delta=r.prevBid>0?((r.calcBid-r.prevBid)/r.prevBid*100):0;
         var changeable=r.adjId&&(r.verdict==='증액'||r.verdict==='감액')&&r.status==='pending';
         var forceAppr=Math.abs(delta)>${Math.round(settings.force_approval_delta * 100)};
+        var isHold=r.verdict.indexOf('감액보류')===0;
         return '<tr>'
         +'<td>'+(changeable?'<input type="checkbox" class="pv-chk" value="'+r.adjId+'" style="width:auto">':'')+'</td>'
         +'<td><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+'</span></td>'
@@ -582,7 +622,7 @@ router.get('/run', requireLogin, requireAdmin, async (req, res) => {
         +'<td>'+(r.isCore?'<span class="badge b-core">핵심</span>':'')+'</td><td>'+vbadge(r.verdict)+'</td>'
         +'<td class="num">'+fnum(r.prevBid)+'</td><td class="num" style="font-weight:700">'+fnum(r.calcBid)+'</td>'
         +'<td class="num" style="color:'+(delta>0?'#059669':delta<0?'#dc2626':'#94a3b8')+'">'+(delta?delta.toFixed(1)+'%':'-')+'</td>'
-        +'<td style="font-size:11px;color:#94a3b8">'+(forceAppr&&changeable?'±20% 초과 — 승인 필수':'')+(r.status&&r.status!=='pending'&&r.status!=='skipped'?' ['+r.status+']':'')+'</td></tr>';
+        +'<td style="font-size:11px;color:#94a3b8">'+(isHold?'승인함에서만 처리 가능':'')+(forceAppr&&changeable?'±20% 초과 — 승인 필수':'')+(r.note&&!isHold?' '+r.note:'')+(isHold&&r.note?'<br>'+r.note:'')+(r.status&&r.status!=='pending'&&r.status!=='skipped'&&r.status!=='hold_volume'?' ['+r.status+']':'')+'</td></tr>';
       }).join(''):'<tr><td colspan="11" class="empty">데이터 없음</td></tr>';
     }
     function toggleAll(cb){document.querySelectorAll('.pv-chk').forEach(function(c){c.checked=cb.checked;});}
@@ -605,12 +645,12 @@ router.get('/run', requireLogin, requireAdmin, async (req, res) => {
   res.send(appLayout(req, '조정 실행', content, 'run', { accounts, account, user, pendingCount: pend }));
 });
 
-router.post('/api/sync', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/sync', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
     const creds = await getCreds(req, account.id);
-    if (!creds) return res.json({ ok: false, error: 'API 자격증명이 없습니다. 뉴먼트 솔루션 > API 설정에서 등록해주세요.' });
+    if (!creds) return res.json({ ok: false, error: 'API 자격증명이 없습니다. 설정 > API 연동 탭에서 등록해주세요.' });
     const sync = await collector.syncMaterials(account, creds);
     const stats = await collector.collectWeeklyStats(account, creds);
     await bidDb.audit(account.id, req.session.userName, '소재 동기화·성과 수집', { synced: sync.synced, statOk: stats.ok, statFail: stats.fail });
@@ -618,7 +658,7 @@ router.post('/api/sync', requireLogin, requireAdmin, async (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/run/compute', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/run/compute', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -632,13 +672,13 @@ router.post('/api/run/compute', requireLogin, requireAdmin, async (req, res) => 
         materialId: r.materialId, adjId: adjMap[r.materialId]?.id || null, status: adjMap[r.materialId]?.status || '',
         name: r.material.name, campaignName: r.material.campaign_name, category: r.material.category,
         blended: r.blendedRoas, adjustedTarget: r.adjustedTarget, isCore: r.isCore,
-        verdict: r.verdict, prevBid: r.prevBid, calcBid: r.calcBid,
+        verdict: r.verdict, prevBid: r.prevBid, calcBid: r.calcBid, note: r.note || '',
       })),
     });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/run/apply', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/run/apply', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -655,7 +695,7 @@ router.post('/api/run/apply', requireLogin, requireAdmin, async (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/run/weekly', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/run/weekly', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -667,7 +707,7 @@ router.post('/api/run/weekly', requireLogin, requireAdmin, async (req, res) => {
 });
 
 // 일간 알림 수동 대응 (±3% 즉시 적용)
-router.post('/api/alerts/adjust', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/alerts/adjust', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -685,7 +725,7 @@ router.post('/api/alerts/adjust', requireLogin, requireAdmin, async (req, res) =
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/alerts/resolve', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/alerts/resolve', requireLogin, requireMaster, async (req, res) => {
   const { account } = await getSelectedAccount(req);
   if (!account) return res.json({ ok: false });
   await bidDb.resolveAlert(req.body.id, account.id);
@@ -699,8 +739,8 @@ router.get('/approvals', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
-  const pendings = (await bidDb.getAdjustments(account.id, { status: 'pending', limit: 500 }))
-    .filter(a => a.verdict === logic.VERDICT.UP || a.verdict === logic.VERDICT.DOWN);
+  const pendings = (await bidDb.getAdjustments(account.id, { statusIn: ['pending', 'hold_volume'], limit: 500 }))
+    .filter(a => [logic.VERDICT.UP, logic.VERDICT.DOWN, logic.VERDICT.DOWN_HOLD].includes(a.verdict));
   const failed = await bidDb.getAdjustments(account.id, { status: 'failed', limit: 100 });
   const pend = pendings.length;
 
@@ -710,7 +750,7 @@ router.get('/approvals', requireLogin, async (req, res) => {
       <td><input type="checkbox" class="ap-chk" value="${a.id}" style="width:auto"></td>
       <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
       <td>${escHtml(a.category)}</td>
-      <td>${verdictBadge(a.verdict)}${a.is_core ? ' <span class="badge b-core">핵심</span>' : ''}</td>
+      <td>${verdictBadge(a.verdict)}${a.is_core ? ' <span class="badge b-core">핵심</span>' : ''}${a.status === 'hold_volume' ? '<br>' + statusBadge(a.status) : ''}</td>
       <td style="font-size:12px;color:#475569">블렌딩 <b>${fmtRoas(a.blended_roas)}</b> vs 목표 <b>${fmtRoas(a.adjusted_target)}</b>${a.note ? `<br><span style="color:#b45309">${escHtml(a.note)}</span>` : ''}</td>
       <td class="num">${fmtNum(a.prev_bid)}원</td>
       <td class="num" style="font-weight:700;color:${delta > 0 ? '#059669' : '#dc2626'}">${fmtNum(a.calc_bid)}원 (${delta > 0 ? '+' : ''}${delta.toFixed(1)}%)</td>
@@ -731,7 +771,8 @@ router.get('/approvals', requireLogin, async (req, res) => {
     </table></div></div>` : '';
 
   const content = `
-    <div class="alert alert-info">승인 즉시 네이버 API로 입찰가가 반영됩니다. 각 건의 판정 근거(블렌딩 ROAS vs 보정목표)를 확인 후 승인해주세요.</div>
+    <div class="alert alert-info">승인 즉시 네이버 API로 입찰가가 반영됩니다. 각 건의 판정 근거(블렌딩 ROAS vs 보정목표)를 확인 후 승인해주세요.
+      <b>감액보류(볼륨하락)</b> 건은 매출볼륨이 이미 하락 중인 소재로, auto 모드여도 자동 적용되지 않으며 승인된 소재만 입찰가가 수정됩니다. (반려 시 현재 입찰가 유지)</div>
     <div class="card"><div class="card-header"><span class="card-title">승인 대기 (${pendings.length}건)</span>
       <div style="display:flex;gap:8px">
         <button class="btn btn-green btn-sm" onclick="bulk('approve')">선택 일괄 승인</button>
@@ -771,7 +812,7 @@ router.post('/api/approvals/decide', requireLogin, async (req, res) => {
     if (action === 'reject') {
       for (const id of ids) {
         const adj = await bidDb.getAdjustmentById(id, account.id);
-        if (!adj || !['pending', 'failed'].includes(adj.status)) continue;
+        if (!adj || !['pending', 'hold_volume', 'failed'].includes(adj.status)) continue;
         await bidDb.setAdjustmentStatus(id, account.id, { status: 'rejected', approvedBy: actor });
         await bidDb.audit(account.id, actor, '조정 반려', { material: adj.material_name, from: adj.prev_bid, to: adj.calc_bid });
       }
@@ -818,7 +859,7 @@ router.get('/history', requireLogin, async (req, res) => {
   const content = `
     <div class="toolbar">
       <select id="h-status"><option value="">전체 상태</option>
-        ${['pending', 'approved', 'rejected', 'applied', 'auto_applied', 'failed', 'skipped'].map(s => `<option value="${s}">${s}</option>`).join('')}</select>
+        ${['pending', 'hold_volume', 'approved', 'rejected', 'applied', 'auto_applied', 'failed', 'skipped'].map(s => `<option value="${s}">${s}</option>`).join('')}</select>
       <input id="h-q" placeholder="소재 검색..." style="width:200px">
       <span style="flex:1"></span>
       <button class="btn btn-outline btn-sm" onclick="loadHist()">새로고침</button>
@@ -912,7 +953,7 @@ router.get('/api/history', requireLogin, async (req, res) => {
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/manual-adjust', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/manual-adjust', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -926,18 +967,33 @@ router.post('/api/manual-adjust', requireLogin, requireAdmin, async (req, res) =
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  설정 (운영자)
+//  설정 (마스터=수정 / 광고주=열람 전용)
 // ═══════════════════════════════════════════════════════════════════
-const SETTING_LABELS = {
-  w1: '블렌딩 가중치 1주차', w2: '블렌딩 가중치 2주차', w3: '블렌딩 가중치 3~4주차',
-  band_up: '판정 밴드 상단 (+)', band_down: '판정 밴드 하단 (-)',
-  core_share: '핵심소재 누적기여 기준', core_down_cap: '핵심소재 감액 상한',
-  min_bid: '최저입찰가 (원)', min_cost: '최소 데이터 기준 4주 누적비용 (원)',
-  rank_floor: '노출순위 하한 (위)', default_target_roas: '기본 목표ROAS (배수, 5.5=550%)',
-  force_approval_delta: '무조건 승인 필요 변경폭', daily_cost_mult: '일간 트리거 비용 배수', daily_roas_mult: '일간 트리거 ROAS 배수',
+// 탭별 파라미터 정의 — tip은 판정 로직에서의 역할 (툴팁 표시)
+const SETTING_TAB_PARAMS = {
+  blend: [
+    { k: 'band_up', label: '판정 밴드 상단 (+)', tip: '블렌딩ROAS ≥ 보정목표×(1+상단)이면 증액 판정. 0.10 = +10%' },
+    { k: 'band_down', label: '판정 밴드 하단 (-)', tip: '블렌딩ROAS < 보정목표×(1-하단)이면 감액 판정. 0.10 = -10%' },
+    { k: 'default_target_roas', label: '기본 목표ROAS (배수)', tip: '소재별 목표ROAS 미지정 시 사용. 5.5 = 550%. 분류 계수를 곱해 보정목표가 됩니다.' },
+  ],
+  volume: [
+    { k: 'volume_drop_threshold', label: '볼륨하락 임계', tip: '감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락' },
+    { k: 'core_share', label: '핵심소재 누적기여 기준', tip: '4주 누적 매출 상위 소재의 누적 기여가 이 비율 이내면 핵심소재. 0.70 = 70%' },
+    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 0.05 = 5%' },
+  ],
+  limits: [
+    { k: 'min_bid', label: '최저입찰가 (원)', tip: '권장입찰가가 이 값 아래로 내려가지 않습니다.' },
+    { k: 'min_cost', label: '최소 데이터 기준 4주 누적비용 (원)', tip: '4주 누적비용이 이보다 작으면 데이터부족 → 판정하지 않고 유지.' },
+    { k: 'rank_floor', label: '노출순위 하한 (위)', tip: '1주차 평균 노출순위가 이보다 낮으면(값이 크면) 감액을 보류하고 유지-순위저하.' },
+  ],
+  auto: [
+    { k: 'force_approval_delta', label: '무조건 승인 필요 변경폭', tip: 'auto 모드여도 변경 폭이 이 비율을 초과하면 반드시 승인 후 적용. 0.20 = ±20%' },
+    { k: 'daily_cost_mult', label: '일간 트리거 비용 배수', tip: '일 비용 > 4주 일평균 × 이 배수이면 일간 알림 후보. 2.0 = 200%' },
+    { k: 'daily_roas_mult', label: '일간 트리거 ROAS 배수', tip: '당일 ROAS < 보정목표 × 이 배수이면 (비용 조건과 함께) 일간 알림 발생. 0.5 = 50%' },
+  ],
 };
 
-router.get('/settings', requireLogin, requireAdmin, async (req, res) => {
+router.get('/settings', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
@@ -945,103 +1001,289 @@ router.get('/settings', requireLogin, requireAdmin, async (req, res) => {
   const rules = await bidDb.getCategoryRules(account.id);
   const materials = await bidDb.getMaterials(account.id);
   const pend = await pendingCount(account.id);
+  const ro = isClient(req); // 광고주 = 열람 전용 (입력 disabled, 저장 버튼 미노출)
+  const dis = ro ? 'disabled' : '';
+  const blendN = Math.max(0, Math.min(100, Math.round(parseFloat(settings.blend_recent_weight) || 0)));
 
-  const paramInputs = Object.entries(SETTING_LABELS).map(([k, label]) => `
-    <div><label>${label}</label><input name="${k}" value="${settings[k]}" type="number" step="any"></div>`).join('');
+  // API 연동 상태 (마스터 전용 탭 — 광고주에게는 키 정보 미노출)
+  let credInfo = null;
+  if (!ro) {
+    try {
+      const creds = await getCreds(req, account.id);
+      if (creds && creds.api_key) {
+        credInfo = { masked: String(creds.api_key).slice(0, 10) + '••••••', mgr: creds.manager_customer_id || '' };
+      }
+    } catch (e) { /* 미연동으로 표시 */ }
+  }
+
+  const paramInputs = (tab) => SETTING_TAB_PARAMS[tab].map(({ k, label, tip }) => `
+    <div><label>${label} <span class="tip" title="${escHtml(tip)}">ⓘ</span></label>
+    <input name="${k}" value="${settings[k]}" type="number" step="any" title="${escHtml(tip)}" ${dis}></div>`).join('');
+
+  const saveBtn = (tab, label) => ro ? '' : `<button class="btn btn-primary btn-sm" onclick="saveTab('${tab}')">${label || '저장'}</button>`;
 
   const rulesRows = logic.CATEGORIES.map(c => {
     const r = rules[c];
     return `<tr><td><b>${c}</b></td>
-      <td><input class="rule-in" data-cat="${c}" data-f="coef" value="${r.coef}" type="number" step="0.1" style="width:80px"></td>
-      <td><input class="rule-in" data-cat="${c}" data-f="up" value="${r.up}" type="number" step="0.01" style="width:80px"></td>
-      <td><input class="rule-in" data-cat="${c}" data-f="down" value="${r.down}" type="number" step="0.01" style="width:80px"></td></tr>`;
+      <td><input class="rule-in" data-cat="${c}" data-f="coef" value="${r.coef}" type="number" step="0.1" style="width:80px" ${dis}></td>
+      <td><input class="rule-in" data-cat="${c}" data-f="up" value="${r.up}" type="number" step="0.01" style="width:80px" ${dis}></td>
+      <td><input class="rule-in" data-cat="${c}" data-f="down" value="${r.down}" type="number" step="0.01" style="width:80px" ${dis}></td></tr>`;
   }).join('');
 
   const matRows = materials.map(m => `<tr>
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px">${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
-    <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px"></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px">
+    <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${dis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
+    <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${dis}></td>
+    <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px" ${dis}>
       <option value="" ${!m.mode_override ? 'selected' : ''}>전역 따름</option>
       <option value="auto" ${m.mode_override === 'auto' ? 'selected' : ''}>자동</option>
       <option value="approval" ${m.mode_override === 'approval' ? 'selected' : ''}>승인</option></select></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px">
+    <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px" ${dis}>
       <option value="1" ${m.enabled ? 'selected' : ''}>활성</option><option value="0" ${!m.enabled ? 'selected' : ''}>제외</option></select></td>
+    <td class="num">${m.baseline_weekly_revenue == null ? '<span style="color:#cbd5e1">-</span>' : fmtNum(m.baseline_weekly_revenue) + '원'}</td>
     <td class="num">${fmtNum(m.current_bid)}원</td></tr>`).join('');
 
+  const TABS = [
+    { id: 'blend', title: '🧮 블렌딩·판정' },
+    { id: 'volume', title: '🛡️ 볼륨 보호' },
+    { id: 'limits', title: '📏 입찰 한도·데이터' },
+    { id: 'rules', title: '🗂️ 분류 규칙' },
+    { id: 'auto', title: '🤖 자동화·알림' },
+    { id: 'materials', title: '📦 소재별 설정' },
+    ...(ro ? [] : [{ id: 'api', title: '🔗 API 연동' }]),
+  ];
+
   const content = `
-    <div class="card"><div class="card-header"><span class="card-title">조정 모드</span></div><div class="card-body">
-      <div style="display:flex;gap:16px;align-items:center">
-        <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
-          <input type="radio" name="mode" value="approval" style="width:auto" ${settings.adjust_mode === 'approval' ? 'checked' : ''}> 승인 후 적용 (approval)</label>
-        <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
-          <input type="radio" name="mode" value="auto" style="width:auto" ${settings.adjust_mode === 'auto' ? 'checked' : ''}> 자동 적용 (auto)</label>
-        <button class="btn btn-primary btn-sm" onclick="saveMode()">모드 저장</button>
-      </div>
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center">
-        <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
-          <input type="checkbox" id="app-enabled" style="width:auto" ${settings.app_enabled === '1' ? 'checked' : ''}> 이 광고주에 주기 자동 실행(크론) 사용</label>
-        <button class="btn btn-outline btn-sm" onclick="saveEnabled()">저장</button>
-        <span style="font-size:12px;color:#94a3b8">매주 월 06:00 주간 조정 · 매일 07:00 모니터 · 매월 1일 월간 리포트 (KST)</span>
-      </div>
-    </div></div>
-    <div class="card"><div class="card-header"><span class="card-title">조정 파라미터</span><button class="btn btn-primary btn-sm" onclick="saveParams()">파라미터 저장</button></div>
-      <div class="card-body"><form id="param-form"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs}</div></form>
-      <p style="font-size:12px;color:#94a3b8;margin-top:10px">비율 항목은 소수로 입력 (0.10 = 10%). 저장 즉시 다음 계산부터 반영되며 변경 이력이 기록됩니다.</p></div></div>
-    <div class="card"><div class="card-header"><span class="card-title">분류별 규칙 [계수 / 증액률 / 감액률]</span><button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button></div>
-      <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-        <tr><th>분류</th><th>목표ROAS 계수</th><th>증액률</th><th>감액률</th></tr>${rulesRows}</table></div></div>
-    <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성)</span><button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button></div>
-      <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-        <tr><th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th class="num">현재입찰가</th></tr>
-        ${matRows || '<tr><td colspan="6" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>'}</table></div></div>
+    ${ro ? '<div class="alert alert-info">광고주 계정은 설정을 <b>열람만</b> 할 수 있습니다. 변경이 필요하면 담당 마케터에게 요청해주세요.</div>' : ''}
+    <div class="tabs">${TABS.map((t, i) => `<button class="tab-btn ${i === 0 ? 'active' : ''}" data-tab="${t.id}" onclick="showTab('${t.id}')">${t.title}</button>`).join('')}</div>
+
+    <!-- ① 블렌딩·판정 -->
+    <div class="tab-pane active" id="pane-blend">
+      <div class="tab-desc">주차 성과를 하나의 <b>블렌딩 ROAS</b>로 합산해 보정목표와 비교하고 증액/감액/유지를 판정하는 기준입니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">블렌딩 구간 비율 (2구간)</span>${saveBtn('blend', '블렌딩·판정 저장')}</div>
+        <div class="card-body">
+          <label>1주차(최신 완료 주) 비중 N% <span class="tip" title="블렌딩ROAS = (N%×매출₁ + (100-N)%×매출₂₋₄) ÷ (N%×비용₁ + (100-N)%×비용₂₋₄). 2~4주차는 자동으로 100-N%가 됩니다.">ⓘ</span></label>
+          <div style="display:flex;gap:14px;align-items:center;max-width:560px">
+            <input type="range" id="bw-range" min="0" max="100" step="1" value="${blendN}" style="flex:1;padding:0" ${dis}>
+            <input type="number" id="bw-num" name="blend_recent_weight" min="0" max="100" step="1" value="${blendN}" style="width:90px" ${dis}>
+            <span id="bw-rest" style="font-size:13px;color:#0369a1;font-weight:700;white-space:nowrap">2~4주차 = ${100 - blendN}%</span>
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('blend')}</div></div>
+          <p style="font-size:12px;color:#94a3b8;margin-top:10px">비율 항목은 소수로 입력 (0.10 = 10%). 저장 즉시 다음 계산부터 반영되며 변경 이력이 기록됩니다.</p>
+        </div></div>
+    </div>
+
+    <!-- ② 볼륨 보호 -->
+    <div class="tab-pane" id="pane-volume">
+      <div class="tab-desc">매출볼륨이 이미 하락 중인 소재를 ROAS만 보고 추가 감액해 유입을 더 줄이는 상황을 막습니다. (증액은 볼륨 조건 없음)</div>
+      <div class="card"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span>${saveBtn('volume', '볼륨 보호 저장')}</div>
+        <div class="card-body">
+          <div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('volume')}</div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            ${ro ? '' : `<button class="btn btn-outline btn-sm" id="btn-baseline" onclick="recalcBaseline()">🔁 기준매출 재계산 (전월 기준, 수동 실행)</button>`}
+            <span style="font-size:12px;color:#94a3b8">기준매출 = 전월 매출 합계 ÷ 전월 일수 × 7 (100원 단위 반올림). 매월 1일 크론에서 자동 산출되며, 소재별 값은 <b>소재별 설정</b> 탭에서 확인할 수 있습니다.</span>
+          </div>
+        </div></div>
+    </div>
+
+    <!-- ③ 입찰 한도·데이터 -->
+    <div class="tab-pane" id="pane-limits">
+      <div class="tab-desc">입찰가 하한과 판정에 필요한 최소 데이터 기준, 노출순위 보호선을 정합니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">입찰 한도·데이터 기준</span>${saveBtn('limits', '입찰 한도 저장')}</div>
+        <div class="card-body"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('limits')}</div></div></div>
+    </div>
+
+    <!-- ④ 분류 규칙 -->
+    <div class="tab-pane" id="pane-rules">
+      <div class="tab-desc">소재 분류별 <b>[목표ROAS 계수 / 증액률 / 감액률]</b>. 계수는 목표ROAS에 곱해 보정목표를 만들고, 증액·감액률은 판정 시 입찰가 변경 폭이 됩니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">분류별 규칙</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button>'}</div>
+        <div class="tbl-wrap" style="border:none;border-radius:0"><table>
+          <tr><th>분류</th><th>목표ROAS 계수</th><th>증액률</th><th>감액률</th></tr>${rulesRows}</table></div></div>
+    </div>
+
+    <!-- ⑤ 자동화·알림 -->
+    <div class="tab-pane" id="pane-auto">
+      <div class="tab-desc">조정 자동 적용 방식(auto/approval)과 주기 실행(크론), 일간 알림 트리거를 정합니다. 감액보류(볼륨하락) 건은 auto 모드여도 항상 승인 대기로 갑니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">조정 모드 · 크론 · 알림</span>${saveBtn('auto', '자동화·알림 저장')}</div>
+        <div class="card-body">
+          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
+              <input type="radio" name="adjust_mode" value="approval" style="width:auto" ${settings.adjust_mode === 'approval' ? 'checked' : ''} ${dis}> 승인 후 적용 (approval)</label>
+            <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
+              <input type="radio" name="adjust_mode" value="auto" style="width:auto" ${settings.adjust_mode === 'auto' ? 'checked' : ''} ${dis}> 자동 적용 (auto)</label>
+          </div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
+              <input type="checkbox" name="app_enabled" style="width:auto" ${settings.app_enabled === '1' ? 'checked' : ''} ${dis}> 이 광고주에 주기 자동 실행(크론) 사용</label>
+            <span style="font-size:12px;color:#94a3b8">크론 시각(KST): 매주 월 06:00 주간 조정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 기준매출 산출+월간 리포트</span>
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
+        </div></div>
+    </div>
+
+    <!-- ⑥ 소재별 설정 -->
+    <div class="tab-pane" id="pane-materials">
+      <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
+        <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
+          <tr><th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          ${matRows || '<tr><td colspan="7" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>'}</table></div></div>
+    </div>
+
+    ${ro ? '' : `
+    <!-- ⑦ API 연동 (마스터 전용) -->
+    <div class="tab-pane" id="pane-api">
+      <div class="tab-desc">이 광고주(고객 ID <b>${escHtml(account.customer_id)}</b>)의 <b>네이버 검색광고 API 자격증명</b>을 등록·교체합니다. 소재 동기화·성과 수집·입찰가 변경이 모두 이 자격증명으로 실행됩니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">연동 상태</span></div>
+        <div class="card-body">
+          ${credInfo
+            ? `<div class="alert alert-ok" style="margin-bottom:0">✅ 연동됨 — API 라이선스 <b>${escHtml(credInfo.masked)}</b>${credInfo.mgr ? ` · 관리계정 ID <b>${escHtml(credInfo.mgr)}</b>` : ''}</div>`
+            : `<div class="alert alert-err" style="margin-bottom:0">⛔ 미연동 — 아래에 API 자격증명을 등록해주세요. 등록 전에는 동기화·조정 실행이 불가합니다.</div>`}
+        </div></div>
+      <div class="card"><div class="card-header"><span class="card-title">${credInfo ? 'API 자격증명 교체' : 'API 자격증명 등록'}</span></div>
+        <div class="card-body">
+          <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:760px">
+            <div><label>API 라이선스 (액세스 키) <span class="tip" title="네이버 검색광고 > 도구 > API 사용 관리에서 발급">ⓘ</span></label><input id="cred-key" placeholder="0100000000..." autocomplete="off"></div>
+            <div><label>비밀키 (시크릿 키)</label><input id="cred-secret" type="password" placeholder="AQAAAA..." autocomplete="new-password"></div>
+            <div><label>관리계정 ID (대행사 관리계정일 때만, 선택) <span class="tip" title="대행사 관리계정 라이선스로 광고주를 운영하는 경우 관리계정 CUSTOMER_ID 입력. 광고주 본인 라이선스면 비워두세요.">ⓘ</span></label><input id="cred-mgr" placeholder="선택 입력"></div>
+            <div><label>라벨 (선택)</label><input id="cred-label" placeholder="예: 이고진 본계정"></div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+            <button class="btn btn-primary" id="btn-cred" onclick="saveCreds()">🔗 검증 후 저장</button>
+            <span style="font-size:12px;color:#94a3b8">저장 전 캠페인 목록 조회로 자격증명을 검증합니다. 검증 실패 시 저장되지 않습니다.</span>
+          </div>
+        </div></div>
+    </div>`}
+
     <script>
-    async function saveMode(){
-      var v=document.querySelector('input[name=mode]:checked').value;
-      var j=await api('${BASE}/api/settings/save',{settings:{adjust_mode:v}});
-      toast(j.ok?'모드 저장 완료':'오류',!j.ok);
+    function showTab(id){
+      document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===id);});
+      document.querySelectorAll('.tab-pane').forEach(function(p){p.classList.toggle('active',p.id==='pane-'+id);});
     }
-    async function saveEnabled(){
-      var v=document.getElementById('app-enabled').checked?'1':'0';
-      var j=await api('${BASE}/api/settings/save',{settings:{app_enabled:v}});
-      toast(j.ok?'저장 완료':'오류',!j.ok);
-    }
-    async function saveParams(){
-      var s={};document.querySelectorAll('#param-form input').forEach(function(i){s[i.name]=i.value;});
+    // N% 슬라이더 ↔ 직접입력 동기화 + 2~4주차 자동 표시
+    (function(){
+      var r=document.getElementById('bw-range'),n=document.getElementById('bw-num'),rest=document.getElementById('bw-rest');
+      function sync(v){v=Math.max(0,Math.min(100,Math.round(parseFloat(v)||0)));r.value=v;n.value=v;rest.textContent='2~4주차 = '+(100-v)+'%';}
+      if(r&&n){r.oninput=function(){sync(r.value)};n.oninput=function(){sync(n.value)};}
+    })();
+    async function saveTab(tab){
+      var pane=document.getElementById('pane-'+tab);
+      var s={};
+      pane.querySelectorAll('input[name],select[name]').forEach(function(i){
+        if(i.type==='radio'){if(i.checked)s[i.name]=i.value;return;}
+        if(i.type==='checkbox'){s[i.name]=i.checked?'1':'0';return;}
+        s[i.name]=i.value;
+      });
       var j=await api('${BASE}/api/settings/save',{settings:s});
-      toast(j.ok?'파라미터 저장 완료 ('+j.changed+'건 변경)':'오류',!j.ok);
+      toast(j.ok?'저장 완료 ('+j.changed+'건 변경)':'오류: '+(j.error||''),!j.ok);
     }
     async function saveRules(){
       var rules={};
       document.querySelectorAll('.rule-in').forEach(function(i){var c=i.dataset.cat;if(!rules[c])rules[c]={};rules[c][i.dataset.f]=parseFloat(i.value)||0;});
       var j=await api('${BASE}/api/settings/rules',{rules:rules});
-      toast(j.ok?'분류 규칙 저장 완료':'오류',!j.ok);
+      toast(j.ok?'분류 규칙 저장 완료':'오류: '+(j.error||''),!j.ok);
     }
     async function saveMats(){
       var mats={};
       document.querySelectorAll('.mat-in').forEach(function(i){var id=i.dataset.id;if(!mats[id])mats[id]={};mats[id][i.dataset.f]=i.value;});
       var j=await api('${BASE}/api/settings/materials',{materials:mats});
-      toast(j.ok?'소재 설정 저장 완료':'오류',!j.ok);
+      toast(j.ok?'소재 설정 저장 완료':'오류: '+(j.error||''),!j.ok);
+    }
+    async function saveCreds(){
+      var key=document.getElementById('cred-key').value.trim(),sec=document.getElementById('cred-secret').value.trim();
+      var mgr=document.getElementById('cred-mgr').value.trim(),label=document.getElementById('cred-label').value.trim();
+      if(!key||!sec){toast('API 라이선스와 비밀키를 입력해주세요',true);return;}
+      var b=document.getElementById('btn-cred');b.disabled=true;b.textContent='검증 중...';
+      var j=await api('${BASE}/api/settings/credentials',{api_key:key,secret_key:sec,manager_customer_id:mgr,label:label});
+      b.disabled=false;b.textContent='🔗 검증 후 저장';
+      toast(j.ok?'API 연동 완료 (캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 확인)':'오류: '+(j.error||''),!j.ok);
+      if(j.ok)setTimeout(function(){location.reload()},1000);
+    }
+    async function recalcBaseline(){
+      if(!confirm('전월(달력 기준) 데이터로 소재별 기준매출을 다시 계산합니다. 소재 수에 따라 수 분 걸릴 수 있습니다. 진행할까요?'))return;
+      var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
+      var j=await api('${BASE}/api/settings/recalc-baseline',{});
+      b.disabled=false;b.textContent='🔁 기준매출 재계산 (전월 기준, 수동 실행)';
+      toast(j.ok?('기준매출 재계산 완료 — '+j.month+' 기준 · 산출 '+j.updated+'건 / 데이터없음 '+j.noData+'건'):('오류: '+(j.error||'')),!j.ok);
+      if(j.ok)setTimeout(function(){location.reload()},1200);
     }
     </script>
   `;
   res.send(appLayout(req, '설정', content, 'settings', { accounts, account, user, pendingCount: pend }));
 });
 
-router.post('/api/settings/save', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/settings/save', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
     let changed = 0;
     for (const [k, v] of Object.entries(req.body.settings || {})) {
       if (!(k in logic.DEFAULT_SETTINGS) && k !== 'app_enabled') continue;
-      if (await bidDb.setSetting(account.id, k, v, req.session.userName || '')) changed++;
+      let val = v;
+      if (k === 'blend_recent_weight') val = Math.max(0, Math.min(100, Math.round(parseFloat(v) || 0))); // 0~100 정수
+      if (await bidDb.setSetting(account.id, k, val, req.session.userName || '')) changed++;
     }
     res.json({ ok: true, changed });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/settings/rules', requireLogin, requireAdmin, async (req, res) => {
+// 기준매출 수동 재계산 (전월 달력 기준)
+router.post('/api/settings/recalc-baseline', requireLogin, requireMaster, async (req, res) => {
+  try {
+    const { account } = await getSelectedAccount(req);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const creds = await getCreds(req, account.id);
+    if (!creds) return res.json({ ok: false, error: 'API 자격증명 없음' });
+    const kst = logic.nowKST();
+    const prev = new Date(kst); prev.setUTCDate(0); // 전월 말일
+    const month = logic.fmtDate(prev).slice(0, 7);
+    const r = await engine.computeBaselines(account, creds, month, { actor: req.session.userName || 'manual' });
+    res.json({ ok: true, ...r });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 광고주 네이버SA API 자격증명 등록/교체 (검증 후 저장, 마스터 전용)
+router.post('/api/settings/credentials', requireLogin, requireMaster, async (req, res) => {
+  try {
+    const { account } = await getSelectedAccount(req);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const api_key = String(req.body.api_key || '').trim();
+    const secret_key = String(req.body.secret_key || '').trim();
+    const manager_customer_id = String(req.body.manager_customer_id || '').trim();
+    const label = String(req.body.label || '').trim() || `${account.name} API`;
+    if (!api_key || !secret_key) return res.json({ ok: false, error: 'API 라이선스와 비밀키를 입력해주세요.' });
+
+    // 저장 전 검증: 해당 고객 ID로 캠페인 목록 조회
+    let campaigns = null;
+    try {
+      const client = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: account.customer_id });
+      const list = await client.getCampaigns();
+      campaigns = Array.isArray(list) ? list.length : null;
+    } catch (e) {
+      return res.json({ ok: false, error: `API 검증 실패 — 키·비밀키·고객 ID(${account.customer_id}) 권한을 확인해주세요: ${e.message}` });
+    }
+
+    // 저장: 계정 소유자 명의의 자격증명으로 저장 후 이 광고주에 연결.
+    // 기존 연결 자격증명이 이 광고주 '전용'일 때만 덮어쓰기 — 여러 광고주가 공유 중이면 새로 생성 (다른 광고주 영향 방지)
+    const ownerId = account.user_id;
+    let credId = account.agency_credential_id || null;
+    if (credId) {
+      const shared = await bidDb.pool.query('SELECT COUNT(*)::int AS n FROM ad_accounts WHERE agency_credential_id = $1', [credId]);
+      const existing = await db.getAgencyCredentialById(credId, ownerId);
+      if (existing && shared.rows[0].n <= 1) {
+        await db.updateAgencyCredential(credId, ownerId, { label, api_key, secret_key, manager_customer_id });
+      } else credId = null;
+    }
+    if (!credId) {
+      credId = await db.addAgencyCredential(ownerId, { label, api_key, secret_key, manager_customer_id });
+      await bidDb.pool.query('UPDATE ad_accounts SET agency_credential_id = $2 WHERE id = $1', [account.id, credId]);
+    }
+    await bidDb.audit(account.id, req.session.userName, 'API 자격증명 등록/교체', { credId, label, mgr: manager_customer_id || '-', campaigns });
+    res.json({ ok: true, campaigns });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+router.post('/api/settings/rules', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -1053,7 +1295,7 @@ router.post('/api/settings/rules', requireLogin, requireAdmin, async (req, res) 
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/settings/materials', requireLogin, requireAdmin, async (req, res) => {
+router.post('/api/settings/materials', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -1071,9 +1313,17 @@ router.post('/api/settings/materials', requireLogin, requireAdmin, async (req, r
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  광고주 초대 (운영자) — 기존 솔루션과 동일한 초대 구조 재사용
+//  광고주 초대 (마스터 전용) — 기존 솔루션 초대 구조 재사용 + 역할/만료/비활성화
 // ═══════════════════════════════════════════════════════════════════
-router.get('/viewers', requireLogin, requireAdmin, async (req, res) => {
+const INVITE_TTL_HOURS = 72; // 초대 링크 만료 (시간)
+function inviteExpired(inv) {
+  if (!inv || inv.status !== 'pending' || !inv.created_at) return false;
+  return (Date.now() - new Date(inv.created_at).getTime()) > INVITE_TTL_HOURS * 60 * 60 * 1000;
+}
+const roleBadge = (r) => r === 'master'
+  ? '<span class="badge b-core">마스터</span>' : '<span class="badge b-blue">광고주</span>';
+
+router.get('/viewers', requireLogin, requireMaster, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
@@ -1085,49 +1335,81 @@ router.get('/viewers', requireLogin, requireAdmin, async (req, res) => {
   const viewers = await db.getAccountViewers(account.id, user.id);
   const msg = req.query.msg || '';
 
+  const statusBadgeOf = (v) => {
+    if (v.status === 'accepted') return '<span class="badge b-up">가입완료</span>';
+    if (v.status === 'disabled') return '<span class="badge b-keep">비활성</span>';
+    if (inviteExpired(v)) return '<span class="badge b-down">만료</span>';
+    return '<span class="badge b-warn">대기</span>';
+  };
+
   const content = `
-    ${msg === 'invited' ? '<div class="alert alert-ok">초대 메일을 발송했습니다.</div>' : ''}
+    ${msg === 'invited' ? '<div class="alert alert-ok">초대 메일을 발송했습니다. (링크 유효기간 72시간)</div>' : ''}
     ${msg === 'err' ? '<div class="alert alert-err">초대 발송에 실패했습니다. 이메일 주소를 확인해주세요.</div>' : ''}
     ${msg === 'nodaou' ? '<div class="alert alert-err">다우오피스 SMTP 정보가 없습니다. 뉴먼트 솔루션 > 내 정보에서 등록해주세요.</div>' : ''}
-    ${msg === 'revoked' ? '<div class="alert alert-ok">열람 권한을 취소했습니다.</div>' : ''}
-    <div class="card"><div class="card-header"><span class="card-title">${escHtml(account.name)} — 광고주 초대</span></div>
+    ${msg === 'role' ? '<div class="alert alert-ok">역할을 변경했습니다. (다음 로그인부터 적용)</div>' : ''}
+    ${msg === 'active' ? '<div class="alert alert-ok">계정 상태를 변경했습니다.</div>' : ''}
+    <div class="card"><div class="card-header"><span class="card-title">${escHtml(account.name)} — 초대 발송</span></div>
       <div class="card-body">
-        <p style="font-size:13px;color:#64748b;margin-bottom:14px">초대된 광고주는 이메일로 계정을 만들고 <b>대시보드 조회 + 조정 승인/반려</b>만 할 수 있습니다. (설정·실행 불가)</p>
-        <form method="POST" action="${BASE}/viewers" style="display:flex;gap:10px;max-width:520px">
-          <input name="email" type="email" required placeholder="광고주 이메일 (예: client@egojin.com)">
+        <p style="font-size:13px;color:#64748b;margin-bottom:14px">
+          <b>마스터</b>: 모든 탭 접근 + 설정 수정 + 조정 실행 + 승인 ·
+          <b>광고주</b>: 대시보드·주차별 데이터·승인함·히스토리 + 승인/반려, 설정은 열람만</p>
+        <form method="POST" action="${BASE}/viewers" style="display:flex;gap:10px;max-width:640px">
+          <input name="email" type="email" required placeholder="이메일 (예: client@egojin.com)">
+          <select name="role" style="width:130px">
+            <option value="client" selected>광고주</option>
+            <option value="master">마스터</option>
+          </select>
           <button class="btn btn-primary" style="white-space:nowrap">✉️ 초대 발송</button>
         </form>
       </div></div>
     <div class="card"><div class="card-header"><span class="card-title">초대 현황</span></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-        <tr><th>이메일</th><th>이름</th><th>상태</th><th>초대일</th><th>수락일</th><th></th></tr>
+        <tr><th>이메일</th><th>이름</th><th>역할</th><th>상태</th><th>초대일</th><th>수락일</th><th>관리</th></tr>
         ${viewers.map(v => `<tr>
           <td><b>${escHtml(v.email)}</b></td><td>${escHtml(v.viewer_name || '-')}</td>
-          <td>${v.status === 'accepted' ? '<span class="badge b-up">수락됨</span>' : '<span class="badge b-warn">대기 중</span>'}</td>
+          <td>${roleBadge(v.role)}
+            <form method="POST" action="${BASE}/viewers/${v.id}/role" style="display:inline-flex;gap:4px;margin-left:6px;vertical-align:middle" onsubmit="return confirm('역할을 변경할까요? (해당 계정 다음 로그인부터 적용)')">
+              <select name="role" style="width:92px;padding:4px 8px;font-size:11.5px">
+                <option value="client" ${v.role !== 'master' ? 'selected' : ''}>광고주</option>
+                <option value="master" ${v.role === 'master' ? 'selected' : ''}>마스터</option>
+              </select><button class="btn btn-outline btn-sm">변경</button></form></td>
+          <td>${statusBadgeOf(v)}</td>
           <td>${v.created_at ? new Date(v.created_at).toLocaleDateString('ko-KR') : '-'}</td>
           <td>${v.accepted_at ? new Date(v.accepted_at).toLocaleDateString('ko-KR') : '-'}</td>
-          <td><form method="POST" action="${BASE}/viewers/${v.id}/revoke" onsubmit="return confirm('열람 권한을 취소할까요?')">
-            <button class="btn btn-outline btn-sm">권한 취소</button></form></td></tr>`).join('')
-          || '<tr><td colspan="6" class="empty">초대 내역이 없습니다.</td></tr>'}
+          <td style="white-space:nowrap">
+            ${v.status !== 'accepted' && v.status !== 'disabled' ? `
+              <form method="POST" action="${BASE}/viewers" style="display:inline">
+                <input type="hidden" name="email" value="${escHtml(v.email)}"><input type="hidden" name="role" value="${escHtml(v.role || 'client')}">
+                <button class="btn btn-outline btn-sm">재발송</button></form>` : ''}
+            ${v.status === 'accepted' ? `
+              <form method="POST" action="${BASE}/viewers/${v.id}/active" style="display:inline" onsubmit="return confirm('이 계정을 비활성화할까요? 즉시 접근이 차단됩니다.')">
+                <input type="hidden" name="active" value="0"><button class="btn btn-outline btn-sm">비활성화</button></form>` : ''}
+            ${v.status === 'disabled' ? `
+              <form method="POST" action="${BASE}/viewers/${v.id}/active" style="display:inline">
+                <input type="hidden" name="active" value="1"><button class="btn btn-green btn-sm">활성화</button></form>` : ''}
+          </td></tr>`).join('')
+          || '<tr><td colspan="7" class="empty">초대 내역이 없습니다.</td></tr>'}
       </table></div></div>
   `;
   res.send(appLayout(req, '광고주 초대', content, 'viewers', { accounts, account, user, pendingCount: pend }));
 });
 
-router.post('/viewers', requireLogin, requireAdmin, async (req, res) => {
+router.post('/viewers', requireLogin, requireMaster, async (req, res) => {
   const user = await getUser(req);
   const { account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
   const owned = await db.getOwnedAccountById(account.id, user.id);
   if (!owned) return res.redirect(`${BASE}/viewers`);
   const email = String(req.body.email || '').trim().toLowerCase();
+  const role = req.body.role === 'master' ? 'master' : 'client';
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.redirect(303, `${BASE}/viewers?msg=err`);
-  // 초대 메일은 운영자(마케터)의 다우오피스 SMTP로 발송 (기존 솔루션과 동일)
+  // 초대 메일은 마스터(마케터)의 다우오피스 SMTP로 발송 (기존 솔루션과 동일)
   const smtp = await db.getSmtpCredentials(user.id);
   if (!smtp || !smtp.daou_email || !smtp.smtp_pass) return res.redirect(303, `${BASE}/viewers?msg=nodaou`);
   try {
     const token = crypto.randomBytes(24).toString('hex');
-    await db.createAccountInvite(account.id, user.id, email, token);
+    const inv = await db.createAccountInvite(account.id, user.id, email, token);
+    if (inv) await bidDb.pool.query('UPDATE account_viewers SET role = $2 WHERE id = $1', [inv.id, role]);
     const base_url = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     const inviteUrl = `${base_url}${BASE}/invite/${token}`;
     await sendInviteEmail({
@@ -1137,7 +1419,7 @@ router.post('/viewers', requireLogin, requireAdmin, async (req, res) => {
       email_user: smtp.daou_email,
       email_pass: smtp.smtp_pass,
     }, { to: email, accountName: `${account.name} 입찰관리`, inviteUrl, inviterName: user.name || user.username });
-    await bidDb.audit(account.id, user.name, '광고주 초대 발송', { email });
+    await bidDb.audit(account.id, user.name, '초대 발송', { email, role: role === 'master' ? '마스터' : '광고주', ttlHours: INVITE_TTL_HOURS });
     res.redirect(303, `${BASE}/viewers?msg=invited`);
   } catch (e) {
     console.error('입찰관리 초대 발송 실패:', e.message);
@@ -1145,9 +1427,20 @@ router.post('/viewers', requireLogin, requireAdmin, async (req, res) => {
   }
 });
 
-router.post('/viewers/:vid/revoke', requireLogin, requireAdmin, async (req, res) => {
-  await db.revokeAccountViewer(req.params.vid, req.session.userId);
-  res.redirect(303, `${BASE}/viewers?msg=revoked`);
+// 역할 변경 (마스터/광고주) — 해당 계정의 다음 로그인(세션 재해석)부터 적용
+router.post('/viewers/:vid/role', requireLogin, requireMaster, async (req, res) => {
+  const role = req.body.role === 'master' ? 'master' : 'client';
+  const row = await bidDb.setViewerRole(req.params.vid, req.session.userId, role);
+  if (row) await bidDb.audit(row.account_id, req.session.userName, '초대 역할 변경', { email: row.email, role: role === 'master' ? '마스터' : '광고주' });
+  res.redirect(303, `${BASE}/viewers?msg=role`);
+});
+
+// 계정 비활성화/재활성화 — 비활성 시 해당 광고주 접근 즉시 차단
+router.post('/viewers/:vid/active', requireLogin, requireMaster, async (req, res) => {
+  const active = req.body.active === '1';
+  const row = await bidDb.setViewerActive(req.params.vid, req.session.userId, active);
+  if (row) await bidDb.audit(row.account_id, req.session.userName, active ? '초대 계정 활성화' : '초대 계정 비활성화', { email: row.email });
+  res.redirect(303, `${BASE}/viewers?msg=active`);
 });
 
 // ─── 초대 수락 (로그인 불필요) ─────────────────────────────────────
@@ -1157,16 +1450,20 @@ function inviteStandalone(title, inner) {
   <div style="width:100%;max-width:440px">${inner}</div></body></html>`;
 }
 
+const inviteExpiredPage = () => inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:36px">⏰</div><h2 style="margin:8px 0">만료된 초대 링크</h2><p style="color:#6b7280">초대 링크의 유효기간(72시간)이 지났습니다. 담당자에게 재발송을 요청해주세요.</p></div></div>');
+
 router.get('/invite/:token', async (req, res) => {
   const inv = await db.getInviteByToken(req.params.token);
   if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:36px">⚠️</div><h2 style="margin:8px 0">유효하지 않은 초대 링크</h2><p style="color:#6b7280">링크가 만료되었거나 잘못되었습니다. 담당자에게 재발송을 요청해주세요.</p></div></div>'));
+  if (inviteExpired(inv)) return res.send(inviteExpiredPage());
+  const isMaster = inv.role === 'master';
   const existing = await db.getViewerUserByEmail(inv.email);
   res.send(inviteStandalone(inv.account_name + ' 입찰관리 초대', `
     <div class="card"><div class="card-body">
       <div style="text-align:center;margin-bottom:18px">
         <div style="font-size:32px">🎯</div>
         <h2 style="font-size:19px;font-weight:800;margin-top:6px">${escHtml(inv.account_name)} 입찰관리</h2>
-        <p style="color:#6b7280;font-size:13px;margin-top:4px">${escHtml(inv.email)} 님을 초대했습니다.</p>
+        <p style="color:#6b7280;font-size:13px;margin-top:4px">${escHtml(inv.email)} 님을 <b>${isMaster ? '마스터' : '광고주'}</b> 권한으로 초대했습니다.</p>
       </div>
       <form method="post" action="${BASE}/invite/${req.params.token}">
         ${req.query.err ? '<div class="alert alert-err">' + escHtml(req.query.err) + '</div>' : ''}
@@ -1174,7 +1471,9 @@ router.get('/invite/:token', async (req, res) => {
         <div style="margin-bottom:16px"><label>비밀번호 ${existing ? '(기존 계정)' : '(새로 설정)'}</label><input type="password" name="password" required minlength="4"></div>
         <button class="btn btn-primary" style="width:100%;justify-content:center">${existing ? '로그인하고 입찰관리 열기' : '계정 만들고 입찰관리 열기'}</button>
       </form>
-      <p style="font-size:12px;color:#9ca3af;text-align:center;margin-top:14px">이 계정은 <b>조회 + 조정 승인</b> 권한만 가집니다.</p>
+      <p style="font-size:12px;color:#9ca3af;text-align:center;margin-top:14px">${isMaster
+        ? '이 계정은 <b>마스터</b> 권한(설정 수정·조정 실행·승인)을 가집니다.'
+        : '이 계정은 <b>조회 + 조정 승인</b> 권한을 가지며, 설정은 열람만 할 수 있습니다.'}</p>
     </div></div>`));
 });
 
@@ -1183,6 +1482,7 @@ router.post('/invite/:token', async (req, res) => {
   const inv = await db.getInviteByToken(token);
   const back = (err) => res.redirect(303, `${BASE}/invite/${token}?err=${encodeURIComponent(err)}`);
   if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><h2>유효하지 않은 초대입니다.</h2></div></div>'));
+  if (inviteExpired(inv)) return res.send(inviteExpiredPage());
   const name = String(req.body.name || '').trim();
   const password = String(req.body.password || '');
   if (!name || password.length < 4) return back('이름과 4자 이상 비밀번호를 입력해주세요.');
@@ -1196,13 +1496,15 @@ router.post('/invite/:token', async (req, res) => {
       viewer = await db.createViewerUser(inv.email, name, password);
     }
     await db.acceptInvite(token, viewer.id);
-    await bidDb.audit(inv.account_id, name, '광고주 초대 수락', { email: inv.email });
+    await bidDb.audit(inv.account_id, name, '초대 수락', { email: inv.email, role: inv.role === 'master' ? '마스터' : '광고주' });
     req.session.userId = viewer.id;
     req.session.userName = viewer.name;
     req.session.isAdmin = false;
     req.session.approved = 1;
     req.session.role = 'viewer';
     req.session.bidAccountId = inv.account_id;
+    req.session.bidRole = null;
+    await resolveBidRole(req);
     req.session.save(() => res.redirect(303, BASE));
   } catch (e) {
     console.error('입찰관리 초대 수락 실패:', e.message);
@@ -1266,10 +1568,16 @@ router.get('/api/cron/tick', async (req, res) => {
           } catch (e) { results.push({ account: account.name, job: 'daily', error: e.message }); }
         }
       }
-      // 월간 리포트: 매월 1일 06시 (KST) — 전월 기준
+      // 매월 1일 06시 (KST): ① 기준매출 산출(전월 주간환산) → ② 월간 리포트
       if (day === 1 && hour === 6) {
         const prev = new Date(kst); prev.setUTCDate(0);
         const prevMonth = logic.fmtDate(prev).slice(0, 7);
+        if (await bidDb.tryClaimCronRun(`baseline:${account.id}:${prevMonth}`)) {
+          try {
+            const r = await engine.computeBaselines(account, creds, prevMonth, { actor: 'cron' });
+            results.push({ account: account.name, job: 'baseline', ...r });
+          } catch (e) { results.push({ account: account.name, job: 'baseline', error: e.message }); }
+        }
         if (await bidDb.tryClaimCronRun(`monthly:${account.id}:${prevMonth}`)) {
           try {
             const r = await engine.runMonthlyReport(account, prevMonth);

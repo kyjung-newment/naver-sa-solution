@@ -3,7 +3,7 @@
 // 프롬프트 ③ 판정 의사코드의 각 분기 케이스를 시드 데이터로 검증한다.
 const assert = require('assert');
 const {
-  blendedRoas, coreMaterialIds, judge, roundBid10, mondayOf, last4Weeks,
+  blendedRoas, volumeHold, calcBaselineWeekly, coreMaterialIds, judge, roundBid10, mondayOf, last4Weeks,
   DEFAULT_SETTINGS, DEFAULT_CATEGORY_RULES, VERDICT,
 } = require('../src/bidapp/logic');
 
@@ -16,20 +16,54 @@ function t(name, fn) {
 const S = { ...DEFAULT_SETTINGS };
 const R = DEFAULT_CATEGORY_RULES;
 
-console.log('── 블렌딩 ROAS ──');
-t('가중치 40/30/30 주차 분리 계산', () => {
-  // 1주차 100만/500만, 2주차 100만/400만, 3~4주차 합 100만/300만
-  const weeks = [
-    { cost: 1000000, revenue: 5000000 },
-    { cost: 1000000, revenue: 4000000 },
-    { cost: 500000, revenue: 1500000 },
-    { cost: 500000, revenue: 1500000 },
-  ];
-  // (0.4×500 + 0.3×400 + 0.3×300) / (0.4×100 + 0.3×100 + 0.3×100) = 410/100 = 4.1
-  assert.strictEqual(blendedRoas(weeks, S).toFixed(2), '4.10');
+console.log('── 블렌딩 ROAS (2구간 가변 비율) ──');
+// 1주차 100만/500만 · 2~4주차 합산 200만/700만 (2주 100만/400만 + 3주 50만/150만 + 4주 50만/150만)
+const BW = [
+  { cost: 1000000, revenue: 5000000 },
+  { cost: 1000000, revenue: 4000000 },
+  { cost: 500000, revenue: 1500000 },
+  { cost: 500000, revenue: 1500000 },
+];
+t('N=40: (0.4×500 + 0.6×700) ÷ (0.4×100 + 0.6×200) = 620/160 = 3.875', () => {
+  assert.strictEqual(blendedRoas(BW, { ...S, blend_recent_weight: 40 }).toFixed(3), '3.875');
+});
+t('N=0: 2~4주차만 반영 → 700/200 = 3.5', () => {
+  assert.strictEqual(blendedRoas(BW, { ...S, blend_recent_weight: 0 }).toFixed(2), '3.50');
+});
+t('N=100: 1주차만 반영 → 500/100 = 5.0', () => {
+  assert.strictEqual(blendedRoas(BW, { ...S, blend_recent_weight: 100 }).toFixed(2), '5.00');
 });
 t('분모 0 → null (판단 불가)', () => {
   assert.strictEqual(blendedRoas([{ cost: 0, revenue: 100 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }], S), null);
+});
+t('N=100 이면서 1주차 비용 0 → null (2~4주차 비용 있어도 분모 0)', () => {
+  assert.strictEqual(blendedRoas([{ cost: 0, revenue: 0 }, { cost: 100, revenue: 500 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }], { ...S, blend_recent_weight: 100 }), null);
+});
+
+console.log('── 매출볼륨 감액 보류 ──');
+// 기준매출 100만, 임계 10% → 보류선 90만
+t('감액 + 최신주 매출 하락(85만 < 90만) → 감액보류(볼륨하락)', () => {
+  assert.strictEqual(volumeHold(VERDICT.DOWN, 850000, 1000000, S), VERDICT.DOWN_HOLD);
+});
+t('감액 + 볼륨 정상(95만 ≥ 90만) → 감액 유지', () => {
+  assert.strictEqual(volumeHold(VERDICT.DOWN, 950000, 1000000, S), VERDICT.DOWN);
+});
+t('증액 + 볼륨 하락 → 증액 그대로 (볼륨 조건 미적용)', () => {
+  assert.strictEqual(volumeHold(VERDICT.UP, 850000, 1000000, S), VERDICT.UP);
+});
+t('기준매출 null(전월 데이터 없는 신규 소재) → 감액 그대로', () => {
+  assert.strictEqual(volumeHold(VERDICT.DOWN, 0, null, S), VERDICT.DOWN);
+});
+t('유지 판정은 통과', () => {
+  assert.strictEqual(volumeHold(VERDICT.KEEP, 0, 1000000, S), VERDICT.KEEP);
+});
+
+console.log('── 기준매출 산출 (전월 주간 환산) ──');
+t('31일 달 매출 443만 → ÷31×7 = 1,000,322.6 → 1,000,300 (100원 단위)', () => {
+  assert.strictEqual(calcBaselineWeekly(4430000, 31), 1000300);
+});
+t('30일 달 매출 0 → 0', () => {
+  assert.strictEqual(calcBaselineWeekly(0, 30), 0);
 });
 
 console.log('── 핵심소재 (누적기여 70%) ──');

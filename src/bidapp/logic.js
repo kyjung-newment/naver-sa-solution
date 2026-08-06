@@ -18,9 +18,8 @@ const CATEGORIES = Object.keys(DEFAULT_CATEGORY_RULES);
 
 // 조정 파라미터 기본값 (전부 설정 화면에서 수정 가능)
 const DEFAULT_SETTINGS = {
-  w1: 0.4,                 // 블렌딩 가중치: 1주차(최신 완료 주)
-  w2: 0.3,                 // 2주차
-  w3: 0.3,                 // 3~4주차 합산
+  blend_recent_weight: 40, // 블렌딩 1주차(최신 완료 주) 비중 N% (0~100 정수), 2~4주차 = 100-N%
+  volume_drop_threshold: 0.10, // 볼륨하락 임계: 최신주 매출 < 기준매출×(1-임계) 이면 감액 보류
   band_up: 0.10,           // 판정 밴드 상단 +10%
   band_down: 0.10,         // 판정 밴드 하단 -10%
   core_share: 0.70,        // 핵심소재: 4주 누적 매출 상위 누적기여 70%
@@ -39,6 +38,7 @@ const DEFAULT_SETTINGS = {
 const VERDICT = {
   UP: '증액',
   DOWN: '감액',
+  DOWN_HOLD: '감액보류(볼륨하락)',
   KEEP: '유지',
   NO_DATA: '데이터부족',
   KEEP_NO_DOWN: '유지-감액금지',
@@ -46,18 +46,40 @@ const VERDICT = {
 };
 
 /**
- * 블렌딩 ROAS — 주차별 분리 구간(누적 아님)
- * weeks: [{cost, revenue}, ...] index 0=1주차(최신), 1=2주차, 2·3=3~4주차
+ * 블렌딩 ROAS — 2구간 가변 비율
+ * weeks: [{cost, revenue}, ...] index 0=1주차(최신 완료 주), 1~3=2~4주차 합산
+ * N = blend_recent_weight(%): 블렌딩 = (N%×매출₁ + (100-N)%×매출₂₋₄) ÷ (N%×비용₁ + (100-N)%×비용₂₋₄)
  * @returns {number|null} 분모 0이면 null (판단 불가)
  */
 function blendedRoas(weeks, s = DEFAULT_SETTINGS) {
   const wk = (i) => weeks[i] || { cost: 0, revenue: 0 };
-  const rev34 = wk(2).revenue + wk(3).revenue;
-  const cost34 = wk(2).cost + wk(3).cost;
-  const num = s.w1 * wk(0).revenue + s.w2 * wk(1).revenue + s.w3 * rev34;
-  const den = s.w1 * wk(0).cost + s.w2 * wk(1).cost + s.w3 * cost34;
+  const n = Math.max(0, Math.min(100, parseFloat(s.blend_recent_weight) || 0)) / 100;
+  const rev24 = wk(1).revenue + wk(2).revenue + wk(3).revenue;
+  const cost24 = wk(1).cost + wk(2).cost + wk(3).cost;
+  const num = n * wk(0).revenue + (1 - n) * rev24;
+  const den = n * wk(0).cost + (1 - n) * cost24;
   if (den <= 0) return null;
   return num / den;
+}
+
+/**
+ * 매출볼륨 감액 보류 (판정 후처리): 감액 판정이면서 기준매출 대비 최신주 매출이
+ * 임계 이상 하락한 경우 '감액보류(볼륨하락)' 로 전환 → 자동 적용 금지, 승인 대기.
+ * 증액·유지는 그대로 통과. 기준매출 null(전월 데이터 없는 신규 소재)은 미적용.
+ */
+function volumeHold(verdict, week1Revenue, baselineWeeklyRevenue, s = DEFAULT_SETTINGS) {
+  if (verdict !== VERDICT.DOWN) return verdict;
+  if (baselineWeeklyRevenue == null) return verdict;
+  const baseline = parseFloat(baselineWeeklyRevenue);
+  if (!(baseline > 0)) return verdict;
+  if ((week1Revenue || 0) < baseline * (1 - s.volume_drop_threshold)) return VERDICT.DOWN_HOLD;
+  return verdict;
+}
+
+/** 기준매출(주간 환산): 전월 매출 합계 ÷ 전월 일수 × 7, 100원 단위 반올림 */
+function calcBaselineWeekly(monthRevenue, daysInMonth) {
+  if (!(daysInMonth > 0)) return null;
+  return Math.round((monthRevenue / daysInMonth) * 7 / 100) * 100;
 }
 
 /**
@@ -161,6 +183,6 @@ function last4Weeks(base = null) {
 
 module.exports = {
   DEFAULT_CATEGORY_RULES, CATEGORIES, DEFAULT_SETTINGS, VERDICT,
-  blendedRoas, coreMaterialIds, roundBid10, judge,
+  blendedRoas, volumeHold, calcBaselineWeekly, coreMaterialIds, roundBid10, judge,
   mondayOf, last4Weeks, nowKST, fmtDate,
 };

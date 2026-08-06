@@ -169,6 +169,18 @@ async function initBidDb() {
     )
   `);
 
+  // v2: 기준매출(지난달 주간평균, 100원 단위) — null = 전월 데이터 없는 신규 소재
+  await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS baseline_weekly_revenue BIGINT DEFAULT NULL`);
+  // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
+  await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
+  // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
+  await safe(`
+    INSERT INTO bid_settings (account_id, key, value)
+    SELECT DISTINCT account_id, 'blend_recent_weight', '40' FROM bid_settings WHERE key IN ('w1','w2','w3')
+    ON CONFLICT (account_id, key) DO NOTHING
+  `);
+  await safe(`DELETE FROM bid_settings WHERE key IN ('w1','w2','w3')`);
+
   console.log('✅ 입찰관리 DB 초기화 완료');
 }
 
@@ -262,6 +274,22 @@ async function setMaterialBid(id, bid) {
   return pool.query('UPDATE bid_materials SET current_bid = $2 WHERE id = $1', [id, bid]);
 }
 
+// 기준매출 저장 (null 허용) + 변경 시 이력 기록
+async function setMaterialBaseline(id, accountId, value, { materialName = '', changedBy = 'cron' } = {}) {
+  const old = await get('SELECT baseline_weekly_revenue FROM bid_materials WHERE id = $1 AND account_id = $2', [id, accountId]);
+  if (!old) return false;
+  const oldVal = old.baseline_weekly_revenue == null ? null : parseInt(old.baseline_weekly_revenue);
+  const newVal = value == null ? null : parseInt(value);
+  await pool.query('UPDATE bid_materials SET baseline_weekly_revenue = $3 WHERE id = $1 AND account_id = $2', [id, accountId, newVal]);
+  if (oldVal !== newVal) {
+    await pool.query(
+      'INSERT INTO bid_setting_history (account_id, key, old_value, new_value, changed_by) VALUES ($1, $2, $3, $4, $5)',
+      [accountId, `기준매출:${materialName || id}`, oldVal == null ? '-' : String(oldVal), newVal == null ? '-' : String(newVal), changedBy]
+    );
+  }
+  return true;
+}
+
 // ─── 주차별 성과 ───────────────────────────────────────────────────
 async function upsertWeeklyStat(materialId, weekStart, s) {
   return pool.query(`
@@ -313,11 +341,12 @@ async function getAdjustmentById(id, accountId) {
   `, [id, accountId]);
 }
 
-async function getAdjustments(accountId, { weekStart, status, limit = 500 } = {}) {
+async function getAdjustments(accountId, { weekStart, status, statusIn, limit = 500 } = {}) {
   const conds = ['a.account_id = $1'];
   const params = [accountId];
   if (weekStart) { params.push(weekStart); conds.push(`a.week_start = $${params.length}`); }
   if (status) { params.push(status); conds.push(`a.status = $${params.length}`); }
+  if (statusIn && statusIn.length) { params.push(statusIn); conds.push(`a.status = ANY($${params.length}::text[])`); }
   params.push(limit);
   return all(`
     SELECT a.*, m.name AS material_name, m.ncc_ad_id, m.campaign_name, m.adgroup_name, m.category
@@ -389,6 +418,33 @@ async function getMonthlyReports(accountId, limit = 12) {
   return all('SELECT * FROM bid_monthly_reports WHERE account_id = $1 ORDER BY month DESC LIMIT $2', [accountId, limit]);
 }
 
+// ─── 초대 역할/상태 (account_viewers 확장 — 소유자 검증 포함) ──────
+async function setViewerRole(viewerId, ownerUserId, role) {
+  const r = await pool.query(`
+    UPDATE account_viewers SET role = $3
+    WHERE id = $1 AND account_id IN (SELECT id FROM ad_accounts WHERE user_id = $2)
+    RETURNING *
+  `, [viewerId, ownerUserId, role === 'master' ? 'master' : 'client']);
+  return r.rows[0] || null;
+}
+
+// 비활성화(disabled) ↔ 재활성화(accepted). accepted 상태였던 계정만 대상.
+async function setViewerActive(viewerId, ownerUserId, active) {
+  const r = await pool.query(`
+    UPDATE account_viewers SET status = $3
+    WHERE id = $1 AND account_id IN (SELECT id FROM ad_accounts WHERE user_id = $2)
+      AND status IN ('accepted','disabled')
+    RETURNING *
+  `, [viewerId, ownerUserId, active ? 'accepted' : 'disabled']);
+  return r.rows[0] || null;
+}
+
+// 초대 사용자(users.role='viewer')의 앱 내 역할: master 초대가 1건이라도 있으면 마스터
+async function isInvitedMaster(viewerUserId) {
+  const r = await get(`SELECT 1 AS ok FROM account_viewers WHERE viewer_user_id = $1 AND status = 'accepted' AND role = 'master' LIMIT 1`, [viewerUserId]);
+  return !!r;
+}
+
 // ─── 크론 중복 방지 ────────────────────────────────────────────────
 async function tryClaimCronRun(runKey, result = '') {
   try {
@@ -403,9 +459,10 @@ module.exports = {
   pool, initBidDb,
   getSettings, setSetting, getSettingHistory,
   getCategoryRules, setCategoryRule,
-  getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid,
+  getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid, setMaterialBaseline,
   upsertWeeklyStat, getWeeklyStatsMap,
   upsertAdjustment, getAdjustmentById, getAdjustments, setAdjustmentStatus,
+  setViewerRole, setViewerActive, isInvitedMaster,
   audit, getAuditLog,
   upsertAlert, getAlerts, resolveAlert,
   saveMonthlyReport, getMonthlyReports,
