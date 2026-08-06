@@ -28,23 +28,35 @@ async function syncMaterials(account, creds) {
   const settings = await bidDb.getSettings(account.id);
   const excluded = parseExcludedCampaigns(settings.excluded_campaigns);
   const campaigns = await client.getCampaigns();
+
+  // 유형 진단: 실제 API 응답의 유형 값 분포를 감사로그에 남긴다 (필터 검증용)
+  const diag = { campaignTp: {}, adgroupType: {}, adType: {} };
+  const bump = (o, k) => { const key = String(k ?? '(없음)'); o[key] = (o[key] || 0) + 1; };
+
+  // 캠페인: 쇼핑검색만. 유형 값 표기가 환경마다 달라(2/'SHOPPING'/'shopping' 등) 폭넓게 매칭하되,
+  // 파워링크(WEB_SITE)·브랜드검색·파워콘텐츠·플레이스는 명시적으로 제외한다.
+  const NON_SHOPPING = ['WEB_SITE', 'WEBSITE', 'POWER_CONTENTS', 'BRAND_SEARCH', 'PLACE'];
   const isShopping = (c) => {
-    const tp = c.campaignTp ?? c.campaignType ?? c.campaignTp2;
-    if (tp === 2 || tp === '2') return true;
-    return typeof tp === 'string' && tp.toUpperCase().includes('SHOPPING');
+    const raw = c.campaignTp ?? c.campaignType;
+    bump(diag.campaignTp, raw);
+    if (raw === 2 || raw === '2') return true;
+    const t = String(raw ?? '').toUpperCase();
+    if (NON_SHOPPING.some(x => t.includes(x))) return false;
+    if (t.includes('SHOP') || String(raw ?? '').includes('쇼핑')) return true;
+    return false;
   };
   const targets = (campaigns || []).filter(c =>
     (c.status === 'ELIGIBLE' || !c.status)
     && isShopping(c)
     && !isExcludedCampaign(c.name, excluded));
 
-  // 광고그룹 조회 (그룹 기본입찰가 → useGroupBidAmt 소재의 현재가)
-  // 쇼핑 캠페인 안에서도 '쇼핑몰 상품형(SHOPPING_GROUP_PRODUCT)'만 대상 —
-  // 쇼핑 브랜드형(키워드 운용)·카탈로그형 등은 소재 입찰 조정 대상이 아니므로 제외
+  // 광고그룹: 쇼핑 브랜드형(키워드 운용)·카탈로그형만 명시 제외 (상품형은 통과 — 차단목록 방식)
   const isProductGroup = (ag) => {
-    const t = ag.adgroupType ?? ag.adGroupType ?? ag.type;
-    if (t == null) return true; // 타입 미제공 응답 폴백
-    return String(t).toUpperCase().includes('SHOPPING_GROUP_PRODUCT');
+    const raw = ag.adgroupType ?? ag.adGroupType ?? ag.type;
+    bump(diag.adgroupType, raw);
+    const t = String(raw ?? '').toUpperCase();
+    if (!t) return true;
+    return !(t.includes('BRAND') || t.includes('CATALOG') || t.includes('TEMPLATE'));
   };
   const agRes = await mapLimit(targets, 5, c => client.getAdGroups(c.nccCampaignId).then(ags => ({ camp: c, ags: ags || [] })));
   const allAgs = [];
@@ -57,11 +69,13 @@ async function syncMaterials(account, creds) {
     }
   }
 
-  // 소재 조회 — 쇼핑몰 상품 소재(SHOPPING_PRODUCT_AD)만
+  // 소재: 브랜드/카탈로그 소재만 명시 제외 (상품 소재는 통과)
   const isProductAd = (ad) => {
-    const t = ad.type ?? ad.adTp;
-    if (t == null) return true; // 타입 미제공 응답 폴백
-    return String(t).toUpperCase().includes('SHOPPING_PRODUCT');
+    const raw = ad.type ?? ad.adTp;
+    bump(diag.adType, raw);
+    const t = String(raw ?? '').toUpperCase();
+    if (!t) return true;
+    return !(t.includes('BRAND') || t.includes('CATALOG'));
   };
   const adRes = await mapLimit(allAgs, 5, ({ camp, ag }) => client.getAds(ag.nccAdgroupId).then(ads => ({ camp, ag, ads: ads || [] })));
   let count = 0;
@@ -92,14 +106,23 @@ async function syncMaterials(account, creds) {
     }
   }
 
-  // API에서 사라진(삭제/중지) 소재는 비활성 처리
-  const existing = await bidDb.getMaterials(account.id);
-  for (const m of existing) {
-    if (!seenAdIds.has(m.ncc_ad_id) && m.enabled) {
-      await bidDb.updateMaterialMeta(m.id, account.id, { enabled: 0 });
+  // API에서 사라진(삭제/중지/유형 제외) 소재는 '자동 비활성' 처리 — 수동 제외(enabled)와 분리.
+  // 안전장치: 이번 동기화가 0건이면(필터/API 이상 가능성) 기존 소재를 건드리지 않는다.
+  if (count > 0) {
+    const existing = await bidDb.getMaterials(account.id);
+    for (const m of existing) {
+      if (!seenAdIds.has(m.ncc_ad_id) && !m.auto_disabled) {
+        await bidDb.setMaterialAutoDisabled(m.id, true);
+      }
     }
+  } else {
+    console.log(`  ⚠️ [${account.name}] 동기화 결과 0건 — 기존 소재 자동 비활성 처리 건너뜀`);
   }
-  return { synced: count };
+  await bidDb.audit(account.id, 'sync', '소재 동기화 진단', {
+    campaigns: (campaigns || []).length, shoppingTargets: targets.length,
+    productGroups: allAgs.length, synced: count, types: diag,
+  });
+  return { synced: count, diag };
 }
 
 // ─── 주차별 성과 수집 ──────────────────────────────────────────────

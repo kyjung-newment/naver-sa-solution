@@ -173,6 +173,8 @@ async function initBidDb() {
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS baseline_weekly_revenue BIGINT DEFAULT NULL`);
   // v2.1: 핵심소재 수동 오버라이드 ('' 자동판별 / '1' 핵심 고정 / '0' 제외 고정)
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS core_override TEXT NOT NULL DEFAULT ''`);
+  // v2.3: 자동 비활성(동기화에서 미발견/유형 제외) 을 수동 제외(enabled)와 분리
+  await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS auto_disabled INTEGER NOT NULL DEFAULT 0`);
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
   // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
@@ -182,6 +184,36 @@ async function initBidDb() {
     ON CONFLICT (account_id, key) DO NOTHING
   `);
   await safe(`DELETE FROM bid_settings WHERE key IN ('w1','w2','w3')`);
+
+  // v2.3 일회성 복구: 엄격 유형 필터 버그로 전체 소재가 enabled=0 처리된 것을 복구.
+  // 수동 제외 여부를 구분할 수 없으므로 enabled=1 + auto_disabled=1 로 되돌리고,
+  // 다음 동기화에서 실제 발견되는(상품형) 소재만 auto_disabled=0 으로 활성화된다.
+  try {
+    if (await tryClaimCronRun('migrate:restore-auto-disabled-v2.3')) {
+      const r = await pool.query(`UPDATE bid_materials SET enabled = 1, auto_disabled = 1 WHERE enabled = 0`);
+      console.log(`✅ 소재 활성 상태 복구(자동 비활성으로 이관): ${r.rowCount}건`);
+    }
+  } catch (e) { console.log('소재 상태 복구 마이그레이션 실패:', e.message); }
+
+  // v2.2 일회성: 매출 지표 변경(총전환매출→구매전환매출)으로 구 기준 승인대기 전체 반려.
+  // bid_cron_runs 클레임으로 정확히 1회만 실행.
+  try {
+    if (await tryClaimCronRun('migrate:reject-stale-pendings-v2.2')) {
+      const r = await pool.query(`
+        UPDATE bid_adjustments
+        SET status = 'rejected', approved_by = 'system (구매전환매출 기준 변경 — 구 기준 일괄 반려)'
+        WHERE status IN ('pending', 'hold_volume')
+      `);
+      if (r.rowCount > 0) {
+        await pool.query(
+          `INSERT INTO bid_audit_log (account_id, user_name, action, detail)
+           SELECT DISTINCT account_id, 'system', '승인대기 일괄 반려', $1 FROM bid_adjustments WHERE status = 'rejected'`,
+          [JSON.stringify({ reason: '매출 지표 총전환매출→구매전환매출 변경으로 구 기준 조정안 무효화', rejected: r.rowCount })]
+        );
+      }
+      console.log(`✅ 구 기준 승인대기 일괄 반려: ${r.rowCount}건`);
+    }
+  } catch (e) { console.log('승인대기 일괄 반려 마이그레이션 실패:', e.message); }
 
   console.log('✅ 입찰관리 DB 초기화 완료');
 }
@@ -239,7 +271,7 @@ async function setCategoryRule(accountId, category, { coef, up, down }, changedB
 // ─── 소재 ──────────────────────────────────────────────────────────
 async function getMaterials(accountId, { enabledOnly = false } = {}) {
   return all(
-    `SELECT * FROM bid_materials WHERE account_id = $1 ${enabledOnly ? 'AND enabled = 1' : ''} ORDER BY campaign_name, adgroup_name, name`,
+    `SELECT * FROM bid_materials WHERE account_id = $1 ${enabledOnly ? 'AND enabled = 1 AND COALESCE(auto_disabled, 0) = 0' : ''} ORDER BY campaign_name, adgroup_name, name`,
     [accountId]
   );
 }
@@ -249,16 +281,21 @@ async function getMaterialById(id, accountId) {
 }
 
 async function upsertMaterial(accountId, m) {
+  // 동기화에서 다시 발견된 소재는 자동 비활성 해제 (수동 제외 enabled 는 건드리지 않음)
   const r = await pool.query(`
-    INSERT INTO bid_materials (account_id, ncc_ad_id, ncc_adgroup_id, name, campaign_name, adgroup_name, current_bid, use_group_bid, registered_at, synced_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+    INSERT INTO bid_materials (account_id, ncc_ad_id, ncc_adgroup_id, name, campaign_name, adgroup_name, current_bid, use_group_bid, registered_at, auto_disabled, synced_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, CURRENT_TIMESTAMP)
     ON CONFLICT (account_id, ncc_ad_id) DO UPDATE SET
       ncc_adgroup_id = $3, name = $4, campaign_name = $5, adgroup_name = $6,
-      current_bid = $7, use_group_bid = $8, synced_at = CURRENT_TIMESTAMP
+      current_bid = $7, use_group_bid = $8, auto_disabled = 0, synced_at = CURRENT_TIMESTAMP
     RETURNING id
   `, [accountId, m.nccAdId, m.nccAdgroupId || '', m.name || '', m.campaignName || '', m.adgroupName || '',
       m.currentBid || 0, m.useGroupBid ? 1 : 0, m.registeredAt || '']);
   return r.rows[0].id;
+}
+
+async function setMaterialAutoDisabled(id, autoDisabled) {
+  return pool.query('UPDATE bid_materials SET auto_disabled = $2 WHERE id = $1', [id, autoDisabled ? 1 : 0]);
 }
 
 async function updateMaterialMeta(id, accountId, { category, target_roas, enabled, mode_override, core_override }) {
@@ -462,7 +499,7 @@ module.exports = {
   pool, initBidDb,
   getSettings, setSetting, getSettingHistory,
   getCategoryRules, setCategoryRule,
-  getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid, setMaterialBaseline,
+  getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid, setMaterialBaseline, setMaterialAutoDisabled,
   upsertWeeklyStat, getWeeklyStatsMap,
   upsertAdjustment, getAdjustmentById, getAdjustments, setAdjustmentStatus,
   setViewerRole, setViewerActive, isInvitedMaster,

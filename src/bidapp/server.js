@@ -1358,7 +1358,8 @@ router.get('/settings', requireLogin, async (req, res) => {
 
   const settings = await bidDb.getSettings(account.id);
   const rules = await bidDb.getCategoryRules(account.id);
-  const materials = await bidDb.getMaterials(account.id);
+  // 자동 비활성(동기화 미발견/유형 제외) 소재는 목록에서 숨김 — 수동 제외(enabled=0)는 상태 변경을 위해 표시
+  const materials = (await bidDb.getMaterials(account.id)).filter(m => !m.auto_disabled);
   const pend = await pendingCount(account.id);
   // 소재별 4주 매출·비중 + 자동 핵심 판별 (소재별 설정 탭 표시용)
   const weeks4 = logic.last4Weeks();
