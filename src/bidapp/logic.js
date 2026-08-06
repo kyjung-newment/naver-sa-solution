@@ -32,7 +32,21 @@ const DEFAULT_SETTINGS = {
   force_approval_delta: 0.20, // 이 폭 초과 변경은 auto여도 무조건 승인
   daily_cost_mult: 2.0,    // 일간 트리거: 일 비용 > 4주 일평균 × 200%
   daily_roas_mult: 0.5,    // 일간 트리거: 당일 ROAS < 보정목표 × 50%
+  // 수집(추출)·조정에서 제외할 캠페인 (줄당 1개, 캠페인명 "포함" 일치 시 제외 — 설정 화면에서 수정)
+  excluded_campaigns: '[이고진_카테고리] 키워드\n[이고진] 키워드\n#렌탈 벌크\n#전체 벌크',
 };
+
+/** 제외 캠페인 설정(멀티라인 문자열) → 패턴 배열 */
+function parseExcludedCampaigns(raw) {
+  return String(raw || '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+/** 캠페인명이 제외 패턴에 걸리는지 (부분 포함 일치) */
+function isExcludedCampaign(campaignName, patterns) {
+  if (!patterns || !patterns.length) return false;
+  const name = String(campaignName || '');
+  return patterns.some(p => name.includes(p));
+}
 
 // 판정 코드
 const VERDICT = {
@@ -184,5 +198,6 @@ function last4Weeks(base = null) {
 module.exports = {
   DEFAULT_CATEGORY_RULES, CATEGORIES, DEFAULT_SETTINGS, VERDICT,
   blendedRoas, volumeHold, calcBaselineWeekly, coreMaterialIds, roundBid10, judge,
+  parseExcludedCampaigns, isExcludedCampaign,
   mondayOf, last4Weeks, nowKST, fmtDate,
 };

@@ -3,7 +3,7 @@
 // 2) 소재별 주차 성과 수집 (/stats 일별 행 → 주차 집계, 간접전환 포함 convAmt/ccnt)
 const { createApiClient } = require('../api/naverApi');
 const bidDb = require('./db');
-const { last4Weeks } = require('./logic');
+const { last4Weeks, parseExcludedCampaigns, isExcludedCampaign } = require('./logic');
 
 // 동시성 제한 (429 회피)
 async function mapLimit(items, limit, fn) {
@@ -20,20 +20,23 @@ function makeClient(creds, customerId) {
 }
 
 // ─── 쇼핑검색 소재 동기화 ──────────────────────────────────────────
-// 쇼핑검색(campaignTp 2/'SHOPPING') 캠페인의 소재만 대상 — 파워링크(WEB_SITE) 등 다른 유형은 제외.
-// (소재별 ROAS 설정·입찰 조정 모두 쇼핑검색 소재에만 반영)
+// 쇼핑검색(campaignTp SHOPPING/2) 캠페인의 '쇼핑몰 상품형' 소재만 대상 — 엄격 매칭:
+// 유형 필드가 없거나 다른 값이면 무조건 제외 (파워링크·브랜드검색·파워콘텐츠·플레이스 등).
+// 설정의 제외 캠페인(excluded_campaigns) 목록에 걸리는 캠페인도 수집·조정 대상에서 제외.
 async function syncMaterials(account, creds) {
   const client = makeClient(creds, account.customer_id);
+  const settings = await bidDb.getSettings(account.id);
+  const excluded = parseExcludedCampaigns(settings.excluded_campaigns);
   const campaigns = await client.getCampaigns();
   const isShopping = (c) => {
-    const tp = c.campaignTp;
+    const tp = c.campaignTp ?? c.campaignType ?? c.campaignTp2;
     if (tp === 2 || tp === '2') return true;
-    if (typeof tp === 'string' && tp.toUpperCase().includes('SHOPPING')) return true;
-    // campaignTp 미제공 응답 폴백: 캠페인명 기준 (파워링크 유형이 명시된 경우는 제외)
-    if (tp == null && c.name && c.name.includes('쇼핑')) return true;
-    return false;
+    return typeof tp === 'string' && tp.toUpperCase().includes('SHOPPING');
   };
-  const targets = (campaigns || []).filter(c => (c.status === 'ELIGIBLE' || !c.status) && isShopping(c));
+  const targets = (campaigns || []).filter(c =>
+    (c.status === 'ELIGIBLE' || !c.status)
+    && isShopping(c)
+    && !isExcludedCampaign(c.name, excluded));
 
   // 광고그룹 조회 (그룹 기본입찰가 → useGroupBidAmt 소재의 현재가)
   // 쇼핑 캠페인 안에서도 '쇼핑몰 상품형(SHOPPING_GROUP_PRODUCT)'만 대상 —

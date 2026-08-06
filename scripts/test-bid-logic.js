@@ -4,6 +4,7 @@
 const assert = require('assert');
 const {
   blendedRoas, volumeHold, calcBaselineWeekly, coreMaterialIds, judge, roundBid10, mondayOf, last4Weeks,
+  parseExcludedCampaigns, isExcludedCampaign,
   DEFAULT_SETTINGS, DEFAULT_CATEGORY_RULES, VERDICT,
 } = require('../src/bidapp/logic');
 
@@ -137,6 +138,22 @@ t('⑦ 분류계수 반영 (집중홍보 0.8 → 보정목표 4.4)', () => {
 t('⑧ 블렌딩 null(분모0) → 데이터부족', () => {
   const j = judge({ ...base, blended: null }, S);
   assert.strictEqual(j.verdict, VERDICT.NO_DATA);
+});
+
+console.log('── 제외 캠페인 ──');
+t('기본 제외 목록 4건 파싱', () => {
+  const pats = parseExcludedCampaigns(DEFAULT_SETTINGS.excluded_campaigns);
+  assert.strictEqual(pats.length, 4);
+  assert.ok(pats.includes('[이고진] 키워드') && pats.includes('#렌탈 벌크'));
+});
+t('포함 일치로 제외 판별', () => {
+  const pats = parseExcludedCampaigns('[이고진] 키워드\n#전체 벌크');
+  assert.strictEqual(isExcludedCampaign('[이고진] 키워드', pats), true);
+  assert.strictEqual(isExcludedCampaign('2024 #전체 벌크 캠페인', pats), true);
+  assert.strictEqual(isExcludedCampaign('[00-1] 런닝머신 메인', pats), false);
+});
+t('빈 설정 → 아무것도 제외 안 함', () => {
+  assert.strictEqual(isExcludedCampaign('아무 캠페인', parseExcludedCampaigns('')), false);
 });
 
 console.log('── 주차 유틸 ──');

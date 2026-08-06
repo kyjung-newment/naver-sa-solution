@@ -17,7 +17,10 @@ async function computeWeekly(account, { save = true, base = null } = {}) {
   const rules = await bidDb.getCategoryRules(account.id);
   const weeks = logic.last4Weeks(base);
   const weekStarts = weeks.map(w => w.start);
-  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  // 제외 캠페인은 판정·표시에서 즉시 배제 (동기화 전이라도 반영)
+  const excluded = logic.parseExcludedCampaigns(settings.excluded_campaigns);
+  const materials = (await bidDb.getMaterials(account.id, { enabledOnly: true }))
+    .filter(m => !logic.isExcludedCampaign(m.campaign_name, excluded));
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
 
   // 4주 누적 매출 → 핵심소재 (+수동 오버라이드: core_override '1'=핵심 고정, '0'=제외 고정)

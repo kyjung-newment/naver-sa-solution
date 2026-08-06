@@ -454,21 +454,44 @@ router.get('/', requireLogin, async (req, res) => {
     </div>
     ${alertsHtml}
     ${!rows.length && !isClient(req) ? `<div class="alert alert-info">소재가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "소재 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
-    <div class="card">
+    <div class="card" id="mx-card">
       <div class="card-header"><span class="card-title">📑 소재별 주차 누적 데이터</span>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="mx-weeks" onchange="loadMx()" title="표시할 주차 기간" style="width:110px">
+            <option value="4">최근 4주</option><option value="8">최근 8주</option>
+            <option value="12" selected>최근 12주</option><option value="26">최근 26주</option>
+            <option value="52">최근 52주</option><option value="all">전체</option>
+          </select>
           <input id="mx-q" placeholder="캠페인/그룹/소재 검색..." style="width:220px" oninput="renderMx()">
           <button class="btn btn-outline btn-sm" onclick="mxCsv()">📥 CSV</button>
+          <button class="btn btn-outline btn-sm" id="mx-full-btn" onclick="mxToggleFull()">⛶ 크게 보기</button>
         </div></div>
       <div id="mx-wrap" style="overflow:auto;max-height:640px"><div class="empty"><span class="spinner"></span> 불러오는 중...</div></div>
     </div>
+    <style>
+      #mx-card.mx-full{position:fixed;inset:12px;z-index:650;margin:0;display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.35)}
+      #mx-card.mx-full .card-header{flex:none}
+      #mx-card.mx-full #mx-wrap{max-height:none;flex:1}
+    </style>
     <script>
     var MX={weeks:[],rows:[]};
-    fetch('${BASE}/api/matrix').then(function(r){return r.json()}).then(function(j){
-      if(!j.ok){document.getElementById('mx-wrap').innerHTML='<div class="empty">'+(j.error||'오류')+'</div>';return;}
-      MX=j;renderMx();
-      var w=document.getElementById('mx-wrap');w.scrollLeft=w.scrollWidth; // 최신 주가 오른쪽 — 기본 스크롤 끝으로
-    });
+    function loadMx(){
+      var n=document.getElementById('mx-weeks').value;
+      document.getElementById('mx-wrap').innerHTML='<div class="empty"><span class="spinner"></span> 불러오는 중...</div>';
+      fetch('${BASE}/api/matrix?weeks='+n).then(function(r){return r.json()}).then(function(j){
+        if(!j.ok){document.getElementById('mx-wrap').innerHTML='<div class="empty">'+(j.error||'오류')+'</div>';return;}
+        MX=j;renderMx();
+        var w=document.getElementById('mx-wrap');w.scrollLeft=w.scrollWidth; // 최신 주가 오른쪽 — 기본 스크롤 끝으로
+      });
+    }
+    loadMx();
+    function mxToggleFull(){
+      var card=document.getElementById('mx-card'),btn=document.getElementById('mx-full-btn');
+      var on=card.classList.toggle('mx-full');
+      btn.textContent=on?'✕ 닫기':'⛶ 크게 보기';
+      document.body.style.overflow=on?'hidden':'';
+    }
+    document.addEventListener('keydown',function(e){if(e.key==='Escape'&&document.getElementById('mx-card').classList.contains('mx-full'))mxToggleFull();});
     function mxNum(n){return n?Math.round(n).toLocaleString('ko-KR'):'0';}
     function mxRows(){
       var q=(document.getElementById('mx-q').value||'').toLowerCase();
@@ -522,11 +545,15 @@ router.get('/', requireLogin, async (req, res) => {
 });
 
 // 소재별 주차 누적 매트릭스 (대시보드 시트형 테이블) — 캠페인명, 광고그룹명 순 정렬
+// ?weeks=N 최근 N주만 (기본 12, all=전체). 제외 캠페인은 표시하지 않음.
 router.get('/api/matrix', requireLogin, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const mats = await bidDb.getMaterials(account.id, { enabledOnly: true }); // ORDER BY campaign_name, adgroup_name, name
+    const settings = await bidDb.getSettings(account.id);
+    const excluded = logic.parseExcludedCampaigns(settings.excluded_campaigns);
+    const mats = (await bidDb.getMaterials(account.id, { enabledOnly: true })) // ORDER BY campaign_name, adgroup_name, name
+      .filter(m => !logic.isExcludedCampaign(m.campaign_name, excluded));
     const stat = (await bidDb.pool.query(`
       SELECT ws.material_id, ws.week_start, ws.cost, ws.revenue
       FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
@@ -540,13 +567,21 @@ router.get('/api/matrix', requireLogin, async (req, res) => {
       if (!map[r.material_id]) map[r.material_id] = {};
       map[r.material_id][wk] = { c: parseInt(r.cost) || 0, r: parseInt(r.revenue) || 0 };
     }
-    const weeks = [...weekSet].sort(); // 과거 → 최신 (누적식, 새 주가 오른쪽에 추가)
+    let weeks = [...weekSet].sort(); // 과거 → 최신 (누적식, 새 주가 오른쪽에 추가)
+    const nWeeks = String(req.query.weeks || '12');
+    if (nWeeks !== 'all') {
+      const n = Math.max(1, parseInt(nWeeks) || 12);
+      weeks = weeks.slice(-n);
+    }
+    const sel = new Set(weeks);
     res.json({
       ok: true, weeks,
-      rows: mats.map(m => ({
-        id: m.id, campaign: m.campaign_name, adgroup: m.adgroup_name, name: m.name, adId: m.ncc_ad_id,
-        d: map[m.id] || {},
-      })),
+      rows: mats.map(m => {
+        const full = map[m.id] || {};
+        const d = {};
+        for (const wk of Object.keys(full)) if (sel.has(wk)) d[wk] = full[wk];
+        return { id: m.id, campaign: m.campaign_name, adgroup: m.adgroup_name, name: m.name, adId: m.ncc_ad_id, d };
+      }),
     });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
@@ -1462,6 +1497,11 @@ router.get('/settings', requireLogin, async (req, res) => {
     <!-- ④ 소재별 설정 -->
     <div class="tab-pane" id="pane-materials">
       <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
+      <div class="card" id="sec-excl"><div class="card-header"><span class="card-title">🚫 제외 캠페인 (수집·조정 제외)</span>${saveBtn('excl', '제외 목록 저장')}</div>
+        <div class="card-body">
+          <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
+          <textarea name="excluded_campaigns" rows="5" style="font-family:inherit;resize:vertical" ${dis}>${escHtml(settings.excluded_campaigns || '')}</textarea>
+        </div></div>
       <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성·핵심)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
         ${ro ? '' : `
         <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
@@ -1495,7 +1535,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     async function saveTab(sec){
       var pane=document.getElementById('sec-'+sec); // 섹션(카드) 단위 저장
       var s={};
-      pane.querySelectorAll('input[name],select[name]').forEach(function(i){
+      pane.querySelectorAll('input[name],select[name],textarea[name]').forEach(function(i){
         if(i.type==='radio'){if(i.checked)s[i.name]=i.value;return;}
         if(i.type==='checkbox'){s[i.name]=i.checked?'1':'0';return;}
         s[i.name]=i.value;
