@@ -38,6 +38,10 @@
     {
       "path": "/smart-sa/api/cron/monthly",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/egojin-bid/api/cron/tick",
+      "schedule": "0 * * * *"
     }
   ]
 }

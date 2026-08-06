@@ -1,0 +1,120 @@
+// ─── 이고진 입찰관리: 판정 로직 단위테스트 ──────────────────────────
+// 실행: npm run test:bid  (node scripts/test-bid-logic.js)
+// 프롬프트 ③ 판정 의사코드의 각 분기 케이스를 시드 데이터로 검증한다.
+const assert = require('assert');
+const {
+  blendedRoas, coreMaterialIds, judge, roundBid10, mondayOf, last4Weeks,
+  DEFAULT_SETTINGS, DEFAULT_CATEGORY_RULES, VERDICT,
+} = require('../src/bidapp/logic');
+
+let passed = 0;
+function t(name, fn) {
+  try { fn(); passed++; console.log(`  ✅ ${name}`); }
+  catch (e) { console.error(`  ❌ ${name}: ${e.message}`); process.exitCode = 1; }
+}
+
+const S = { ...DEFAULT_SETTINGS };
+const R = DEFAULT_CATEGORY_RULES;
+
+console.log('── 블렌딩 ROAS ──');
+t('가중치 40/30/30 주차 분리 계산', () => {
+  // 1주차 100만/500만, 2주차 100만/400만, 3~4주차 합 100만/300만
+  const weeks = [
+    { cost: 1000000, revenue: 5000000 },
+    { cost: 1000000, revenue: 4000000 },
+    { cost: 500000, revenue: 1500000 },
+    { cost: 500000, revenue: 1500000 },
+  ];
+  // (0.4×500 + 0.3×400 + 0.3×300) / (0.4×100 + 0.3×100 + 0.3×100) = 410/100 = 4.1
+  assert.strictEqual(blendedRoas(weeks, S).toFixed(2), '4.10');
+});
+t('분모 0 → null (판단 불가)', () => {
+  assert.strictEqual(blendedRoas([{ cost: 0, revenue: 100 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }, { cost: 0, revenue: 0 }], S), null);
+});
+
+console.log('── 핵심소재 (누적기여 70%) ──');
+t('매출 상위 누적 70% 이내만 핵심', () => {
+  const items = [
+    { id: 1, revenue4w: 500 }, { id: 2, revenue4w: 300 }, { id: 3, revenue4w: 150 }, { id: 4, revenue4w: 50 },
+  ]; // 총 1000: id1(50%) → id2(80% 도달, 시작 시점 50%<70% → 포함) → id3(시작 80%≥70% → 제외)
+  const core = coreMaterialIds(items, 0.70);
+  assert.ok(core.has(1) && core.has(2) && !core.has(3) && !core.has(4));
+});
+t('매출 전무 → 핵심 없음', () => {
+  assert.strictEqual(coreMaterialIds([{ id: 1, revenue4w: 0 }]).size, 0);
+});
+
+console.log('── 판정 분기 ──');
+const base = { targetRoas: 5.5, rule: R['일반'], cost4w: 100000, rank1w: 3, isCore: false, currentBid: 1000 };
+
+t('① 4주 누적비용 < 최소기준 → 데이터부족·유지', () => {
+  const j = judge({ ...base, blended: 9.9, cost4w: 29999 }, S);
+  assert.strictEqual(j.verdict, VERDICT.NO_DATA);
+  assert.strictEqual(j.recommendedBid, 1000);
+});
+t('② 블렌딩 ≥ 보정목표×1.1 → 증액 (일반 +10%)', () => {
+  // 보정목표 5.5×1.0=5.5, 상단 6.05 (부동소수점 경계 회피를 위해 6.1로 검증)
+  const j = judge({ ...base, blended: 6.1 }, S);
+  assert.strictEqual(j.verdict, VERDICT.UP);
+  assert.strictEqual(j.recommendedBid, 1100); // 1000×1.1
+});
+t('②-1 증액률 0 분류(테스트)는 상단 초과여도 유지', () => {
+  const j = judge({ ...base, blended: 9.0, rule: R['테스트'] }, S);
+  assert.strictEqual(j.verdict, VERDICT.KEEP);
+});
+t('③ 블렌딩 < 보정목표×0.9 → 감액 (일반 -10%)', () => {
+  const j = judge({ ...base, blended: 4.0 }, S); // 하단 4.95
+  assert.strictEqual(j.verdict, VERDICT.DOWN);
+  assert.strictEqual(j.recommendedBid, 900);
+});
+t('③-1 감액률 0 분류(신제품) → 유지-감액금지', () => {
+  const j = judge({ ...base, blended: 1.0, rule: R['신제품'] }, S);
+  assert.strictEqual(j.verdict, VERDICT.KEEP_NO_DOWN);
+});
+t('③-2 1주차 순위 > 하한(6위) → 유지-순위저하', () => {
+  const j = judge({ ...base, blended: 1.0, rank1w: 6.5 }, S);
+  assert.strictEqual(j.verdict, VERDICT.KEEP_RANK);
+});
+t('③-3 핵심소재 감액 상한 5% (일반 10% → 5%)', () => {
+  const j = judge({ ...base, blended: 1.0, isCore: true }, S);
+  assert.strictEqual(j.verdict, VERDICT.DOWN);
+  assert.strictEqual(j.adjustRate, -0.05);
+  assert.strictEqual(j.recommendedBid, 950);
+});
+t('④ 밴드 내 → 유지', () => {
+  const j = judge({ ...base, blended: 5.5 }, S);
+  assert.strictEqual(j.verdict, VERDICT.KEEP);
+});
+t('⑤ 최저입찰가 300원 하한', () => {
+  const j = judge({ ...base, blended: 1.0, currentBid: 310, rule: R['비주력'] }, S); // -15% → 263.5 → 260 → min 300
+  assert.strictEqual(j.recommendedBid, 300);
+});
+t('⑥ 10원 단위 반올림', () => {
+  assert.strictEqual(roundBid10(994), 990);
+  assert.strictEqual(roundBid10(995), 1000);
+  const j = judge({ ...base, blended: 6.5, currentBid: 1050 }, S); // ×1.1=1155 → 1160
+  assert.strictEqual(j.recommendedBid, 1160);
+});
+t('⑦ 분류계수 반영 (집중홍보 0.8 → 보정목표 4.4)', () => {
+  const j = judge({ ...base, blended: 4.9, rule: R['집중홍보'] }, S); // 상단 4.84 → 증액
+  assert.strictEqual(j.verdict, VERDICT.UP);
+  assert.strictEqual(j.adjustedTarget.toFixed(2), '4.40');
+});
+t('⑧ 블렌딩 null(분모0) → 데이터부족', () => {
+  const j = judge({ ...base, blended: null }, S);
+  assert.strictEqual(j.verdict, VERDICT.NO_DATA);
+});
+
+console.log('── 주차 유틸 ──');
+t('mondayOf: 수요일 → 해당 주 월요일', () => {
+  assert.strictEqual(mondayOf('2026-08-05'), '2026-08-03'); // 수 → 월
+  assert.strictEqual(mondayOf('2026-08-09'), '2026-08-03'); // 일 → 월
+});
+t('last4Weeks: 최신 완료 주부터 역순 4개', () => {
+  const w = last4Weeks('2026-08-05'); // 이번 주 월=8/3 → 1주차 7/27~8/2
+  assert.strictEqual(w[0].start, '2026-07-27');
+  assert.strictEqual(w[0].end, '2026-08-02');
+  assert.strictEqual(w[3].start, '2026-07-06');
+});
+
+console.log(`\n${process.exitCode ? '❌ 실패 있음' : `✅ 전체 통과 (${passed}건)`}`);

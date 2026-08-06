@@ -3,7 +3,9 @@ const express = require('express');
 const path = require('path');
 const { config } = require('../config');
 const { router: dashboardRouter } = require('./dashboard/server');
+const { router: bidAppRouter } = require('./bidapp/server');
 const { initDb } = require('./db/database');
+const { initBidDb } = require('./bidapp/db');
 
 const IS_VERCEL = !!process.env.VERCEL;
 
@@ -17,6 +19,9 @@ app.get('/', (req, res) => res.redirect('/smart-sa'));
 
 // 대시보드
 app.use('/smart-sa', dashboardRouter);
+
+// 이고진 입찰관리 (쇼핑검색 입찰 자동 조정 — 별도 URL)
+app.use('/egojin-bid', bidAppRouter);
 
 // 헬스체크
 app.get('/health', async (req, res) => {
@@ -37,9 +42,11 @@ app.get('/health', async (req, res) => {
 
 // ─── Vercel: app을 서버리스 함수로 내보내기 ────────────────────────
 // (initDb는 첫 요청 전에 완료됨)
-const ready = initDb().catch(err => {
-  console.warn('⚠️ DB 스키마 초기화 실패 (기존 테이블로 계속 진행):', err.message);
-});
+const ready = initDb()
+  .then(() => initBidDb())
+  .catch(err => {
+    console.warn('⚠️ DB 스키마 초기화 실패 (기존 테이블로 계속 진행):', err.message);
+  });
 
 module.exports = async (req, res) => {
   await ready;

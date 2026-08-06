@@ -8,7 +8,8 @@
     "dev": "nodemon src/index.js",
     "report:daily": "node src/scheduler/run.js daily",
     "report:weekly": "node src/scheduler/run.js weekly",
-    "report:monthly": "node src/scheduler/run.js monthly"
+    "report:monthly": "node src/scheduler/run.js monthly",
+    "test:bid": "node scripts/test-bid-logic.js"
   },
   "dependencies": {
     "axios": "^1.6.7",

@@ -626,6 +626,15 @@ function createApiClient(creds) {
       }
     },
 
+    // ─── 임의 엔터티(캠페인/광고그룹/소재) /stats 일별 행 조회 ────────
+    // 입찰관리 앱: 소재(nccAdId) 단위 일별 성과 (간접전환 포함 convAmt/ccnt)
+    getEntityStats: (id, { since, until, fields } = {}) =>
+      apiCall('GET', '/stats', {
+        id,
+        fields: JSON.stringify(fields || ['clkCnt','impCnt','salesAmt','cpc','avgRnk','ccnt','convAmt']),
+        timeRange: JSON.stringify({ since, until }),
+      }),
+
     // ─── Stat Report 직접 접근 ──────────────────────────────────────
     createAndDownloadStatReport,
     getPurchaseConversions,
