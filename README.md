@@ -98,6 +98,8 @@ npm run report:daily      # 리포트 즉시 테스트 (weekly/monthly 동일)
 
 네이버 쇼핑검색 소재(nccAdId) 입찰가를 **블렌딩 ROAS 기반으로 주기 자동 조정**하는 별도 웹앱.
 기존 솔루션과 같은 서버·DB·계정을 공유하지만 URL과 UI가 독립되어 있다.
+**이고진(Customer ID 242566) 광고주 전용** — 사이드바 광고주가 이고진으로 고정되며(`EGOJIN_CUSTOMER_ID`),
+다른 Customer ID 연동은 차단. 미연동 상태면 설정 화면이 API 연동 섹션만 노출한다.
 
 ### 구조 (`src/bidapp/`)
 | 파일 | 역할 |

@@ -19,6 +19,9 @@ const { sendInviteEmail } = require('../email/sender');
 
 const router = express.Router();
 const BASE = '/egojin-bid';
+// 이 앱은 이고진 광고주 전용 솔루션 — 광고주가 이고진(242566)으로 고정된다.
+const EGOJIN_CUSTOMER_ID = '242566';
+const EGOJIN_LABEL = '이고진';
 
 const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtNum = (n) => (n == null ? '-' : Math.round(n).toLocaleString('ko-KR'));
@@ -101,34 +104,31 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
-// 접근 가능한 광고주 목록
-// - 광고주(client): 초대받은 계정만
-// - 마스터: 본인 소유 + 초대받은 계정 + "입찰관리에 연동된 광고주 전체" (마스터 간 공유 —
-//   누가 연동했든 입찰 데이터(bid_materials)나 설정(bid_settings)이 있는 계정은 모든 마스터가 조회·수정 가능)
+// 접근 가능한 광고주 목록 — 이고진(242566) 전용 앱이므로 해당 광고주만 노출
+// - 광고주(client): 초대받은 계정 중 이고진
+// - 마스터: 누가 연동했든 이고진 계정 전체 공유 (입찰 데이터가 붙은 계정 행 우선)
 async function getAccessibleAccounts(req) {
-  if (isClient(req)) return db.getViewerAccounts(req.session.userId);
-  const viewer = isInvited(req) ? await db.getViewerAccounts(req.session.userId) : [];
-  const owned = await db.getAccountsByUser(req.session.userId);
-  const shared = (await bidDb.pool.query(`
-    SELECT DISTINCT a.* FROM ad_accounts a
-    WHERE EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id)
-       OR EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id)
-  `)).rows;
-  const seen = new Set();
-  const out = [];
-  for (const a of [...viewer, ...owned, ...shared]) {
-    if (seen.has(String(a.id))) continue;
-    seen.add(String(a.id));
-    out.push(a);
+  if (isClient(req)) {
+    const viewer = await db.getViewerAccounts(req.session.userId);
+    return viewer.filter(a => String(a.customer_id) === EGOJIN_CUSTOMER_ID);
   }
-  return out.sort((x, y) => String(x.name).localeCompare(String(y.name), 'ko'));
+  const rows = (await bidDb.pool.query(`
+    SELECT a.*,
+      (EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id))::int
+      + (EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id))::int AS bid_weight
+    FROM ad_accounts a
+    WHERE a.customer_id = $1
+    ORDER BY bid_weight DESC, a.id ASC
+  `, [EGOJIN_CUSTOMER_ID])).rows;
+  return rows;
 }
 
 async function getSelectedAccount(req) {
   const accounts = await getAccessibleAccounts(req);
   if (!accounts.length) return { accounts, account: null };
-  let account = accounts.find(a => String(a.id) === String(req.session.bidAccountId || ''));
-  if (!account) { account = accounts[0]; req.session.bidAccountId = account.id; }
+  // 이고진 고정: 항상 첫 번째(입찰 데이터가 붙은) 계정 행 사용
+  const account = accounts[0];
+  req.session.bidAccountId = account.id;
   return { accounts, account };
 }
 
@@ -271,14 +271,15 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
     menu.push({ id: 'viewers', label: '✉️ 광고주 초대', href: `${BASE}/viewers` });
   }
 
-  const acctSel = accounts.length > 1 ? `
+  // 이고진 전용 솔루션 — 광고주 고정 표시 (선택 불가)
+  const acctSel = `
     <div style="padding:12px 16px;border-bottom:1px solid #1e293b">
-      <label style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.08em">광고주 선택</label>
-      <select onchange="fetch('${BASE}/api/select-account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:this.value})}).then(function(){location.reload()})"
-        style="background:#1e293b;border-color:#334155;color:#e2e8f0;font-size:12.5px;margin-top:4px">
-        ${accounts.map(a => `<option value="${a.id}" ${account && String(a.id) === String(account.id) ? 'selected' : ''}>${escHtml(a.name)} (${escHtml(a.customer_id)})</option>`).join('')}
-      </select>
-    </div>` : '';
+      <label style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.08em">광고주</label>
+      <div style="margin-top:6px;background:#1e293b;border:1px solid #334155;border-radius:9px;padding:9px 12px;color:#e2e8f0;font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:8px">
+        🎯 ${EGOJIN_LABEL} (${EGOJIN_CUSTOMER_ID})
+        ${account ? '' : '<span style="color:#f59e0b;font-weight:500;font-size:11px">· 미연동</span>'}
+      </div>
+    </div>`;
 
   return layout(title, `
   <div class="sidebar">
@@ -386,7 +387,7 @@ router.get('/', requireLogin, async (req, res) => {
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) {
     return res.send(appLayout(req, '대시보드', `
-      <div class="empty">연결된 광고주가 없습니다.${isClient(req) ? '' : ` <a href="/smart-sa/accounts" style="color:#0ea5e9;font-weight:600">뉴먼트 솔루션 &gt; 광고주 관리</a>에서 광고주를 먼저 등록해주세요.`}</div>
+      <div class="empty">🎯 ${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID}) 광고주가 아직 연동되지 않았습니다.${isClient(req) ? ' 담당 마케터에게 문의해주세요.' : ` <a href="${BASE}/settings" style="color:#0ea5e9;font-weight:600">설정 &gt; API 연동</a>에서 연동해주세요.`}</div>
     `, 'dashboard', { accounts, account, user }));
   }
 
@@ -1035,10 +1036,95 @@ const SETTING_TAB_PARAMS = {
   ],
 };
 
+const secTitle = (icon, title, desc) => `
+    <div style="display:flex;align-items:baseline;gap:10px;margin:22px 0 10px">
+      <span style="font-size:15px;font-weight:800;color:#0f172a">${icon} ${title}</span>
+      <span style="font-size:12px;color:#94a3b8">${desc}</span>
+    </div>`;
+
+// API 연동 섹션 (마스터 전용) — 설정 탭 내부와 "이고진 미연동" 초기 화면에서 공용
+function apiSectionHtml(credInfo) {
+  return `
+      ${secTitle('🔗', 'API 연동', '기존 솔루션과 동일: ① 마케터 API 계정 등록(1회) → ② 이고진 광고주를 Customer ID로 연동')}
+      <div class="card"><div class="card-header"><span class="card-title">🔑 네이버 검색광고 API 계정 (마케터 연동)</span></div>
+        <div class="card-body">
+          <p style="font-size:13px;color:#64748b;margin-bottom:12px">
+            네이버 검색광고 시스템의 API 키를 등록하면, 해당 계정에 연결된 모든 광고주에 접근할 수 있습니다.
+            검색광고 시스템 &gt; 도구 &gt; API 사용 관리에서 발급받으세요. <b>계정 1개당 담당자 계정은 1개만 등록됩니다.</b></p>
+          ${credInfo
+            ? `<div class="alert alert-ok">✅ 연동됨 — API Key <b>${escHtml(credInfo.masked)}</b>${credInfo.mgr ? ` · 매니저 Customer ID <b>${escHtml(credInfo.mgr)}</b>` : ''}</div>`
+            : `<div class="alert alert-err">⛔ 미연동 — 아래에 마케터 API 계정을 등록해주세요. 등록 전에는 광고주 연동·동기화가 불가합니다.</div>`}
+          <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:760px">
+            <div><label>API Key (액세스라이선스) *</label><input id="cred-key" placeholder="0100000000..." autocomplete="off"></div>
+            <div><label>Secret Key (비밀키) *</label><input id="cred-secret" type="password" placeholder="AQAAAA..." autocomplete="new-password"></div>
+            <div><label>매니저 Customer ID (내 계정 ID) * <span class="tip" title="검색광고 시스템 로그인 계정의 CUSTOMER_ID. 검증에 사용됩니다.">ⓘ</span></label><input id="cred-mgr" placeholder="예: 1484655"></div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+            <button class="btn btn-primary" id="btn-cred" onclick="saveCreds()">저장</button>
+            <span style="font-size:12px;color:#94a3b8">저장 전 캠페인 목록 조회로 API 연결을 검증합니다. 검증 실패 시 저장되지 않습니다.</span>
+          </div>
+        </div></div>
+      <div class="card"><div class="card-header"><span class="card-title">➕ 이고진 광고주 연동 (Customer ID)</span></div>
+        <div class="card-body">
+          <p style="font-size:13px;color:#64748b;margin-bottom:12px">
+            이 솔루션은 <b>${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID})</b> 광고주 전용입니다. 연동(추가) 성공 시
+            <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장되며, 어느 마스터가 연동했든 모든 마스터가 공유합니다.</p>
+          <div style="display:flex;gap:10px;align-items:flex-end;max-width:640px;flex-wrap:wrap">
+            <div style="flex:1;min-width:180px"><label>광고주명</label><input id="na-name" value="${EGOJIN_LABEL}" autocomplete="off"></div>
+            <div style="flex:1;min-width:180px"><label>Customer ID</label><input id="na-cid" value="${EGOJIN_CUSTOMER_ID}" autocomplete="off"></div>
+            <button class="btn btn-green" id="btn-connect" onclick="connectAccount()" style="white-space:nowrap">🔍 확인 및 연동</button>
+          </div>
+          <div style="margin-top:8px"><span id="connect-status" style="font-size:12px;color:#94a3b8">등록된 마케터 API 계정으로 접근 권한을 확인한 뒤 광고주를 연동하고 데이터를 수집합니다. (소재 수에 따라 수 분 소요)</span></div>
+        </div></div>`;
+}
+
+const API_SECTION_SCRIPT = `
+    async function saveCreds(){
+      var key=document.getElementById('cred-key').value.trim(),sec=document.getElementById('cred-secret').value.trim();
+      var mgr=document.getElementById('cred-mgr').value.trim();
+      if(!key||!sec||!mgr){toast('API Key·Secret Key·매니저 Customer ID를 모두 입력해주세요',true);return;}
+      var b=document.getElementById('btn-cred');b.disabled=true;b.textContent='검증 중...';
+      var j=await api('${BASE}/api/settings/credentials',{api_key:key,secret_key:sec,manager_customer_id:mgr});
+      b.disabled=false;b.textContent='저장';
+      toast(j.ok?'마케터 API 계정 연동 완료':'오류: '+(j.error||''),!j.ok);
+      if(j.ok)setTimeout(function(){location.reload()},1000);
+    }
+    async function connectAccount(){
+      var name=document.getElementById('na-name').value.trim(),cid=document.getElementById('na-cid').value.trim();
+      if(!name||!cid){toast('광고주명과 Customer ID를 입력해주세요',true);return;}
+      if(!/^[0-9]+$/.test(cid)){toast('Customer ID는 숫자만 입력해주세요 (검색광고 Key에서 확인)',true);return;}
+      var b=document.getElementById('btn-connect'),s=document.getElementById('connect-status');
+      b.disabled=true;b.textContent='확인 중...';s.innerHTML='<span class="spinner"></span> 접근 권한 확인 및 데이터 수집 중... (수 분 소요될 수 있습니다)';
+      try{
+        var j=await api('${BASE}/api/settings/connect-account',{name:name,customer_id:cid});
+        if(j.ok){
+          s.textContent='완료: 캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 · 소재 '+j.synced+'개 동기화 · 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')';
+          toast('광고주 연동 + 데이터 수집 완료');
+          setTimeout(function(){location.reload()},1200);
+        }else{s.textContent='오류: '+(j.error||'');toast(j.error||'연동 실패',true);}
+      }catch(e){s.textContent='오류: '+e.message;toast('연동 실패: '+e.message,true);}
+      b.disabled=false;b.textContent='🔍 확인 및 연동';
+    }`;
+
 router.get('/settings', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
-  if (!account) return res.redirect(BASE);
+
+  // 이고진 미연동 상태: 마스터에게 API 연동 화면만 제공 (연동 후 전체 설정 사용 가능)
+  if (!account) {
+    if (isClient(req)) return res.redirect(BASE);
+    let credInfo = null;
+    try {
+      const myCred = await db.getApiCredentials(req.session.userId, null);
+      if (myCred && myCred.api_key) credInfo = { masked: String(myCred.api_key).slice(0, 10) + '••••••', mgr: myCred.manager_customer_id || '' };
+    } catch (e) { /* 미연동 표시 */ }
+    const content = `
+      <div class="alert alert-info">🎯 <b>${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다. 아래에서 마케터 API 계정을 등록한 뒤 이고진 광고주를 연동해주세요.</div>
+      ${apiSectionHtml(credInfo)}
+      <script>${API_SECTION_SCRIPT}</script>`;
+    return res.send(appLayout(req, '설정', content, 'settings', { accounts, account: null, user }));
+  }
+
   const settings = await bidDb.getSettings(account.id);
   const rules = await bidDb.getCategoryRules(account.id);
   const materials = await bidDb.getMaterials(account.id);
@@ -1091,11 +1177,6 @@ router.get('/settings', requireLogin, async (req, res) => {
     { id: 'auto', title: ro ? '🤖 자동화·알림' : '🤖 자동화·API 연동' },
     { id: 'materials', title: '📦 소재별 설정' },
   ];
-  const secTitle = (icon, title, desc) => `
-    <div style="display:flex;align-items:baseline;gap:10px;margin:22px 0 10px">
-      <span style="font-size:15px;font-weight:800;color:#0f172a">${icon} ${title}</span>
-      <span style="font-size:12px;color:#94a3b8">${desc}</span>
-    </div>`;
 
   const content = `
     ${ro ? '<div class="alert alert-info">광고주 계정은 설정을 <b>열람만</b> 할 수 있습니다. 변경이 필요하면 담당 마케터에게 요청해주세요.</div>' : ''}
@@ -1158,39 +1239,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
         </div></div>
 
-      ${ro ? '' : `
-      ${secTitle('🔗', 'API 연동', '기존 솔루션과 동일: ① 마케터 API 계정 등록(1회) → ② 광고주는 Customer ID만 입력해 추가')}
-      <div class="card"><div class="card-header"><span class="card-title">🔑 네이버 검색광고 API 계정 (마케터 연동)</span></div>
-        <div class="card-body">
-          <p style="font-size:13px;color:#64748b;margin-bottom:12px">
-            네이버 검색광고 시스템의 API 키를 등록하면, 해당 계정에 연결된 모든 광고주에 접근할 수 있습니다.
-            검색광고 시스템 &gt; 도구 &gt; API 사용 관리에서 발급받으세요. <b>계정 1개당 담당자 계정은 1개만 등록됩니다.</b></p>
-          ${credInfo
-            ? `<div class="alert alert-ok">✅ 연동됨 — API Key <b>${escHtml(credInfo.masked)}</b>${credInfo.mgr ? ` · 매니저 Customer ID <b>${escHtml(credInfo.mgr)}</b>` : ''}</div>`
-            : `<div class="alert alert-err">⛔ 미연동 — 아래에 마케터 API 계정을 등록해주세요. 등록 전에는 광고주 추가·동기화가 불가합니다.</div>`}
-          <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:760px">
-            <div><label>API Key (액세스라이선스) *</label><input id="cred-key" placeholder="0100000000..." autocomplete="off"></div>
-            <div><label>Secret Key (비밀키) *</label><input id="cred-secret" type="password" placeholder="AQAAAA..." autocomplete="new-password"></div>
-            <div><label>매니저 Customer ID (내 계정 ID) * <span class="tip" title="검색광고 시스템 로그인 계정의 CUSTOMER_ID. 검증에 사용됩니다.">ⓘ</span></label><input id="cred-mgr" placeholder="예: 1484655"></div>
-          </div>
-          <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
-            <button class="btn btn-primary" id="btn-cred" onclick="saveCreds()">저장</button>
-            <span style="font-size:12px;color:#94a3b8">저장 전 캠페인 목록 조회로 API 연결을 검증합니다. 검증 실패 시 저장되지 않습니다.</span>
-          </div>
-        </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">➕ 광고주 추가 (Customer ID 연동)</span></div>
-        <div class="card-body">
-          <p style="font-size:13px;color:#64748b;margin-bottom:12px">
-            광고주를 <b>Customer ID만 입력</b>해 추가합니다. Customer ID는 네이버 검색광고 센터 &gt; 도구 &gt;
-            SA API 사용 관리 &gt; 우측 상단 <b>검색광고 Key?</b>에서 확인한 숫자입니다. (광고계정 ID와 다른 값)
-            추가 성공 시 <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장됩니다.</p>
-          <div style="display:flex;gap:10px;align-items:flex-end;max-width:640px;flex-wrap:wrap">
-            <div style="flex:1;min-width:180px"><label>광고주명</label><input id="na-name" placeholder="예: egojin" autocomplete="off"></div>
-            <div style="flex:1;min-width:180px"><label>Customer ID</label><input id="na-cid" placeholder="검색광고 Key에서 확인한 숫자" autocomplete="off"></div>
-            <button class="btn btn-green" id="btn-connect" onclick="connectAccount()" style="white-space:nowrap">🔍 확인 및 추가</button>
-          </div>
-          <div style="margin-top:8px"><span id="connect-status" style="font-size:12px;color:#94a3b8">등록된 마케터 API 계정으로 접근 권한을 확인한 뒤 광고주를 추가하고 데이터를 수집합니다. (소재 수에 따라 수 분 소요)</span></div>
-        </div></div>`}
+      ${ro ? '' : apiSectionHtml(credInfo)}
     </div>
 
     <!-- ④ 소재별 설정 -->
@@ -1236,32 +1285,7 @@ router.get('/settings', requireLogin, async (req, res) => {
       var j=await api('${BASE}/api/settings/materials',{materials:mats});
       toast(j.ok?'소재 설정 저장 완료':'오류: '+(j.error||''),!j.ok);
     }
-    async function saveCreds(){
-      var key=document.getElementById('cred-key').value.trim(),sec=document.getElementById('cred-secret').value.trim();
-      var mgr=document.getElementById('cred-mgr').value.trim();
-      if(!key||!sec||!mgr){toast('API Key·Secret Key·매니저 Customer ID를 모두 입력해주세요',true);return;}
-      var b=document.getElementById('btn-cred');b.disabled=true;b.textContent='검증 중...';
-      var j=await api('${BASE}/api/settings/credentials',{api_key:key,secret_key:sec,manager_customer_id:mgr});
-      b.disabled=false;b.textContent='저장';
-      toast(j.ok?'마케터 API 계정 연동 완료':'오류: '+(j.error||''),!j.ok);
-      if(j.ok)setTimeout(function(){location.reload()},1000);
-    }
-    async function connectAccount(){
-      var name=document.getElementById('na-name').value.trim(),cid=document.getElementById('na-cid').value.trim();
-      if(!name||!cid){toast('광고주명과 Customer ID를 입력해주세요',true);return;}
-      if(!/^[0-9]+$/.test(cid)){toast('Customer ID는 숫자만 입력해주세요 (검색광고 Key에서 확인)',true);return;}
-      var b=document.getElementById('btn-connect'),s=document.getElementById('connect-status');
-      b.disabled=true;b.textContent='확인 중...';s.innerHTML='<span class="spinner"></span> 접근 권한 확인 및 데이터 수집 중... (수 분 소요될 수 있습니다)';
-      try{
-        var j=await api('${BASE}/api/settings/connect-account',{name:name,customer_id:cid});
-        if(j.ok){
-          s.textContent='완료: 캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 · 소재 '+j.synced+'개 동기화 · 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')';
-          toast('광고주 추가 + 데이터 수집 완료');
-          setTimeout(function(){location.reload()},1200);
-        }else{s.textContent='오류: '+(j.error||'');toast(j.error||'추가 실패',true);}
-      }catch(e){s.textContent='오류: '+e.message;toast('추가 실패: '+e.message,true);}
-      b.disabled=false;b.textContent='🔍 확인 및 추가';
-    }
+    ${ro ? '' : API_SECTION_SCRIPT}
     async function recalcBaseline(){
       if(!confirm('전월(달력 기준) 데이터로 소재별 기준매출을 다시 계산합니다. 소재 수에 따라 수 분 걸릴 수 있습니다. 진행할까요?'))return;
       var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
@@ -1340,6 +1364,9 @@ router.post('/api/settings/connect-account', requireLogin, requireMaster, async 
     const customer_id = String(req.body.customer_id || '').trim();
     if (!name || !customer_id) return res.json({ ok: false, error: '광고주명과 Customer ID를 입력해주세요.' });
     if (!/^[0-9]+$/.test(customer_id)) return res.json({ ok: false, error: 'Customer ID는 숫자만 입력해주세요. (검색광고 Key에서 확인한 값)' });
+    if (customer_id !== EGOJIN_CUSTOMER_ID) {
+      return res.json({ ok: false, error: `이 솔루션은 ${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID}) 광고주 전용입니다. Customer ID를 확인해주세요.` });
+    }
 
     // 1) 마케터 자격증명 확인
     const creds = await db.getApiCredentials(req.session.userId, null);
