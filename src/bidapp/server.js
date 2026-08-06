@@ -444,7 +444,7 @@ router.get('/', requireLogin, async (req, res) => {
   const content = `
     <div class="kpis">
       <div class="kpi"><div class="kpi-l">최신 완료 주 비용 (${weeks[0].start} ~)</div><div class="kpi-v">${fmtNum(cost1)}원</div><div class="kpi-s">4주 누적 ${fmtNum(cost4)}원</div></div>
-      <div class="kpi g"><div class="kpi-l">최신 완료 주 전환매출</div><div class="kpi-v">${fmtNum(rev1)}원</div><div class="kpi-s">4주 누적 ${fmtNum(rev4)}원</div></div>
+      <div class="kpi g"><div class="kpi-l">최신 완료 주 구매전환매출</div><div class="kpi-v">${fmtNum(rev1)}원</div><div class="kpi-s">4주 누적 ${fmtNum(rev4)}원</div></div>
       <div class="kpi p"><div class="kpi-l">가중 블렌딩 ROAS (전체)</div><div class="kpi-v">${fmtRoas(weightedBlended)}</div><div class="kpi-s">1주차 ${blendN}% · 2~4주차 ${100 - blendN}%</div></div>
       <div class="kpi o"><div class="kpi-l">승인 대기</div><div class="kpi-v">${pend}건</div><div class="kpi-s"><a href="${BASE}/approvals" style="color:#0ea5e9;font-weight:600">승인함 바로가기 →</a></div></div>
     </div>
@@ -455,7 +455,7 @@ router.get('/', requireLogin, async (req, res) => {
     ${alertsHtml}
     ${!rows.length && !isClient(req) ? `<div class="alert alert-info">소재가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "소재 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
     <div class="card" id="mx-card">
-      <div class="card-header"><span class="card-title">📑 소재별 주차 누적 데이터</span>
+      <div class="card-header"><span class="card-title">📑 소재별 주차 누적 데이터 <span style="font-weight:500;font-size:11.5px;color:#94a3b8">· 매출 = 구매전환매출</span></span>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <select id="mx-weeks" onchange="loadMx()" title="표시할 주차 기간" style="width:110px">
             <option value="4">최근 4주</option><option value="8">최근 8주</option>
@@ -736,7 +736,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         +'<line x1="'+P+'" y1="'+(H-P)+'" x2="'+(W-P)+'" y2="'+(H-P)+'" stroke="#e2e8f0"/>'
         +line('cost','#0ea5e9')+line('revenue','#10b981')+roasTxt
         +'<rect x="'+P+'" y="12" width="10" height="10" fill="#0ea5e9"/><text x="'+(P+16)+'" y="21" font-size="11" fill="#334155">비용</text>'
-        +'<rect x="'+(P+70)+'" y="12" width="10" height="10" fill="#10b981"/><text x="'+(P+86)+'" y="21" font-size="11" fill="#334155">전환매출</text></svg>';
+        +'<rect x="'+(P+70)+'" y="12" width="10" height="10" fill="#10b981"/><text x="'+(P+86)+'" y="21" font-size="11" fill="#334155">구매전환매출</text></svg>';
     }
     </script>
   `;
@@ -1246,8 +1246,8 @@ router.post('/api/manual-adjust', requireLogin, requireMaster, async (req, res) 
 // 탭별 파라미터 정의 — tip은 판정 로직에서의 역할 (툴팁 표시)
 const SETTING_TAB_PARAMS = {
   blend: [
-    { k: 'band_up', label: '판정 밴드 상단 (+)', tip: '블렌딩ROAS ≥ 보정목표×(1+상단)이면 증액 판정. 0.10 = +10%' },
-    { k: 'band_down', label: '판정 밴드 하단 (-)', tip: '블렌딩ROAS < 보정목표×(1-하단)이면 감액 판정. 0.10 = -10%' },
+    { k: 'band_up', label: '판정 밴드 상단 (+)', tip: '블렌딩ROAS ≥ 보정목표×(1+상단)이면 증액. 곱연산 — 예: 목표 400%·상단 0.3 → 400%×1.3 = 520% 이상일 때 증액 (430%가 아님)' },
+    { k: 'band_down', label: '판정 밴드 하단 (-)', tip: '블렌딩ROAS < 보정목표×(1-하단)이면 감액. 곱연산 — 예: 목표 400%·하단 0.3 → 400%×0.7 = 280% 미만일 때 감액' },
     { k: 'default_target_roas', label: '기본 목표ROAS (배수)', tip: '소재별 목표ROAS 미지정 시 사용. 5.5 = 550%. 분류 계수를 곱해 보정목표가 됩니다.' },
   ],
   volume: [

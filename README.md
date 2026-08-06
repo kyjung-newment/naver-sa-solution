@@ -106,7 +106,7 @@ npm run report:daily      # 리포트 즉시 테스트 (weekly/monthly 동일)
 |---|---|
 | `logic.js` | 순수 판정 로직 (블렌딩ROAS·핵심소재·판정·권장입찰가) — `npm run test:bid` |
 | `db.js` | `bid_*` 테이블 스키마 + DAO (소재/주차성과/설정/규칙/조정/감사로그/알림/월간리포트) |
-| `collector.js` | 소재 동기화 + `/stats` 소재 단위 4주 성과 수집 (간접전환 포함 convAmt/ccnt) |
+| `collector.js` | 소재 동기화 + `/stats` 소재 단위 4주 성과 수집 (**구매전환매출 purchaseConvAmt/purchaseCcnt 기준** — 총전환매출 아님) |
 | `engine.js` | 주간 계산·적용(안전장치)·일간 모니터·월간 리포트 |
 | `server.js` | 화면 6종 + 광고주 초대 + 크론 엔드포인트 |
 

@@ -1,6 +1,6 @@
 // ─── 이고진 입찰관리: 데이터 수집 (네이버 검색광고 API) ─────────────
 // 1) 쇼핑검색 소재 동기화 (캠페인 → 광고그룹 → 소재, 현재 입찰가 포함)
-// 2) 소재별 주차 성과 수집 (/stats 일별 행 → 주차 집계, 간접전환 포함 convAmt/ccnt)
+// 2) 소재별 주차 성과 수집 (/stats 일별 행 → 주차 집계, 구매전환매출 purchaseConvAmt/purchaseCcnt 기준)
 const { createApiClient } = require('../api/naverApi');
 const bidDb = require('./db');
 const { last4Weeks, parseExcludedCampaigns, isExcludedCampaign } = require('./logic');
@@ -104,6 +104,10 @@ async function syncMaterials(account, creds) {
 
 // ─── 주차별 성과 수집 ──────────────────────────────────────────────
 // 소재당 /stats 1회 (4주 범위 일별 행) → 주차별 집계 저장
+// 매출 지표 = 구매전환매출(purchaseConvAmt) — 총전환매출(convAmt, 장바구니 등 포함)이 아닌
+// 구매 완료 기준. 모든 조정 판정(블렌딩ROAS·기준매출·일간 트리거)이 이 값 기준으로 계산된다.
+const STAT_FIELDS = ['clkCnt', 'impCnt', 'salesAmt', 'cpc', 'avgRnk', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
+
 async function collectWeeklyStats(account, creds, { weeks } = {}) {
   const client = makeClient(creds, account.customer_id);
   const wks = weeks || last4Weeks();
@@ -114,7 +118,7 @@ async function collectWeeklyStats(account, creds, { weeks } = {}) {
 
   await mapLimit(materials, 5, async (m) => {
     try {
-      const result = await client.getEntityStats(m.ncc_ad_id, { since, until });
+      const result = await client.getEntityStats(m.ncc_ad_id, { since, until, fields: STAT_FIELDS });
       // 주차별 버킷 초기화
       const buckets = {};
       for (const w of wks) buckets[w.start] = { imp: 0, clk: 0, cost: 0, revenue: 0, convCnt: 0, rankSum: 0, rankW: 0 };
@@ -128,8 +132,8 @@ async function collectWeeklyStats(account, creds, { weeks } = {}) {
         b.imp += d.impCnt || 0;
         b.clk += d.clkCnt || 0;
         b.cost += d.salesAmt || 0;
-        b.revenue += d.convAmt || 0;   // 전환매출 (간접전환 포함)
-        b.convCnt += d.ccnt || 0;      // 전환수 (간접전환 포함)
+        b.revenue += d.purchaseConvAmt || 0;  // 구매전환매출
+        b.convCnt += d.purchaseCcnt || 0;     // 구매전환수
         if (d.avgRnk > 0) { const wgt = d.impCnt || 1; b.rankSum += d.avgRnk * wgt; b.rankW += wgt; }
       }
       for (const w of wks) {
@@ -149,18 +153,18 @@ async function collectWeeklyStats(account, creds, { weeks } = {}) {
   return { materials: materials.length, ok, fail, weeks: wks };
 }
 
-// ─── 일간 모니터용: 전일 소재별 성과 ────────────────────────────────
+// ─── 일간 모니터용: 전일 소재별 성과 (구매전환매출 기준) ─────────────
 async function collectDailyStats(account, creds, dateStr) {
   const client = makeClient(creds, account.customer_id);
   const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
   const out = [];
   await mapLimit(materials, 5, async (m) => {
     try {
-      const result = await client.getEntityStats(m.ncc_ad_id, { since: dateStr, until: dateStr });
+      const result = await client.getEntityStats(m.ncc_ad_id, { since: dateStr, until: dateStr, fields: STAT_FIELDS });
       let cost = 0, revenue = 0;
       for (const d of (result?.data || [])) {
         cost += d.salesAmt || 0;
-        revenue += d.convAmt || 0;
+        revenue += d.purchaseConvAmt || 0;
       }
       out.push({ material: m, cost, revenue });
     } catch (e) { /* 소재 단위 실패 무시 */ }
@@ -168,7 +172,7 @@ async function collectDailyStats(account, creds, dateStr) {
   return out;
 }
 
-// ─── 기준매출용: 전월(달력 기준) 소재별 매출 합계 ───────────────────
+// ─── 기준매출용: 전월(달력 기준) 소재별 구매전환매출 합계 ────────────
 // hasData=false → 해당 기간 API 행이 전무하거나 전 지표 0 (신규 소재 → 기준매출 null)
 async function collectMonthlyRevenue(account, creds, since, until) {
   const client = makeClient(creds, account.customer_id);
@@ -176,11 +180,11 @@ async function collectMonthlyRevenue(account, creds, since, until) {
   const out = [];
   await mapLimit(materials, 5, async (m) => {
     try {
-      const result = await client.getEntityStats(m.ncc_ad_id, { since, until });
+      const result = await client.getEntityStats(m.ncc_ad_id, { since, until, fields: STAT_FIELDS });
       let revenue = 0, hasData = false;
       for (const d of (result?.data || [])) {
-        revenue += d.convAmt || 0;
-        if ((d.impCnt || 0) + (d.clkCnt || 0) + (d.salesAmt || 0) + (d.convAmt || 0) > 0) hasData = true;
+        revenue += d.purchaseConvAmt || 0;
+        if ((d.impCnt || 0) + (d.clkCnt || 0) + (d.salesAmt || 0) + (d.purchaseConvAmt || 0) > 0) hasData = true;
       }
       out.push({ material: m, revenue, hasData });
     } catch (e) {
