@@ -20,13 +20,20 @@ function makeClient(creds, customerId) {
 }
 
 // ─── 쇼핑검색 소재 동기화 ──────────────────────────────────────────
-// campaignTp 2 = 쇼핑검색 (공식). 쇼핑 캠페인이 없으면 전체 캠페인 대상 (fallback).
+// 쇼핑검색(campaignTp 2/'SHOPPING') 캠페인의 소재만 대상 — 파워링크(WEB_SITE) 등 다른 유형은 제외.
+// (소재별 ROAS 설정·입찰 조정 모두 쇼핑검색 소재에만 반영)
 async function syncMaterials(account, creds) {
   const client = makeClient(creds, account.customer_id);
   const campaigns = await client.getCampaigns();
-  const isShopping = (c) => c.campaignTp === 2 || c.campaignTp === '2' || (c.name && c.name.includes('쇼핑'));
-  let targets = (campaigns || []).filter(c => (c.status === 'ELIGIBLE' || !c.status) && isShopping(c));
-  if (!targets.length) targets = (campaigns || []).filter(c => c.status === 'ELIGIBLE' || !c.status);
+  const isShopping = (c) => {
+    const tp = c.campaignTp;
+    if (tp === 2 || tp === '2') return true;
+    if (typeof tp === 'string' && tp.toUpperCase().includes('SHOPPING')) return true;
+    // campaignTp 미제공 응답 폴백: 캠페인명 기준 (파워링크 유형이 명시된 경우는 제외)
+    if (tp == null && c.name && c.name.includes('쇼핑')) return true;
+    return false;
+  };
+  const targets = (campaigns || []).filter(c => (c.status === 'ELIGIBLE' || !c.status) && isShopping(c));
 
   // 광고그룹 조회 (그룹 기본입찰가 → useGroupBidAmt 소재의 현재가)
   const agRes = await mapLimit(targets, 5, c => client.getAdGroups(c.nccCampaignId).then(ags => ({ camp: c, ags: ags || [] })));

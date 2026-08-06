@@ -1050,23 +1050,25 @@ router.get('/settings', requireLogin, async (req, res) => {
     <td class="num">${fmtNum(m.current_bid)}원</td></tr>`).join('');
 
   const TABS = [
-    { id: 'blend', title: '🧮 블렌딩·판정' },
-    { id: 'volume', title: '🛡️ 볼륨 보호' },
-    { id: 'limits', title: '📏 입찰 한도·데이터' },
+    { id: 'params', title: '🧮 조정 기준' },
     { id: 'rules', title: '🗂️ 분류 규칙' },
-    { id: 'auto', title: '🤖 자동화·알림' },
+    { id: 'auto', title: ro ? '🤖 자동화·알림' : '🤖 자동화·API 연동' },
     { id: 'materials', title: '📦 소재별 설정' },
-    ...(ro ? [] : [{ id: 'api', title: '🔗 API 연동' }]),
   ];
+  const secTitle = (icon, title, desc) => `
+    <div style="display:flex;align-items:baseline;gap:10px;margin:22px 0 10px">
+      <span style="font-size:15px;font-weight:800;color:#0f172a">${icon} ${title}</span>
+      <span style="font-size:12px;color:#94a3b8">${desc}</span>
+    </div>`;
 
   const content = `
     ${ro ? '<div class="alert alert-info">광고주 계정은 설정을 <b>열람만</b> 할 수 있습니다. 변경이 필요하면 담당 마케터에게 요청해주세요.</div>' : ''}
     <div class="tabs">${TABS.map((t, i) => `<button class="tab-btn ${i === 0 ? 'active' : ''}" data-tab="${t.id}" onclick="showTab('${t.id}')">${t.title}</button>`).join('')}</div>
 
-    <!-- ① 블렌딩·판정 -->
-    <div class="tab-pane active" id="pane-blend">
-      <div class="tab-desc">주차 성과를 하나의 <b>블렌딩 ROAS</b>로 합산해 보정목표와 비교하고 증액/감액/유지를 판정하는 기준입니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">블렌딩 구간 비율 (2구간)</span>${saveBtn('blend', '블렌딩·판정 저장')}</div>
+    <!-- ① 조정 기준: 블렌딩·판정 / 볼륨 보호 / 입찰 한도·데이터 (섹션 구분) -->
+    <div class="tab-pane active" id="pane-params">
+      ${secTitle('🧮', '블렌딩·판정', '주차 성과를 하나의 블렌딩 ROAS로 합산해 보정목표와 비교하고 증액/감액/유지를 판정하는 기준')}
+      <div class="card" id="sec-blend"><div class="card-header"><span class="card-title">블렌딩 구간 비율 (2구간)</span>${saveBtn('blend', '블렌딩·판정 저장')}</div>
         <div class="card-body">
           <label>1주차(최신 완료 주) 비중 N% <span class="tip" title="블렌딩ROAS = (N%×매출₁ + (100-N)%×매출₂₋₄) ÷ (N%×비용₁ + (100-N)%×비용₂₋₄). 2~4주차는 자동으로 100-N%가 됩니다.">ⓘ</span></label>
           <div style="display:flex;gap:14px;align-items:center;max-width:560px">
@@ -1077,12 +1079,9 @@ router.get('/settings', requireLogin, async (req, res) => {
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('blend')}</div></div>
           <p style="font-size:12px;color:#94a3b8;margin-top:10px">비율 항목은 소수로 입력 (0.10 = 10%). 저장 즉시 다음 계산부터 반영되며 변경 이력이 기록됩니다.</p>
         </div></div>
-    </div>
 
-    <!-- ② 볼륨 보호 -->
-    <div class="tab-pane" id="pane-volume">
-      <div class="tab-desc">매출볼륨이 이미 하락 중인 소재를 ROAS만 보고 추가 감액해 유입을 더 줄이는 상황을 막습니다. (증액은 볼륨 조건 없음)</div>
-      <div class="card"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span>${saveBtn('volume', '볼륨 보호 저장')}</div>
+      ${secTitle('🛡️', '볼륨 보호', '매출볼륨이 이미 하락 중인 소재를 ROAS만 보고 추가 감액하는 상황 방지 (증액은 볼륨 조건 없음)')}
+      <div class="card" id="sec-volume"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span>${saveBtn('volume', '볼륨 보호 저장')}</div>
         <div class="card-body">
           <div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('volume')}</div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -1090,16 +1089,13 @@ router.get('/settings', requireLogin, async (req, res) => {
             <span style="font-size:12px;color:#94a3b8">기준매출 = 전월 매출 합계 ÷ 전월 일수 × 7 (100원 단위 반올림). 매월 1일 크론에서 자동 산출되며, 소재별 값은 <b>소재별 설정</b> 탭에서 확인할 수 있습니다.</span>
           </div>
         </div></div>
-    </div>
 
-    <!-- ③ 입찰 한도·데이터 -->
-    <div class="tab-pane" id="pane-limits">
-      <div class="tab-desc">입찰가 하한과 판정에 필요한 최소 데이터 기준, 노출순위 보호선을 정합니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">입찰 한도·데이터 기준</span>${saveBtn('limits', '입찰 한도 저장')}</div>
+      ${secTitle('📏', '입찰 한도·데이터', '입찰가 하한과 판정에 필요한 최소 데이터 기준, 노출순위 보호선')}
+      <div class="card" id="sec-limits"><div class="card-header"><span class="card-title">입찰 한도·데이터 기준</span>${saveBtn('limits', '입찰 한도 저장')}</div>
         <div class="card-body"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('limits')}</div></div></div>
     </div>
 
-    <!-- ④ 분류 규칙 -->
+    <!-- ② 분류 규칙 -->
     <div class="tab-pane" id="pane-rules">
       <div class="tab-desc">소재 분류별 <b>[목표ROAS 계수 / 증액률 / 감액률]</b>. 계수는 목표ROAS에 곱해 보정목표를 만들고, 증액·감액률은 판정 시 입찰가 변경 폭이 됩니다.</div>
       <div class="card"><div class="card-header"><span class="card-title">분류별 규칙</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button>'}</div>
@@ -1107,10 +1103,10 @@ router.get('/settings', requireLogin, async (req, res) => {
           <tr><th>분류</th><th>목표ROAS 계수</th><th>증액률</th><th>감액률</th></tr>${rulesRows}</table></div></div>
     </div>
 
-    <!-- ⑤ 자동화·알림 -->
+    <!-- ③ 자동화·알림 + API 연동 (섹션 구분) -->
     <div class="tab-pane" id="pane-auto">
-      <div class="tab-desc">조정 자동 적용 방식(auto/approval)과 주기 실행(크론), 일간 알림 트리거를 정합니다. 감액보류(볼륨하락) 건은 auto 모드여도 항상 승인 대기로 갑니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">조정 모드 · 크론 · 알림</span>${saveBtn('auto', '자동화·알림 저장')}</div>
+      ${secTitle('🤖', '자동화·알림', '조정 자동 적용 방식(auto/approval)·주기 실행(크론)·일간 알림 트리거 — 감액보류(볼륨하락) 건은 auto 모드여도 항상 승인 대기')}
+      <div class="card" id="sec-auto"><div class="card-header"><span class="card-title">조정 모드 · 크론 · 알림</span>${saveBtn('auto', '자동화·알림 저장')}</div>
         <div class="card-body">
           <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
@@ -1125,21 +1121,9 @@ router.get('/settings', requireLogin, async (req, res) => {
           </div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
         </div></div>
-    </div>
 
-    <!-- ⑥ 소재별 설정 -->
-    <div class="tab-pane" id="pane-materials">
-      <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
-        <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr><th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || '<tr><td colspan="7" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>'}</table></div></div>
-    </div>
-
-    ${ro ? '' : `
-    <!-- ⑦ API 연동 (마스터 전용) -->
-    <div class="tab-pane" id="pane-api">
-      <div class="tab-desc">이 광고주(고객 ID <b>${escHtml(account.customer_id)}</b>)의 <b>네이버 검색광고 API 자격증명</b>을 등록·교체합니다. 소재 동기화·성과 수집·입찰가 변경이 모두 이 자격증명으로 실행됩니다.</div>
+      ${ro ? '' : `
+      ${secTitle('🔗', 'API 연동', `이 광고주(고객 ID ${escHtml(account.customer_id)})의 네이버 검색광고 API 자격증명 관리 — 소재 동기화·성과 수집·입찰가 변경에 사용`)}
       <div class="card"><div class="card-header"><span class="card-title">연동 상태</span></div>
         <div class="card-body">
           ${credInfo
@@ -1177,8 +1161,17 @@ router.get('/settings', requireLogin, async (req, res) => {
             <button class="btn btn-green" id="btn-connect" onclick="connectAccount()">➕ 검증 후 연동 + 데이터 수집</button>
             <span id="connect-status" style="font-size:12px;color:#94a3b8">검증 → 광고주 등록 → 소재·성과 자동 수집 순으로 진행됩니다. (소재 수에 따라 수 분 소요)</span>
           </div>
-        </div></div>
-    </div>`}
+        </div></div>`}
+    </div>
+
+    <!-- ④ 소재별 설정 -->
+    <div class="tab-pane" id="pane-materials">
+      <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
+      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
+        <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
+          <tr><th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          ${matRows || '<tr><td colspan="7" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>'}</table></div></div>
+    </div>
 
     <script>
     function showTab(id){
@@ -1191,8 +1184,8 @@ router.get('/settings', requireLogin, async (req, res) => {
       function sync(v){v=Math.max(0,Math.min(100,Math.round(parseFloat(v)||0)));r.value=v;n.value=v;rest.textContent='2~4주차 = '+(100-v)+'%';}
       if(r&&n){r.oninput=function(){sync(r.value)};n.oninput=function(){sync(n.value)};}
     })();
-    async function saveTab(tab){
-      var pane=document.getElementById('pane-'+tab);
+    async function saveTab(sec){
+      var pane=document.getElementById('sec-'+sec); // 섹션(카드) 단위 저장
       var s={};
       pane.querySelectorAll('input[name],select[name]').forEach(function(i){
         if(i.type==='radio'){if(i.checked)s[i.name]=i.value;return;}
