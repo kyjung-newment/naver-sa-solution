@@ -101,9 +101,15 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
-// 접근 가능한 광고주 목록: 마케터=본인 소유 전체, 초대 계정(마스터/광고주)=초대받은 계정
+// 접근 가능한 광고주 목록: 마케터=본인 소유 전체, 초대 계정=초대받은 계정 + (마스터가 직접 연동 등록한) 본인 소유 계정
 async function getAccessibleAccounts(req) {
-  if (isInvited(req)) return db.getViewerAccounts(req.session.userId);
+  if (isInvited(req)) {
+    const viewer = await db.getViewerAccounts(req.session.userId);
+    if (isClient(req)) return viewer;
+    const owned = await db.getAccountsByUser(req.session.userId);
+    const seen = new Set(viewer.map(a => String(a.id)));
+    return [...viewer, ...owned.filter(a => !seen.has(String(a.id)))];
+  }
   return db.getAccountsByUser(req.session.userId);
 }
 
@@ -1153,6 +1159,25 @@ router.get('/settings', requireLogin, async (req, res) => {
             <span style="font-size:12px;color:#94a3b8">저장 전 캠페인 목록 조회로 자격증명을 검증합니다. 검증 실패 시 저장되지 않습니다.</span>
           </div>
         </div></div>
+      <div class="card"><div class="card-header"><span class="card-title">➕ 새 광고주 연동 (CUSTOMER_ID 등록)</span></div>
+        <div class="card-body">
+          <p style="font-size:13px;color:#64748b;margin-bottom:14px">
+            아직 등록되지 않은 광고주를 <b>CUSTOMER_ID</b>로 직접 연동합니다. CUSTOMER_ID는 네이버 검색광고 센터 &gt;
+            도구 &gt; SA API 사용 관리 &gt; 우측 상단 <b>검색광고 Key?</b>에서 확인한 숫자입니다.
+            연동 성공 시 <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장됩니다.</p>
+          <div class="form-row" style="grid-template-columns:1fr 1fr;max-width:760px">
+            <div><label>광고주명</label><input id="na-name" placeholder="예: egojin" autocomplete="off"></div>
+            <div><label>CUSTOMER_ID <span class="tip" title="검색광고 Key에서 확인한 숫자. 광고계정 ID와는 다른 값입니다.">ⓘ</span></label><input id="na-cid" placeholder="예: 242566" autocomplete="off"></div>
+            <div><label>API 라이선스 (액세스 키)</label><input id="na-key" placeholder="0100000000..." autocomplete="off"></div>
+            <div><label>비밀키 (시크릿 키)</label><input id="na-secret" type="password" placeholder="AQAAAA..." autocomplete="new-password"></div>
+            <div><label>관리계정 ID (대행사 관리계정일 때만, 선택)</label><input id="na-mgr" placeholder="선택 입력"></div>
+            <div><label>라벨 (선택)</label><input id="na-label" placeholder="예: egojin 본계정"></div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-green" id="btn-connect" onclick="connectAccount()">➕ 검증 후 연동 + 데이터 수집</button>
+            <span id="connect-status" style="font-size:12px;color:#94a3b8">검증 → 광고주 등록 → 소재·성과 자동 수집 순으로 진행됩니다. (소재 수에 따라 수 분 소요)</span>
+          </div>
+        </div></div>
     </div>`}
 
     <script>
@@ -1198,6 +1223,25 @@ router.get('/settings', requireLogin, async (req, res) => {
       b.disabled=false;b.textContent='🔗 검증 후 저장';
       toast(j.ok?'API 연동 완료 (캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 확인)':'오류: '+(j.error||''),!j.ok);
       if(j.ok)setTimeout(function(){location.reload()},1000);
+    }
+    async function connectAccount(){
+      var name=document.getElementById('na-name').value.trim(),cid=document.getElementById('na-cid').value.trim();
+      var key=document.getElementById('na-key').value.trim(),sec=document.getElementById('na-secret').value.trim();
+      var mgr=document.getElementById('na-mgr').value.trim(),label=document.getElementById('na-label').value.trim();
+      if(!name||!cid){toast('광고주명과 CUSTOMER_ID를 입력해주세요',true);return;}
+      if(!/^[0-9]+$/.test(cid)){toast('CUSTOMER_ID는 숫자만 입력해주세요 (검색광고 Key에서 확인)',true);return;}
+      if(!key||!sec){toast('API 라이선스와 비밀키를 입력해주세요',true);return;}
+      var b=document.getElementById('btn-connect'),s=document.getElementById('connect-status');
+      b.disabled=true;s.innerHTML='<span class="spinner"></span> 검증 및 데이터 수집 중... (수 분 소요될 수 있습니다)';
+      try{
+        var j=await api('${BASE}/api/settings/connect-account',{name:name,customer_id:cid,api_key:key,secret_key:sec,manager_customer_id:mgr,label:label});
+        if(j.ok){
+          s.textContent='완료: 캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 · 소재 '+j.synced+'개 동기화 · 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')';
+          toast('광고주 연동 + 데이터 수집 완료');
+          setTimeout(function(){location.reload()},1200);
+        }else{s.textContent='오류: '+(j.error||'');toast(j.error||'연동 실패',true);}
+      }catch(e){s.textContent='오류: '+e.message;toast('연동 실패: '+e.message,true);}
+      b.disabled=false;
     }
     async function recalcBaseline(){
       if(!confirm('전월(달력 기준) 데이터로 소재별 기준매출을 다시 계산합니다. 소재 수에 따라 수 분 걸릴 수 있습니다. 진행할까요?'))return;
@@ -1280,6 +1324,54 @@ router.post('/api/settings/credentials', requireLogin, requireMaster, async (req
     }
     await bidDb.audit(account.id, req.session.userName, 'API 자격증명 등록/교체', { credId, label, mgr: manager_customer_id || '-', campaigns });
     res.json({ ok: true, campaigns });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 새 광고주 연동: CUSTOMER_ID + API 자격증명 → 검증 → 광고주 등록(본인 소유) →
+// 자격증명 연결 → 소재 동기화 + 4주 성과 수집 자동 실행 (데이터 즉시 저장)
+router.post('/api/settings/connect-account', requireLogin, requireMaster, async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const customer_id = String(req.body.customer_id || '').trim();
+    const api_key = String(req.body.api_key || '').trim();
+    const secret_key = String(req.body.secret_key || '').trim();
+    const manager_customer_id = String(req.body.manager_customer_id || '').trim();
+    const label = String(req.body.label || '').trim() || `${name} API`;
+    if (!name || !customer_id) return res.json({ ok: false, error: '광고주명과 CUSTOMER_ID를 입력해주세요.' });
+    if (!/^[0-9]+$/.test(customer_id)) return res.json({ ok: false, error: 'CUSTOMER_ID는 숫자만 입력해주세요. (검색광고 Key에서 확인한 값)' });
+    if (!api_key || !secret_key) return res.json({ ok: false, error: 'API 라이선스와 비밀키를 입력해주세요.' });
+
+    // 1) 검증: 해당 CUSTOMER_ID로 캠페인 목록 조회
+    let campaigns = null;
+    try {
+      const client = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: customer_id });
+      const list = await client.getCampaigns();
+      campaigns = Array.isArray(list) ? list.length : null;
+    } catch (e) {
+      return res.json({ ok: false, error: `API 검증 실패 — 키·비밀키·CUSTOMER_ID(${customer_id}) 권한을 확인해주세요: ${e.message}` });
+    }
+
+    // 2) 광고주 등록 (같은 CUSTOMER_ID를 이미 소유 중이면 재사용) + 자격증명 연결
+    const accountId = await db.addSelectedAccount(req.session.userId, customer_id, name);
+    const credId = await db.addAgencyCredential(req.session.userId, { label, api_key, secret_key, manager_customer_id });
+    await bidDb.pool.query('UPDATE ad_accounts SET agency_credential_id = $2 WHERE id = $1', [accountId, credId]);
+    req.session.bidAccountId = accountId;
+
+    // 3) 데이터 자동 저장: 소재 동기화 + 4주 성과 수집
+    const account = await db.getAccountById(accountId, req.session.userId);
+    const creds = { api_key, secret_key, manager_customer_id };
+    let synced = 0, statOk = 0, statFail = 0;
+    try {
+      const sync = await collector.syncMaterials(account, creds);
+      synced = sync.synced;
+      const stats = await collector.collectWeeklyStats(account, creds);
+      statOk = stats.ok; statFail = stats.fail;
+    } catch (e) {
+      await bidDb.audit(accountId, req.session.userName, '광고주 연동 (데이터 수집 일부 실패)', { customer_id, campaigns, error: e.message });
+      return res.json({ ok: true, campaigns, synced, statOk, statFail, warn: `연동은 완료됐지만 데이터 수집 중 오류: ${e.message}` });
+    }
+    await bidDb.audit(accountId, req.session.userName, '광고주 연동 + 데이터 수집', { customer_id, campaigns, synced, statOk, statFail });
+    res.json({ ok: true, campaigns, synced, statOk, statFail });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 

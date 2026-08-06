@@ -141,7 +141,9 @@ npm run report:daily      # 리포트 즉시 테스트 (weekly/monthly 동일)
   목록에서 상태(대기/만료/가입완료/비활성)·재발송·역할 변경·계정 비활성화 관리, 전부 `bid_audit_log` 기록.
   기존 `account_viewers` 구조 재사용 (`role` 컬럼 추가)
 - **API 연동** = 설정 > API 연동 탭(마스터 전용)에서 광고주 네이버SA API 자격증명 등록/교체
-  (저장 전 캠페인 조회로 검증, `agency_credentials` 저장 + `ad_accounts.agency_credential_id` 연결)
+  (저장 전 캠페인 조회로 검증, `agency_credentials` 저장 + `ad_accounts.agency_credential_id` 연결).
+  **새 광고주 연동**: CUSTOMER_ID(검색광고 Key) + 자격증명 입력 → 검증 → 광고주 등록(본인 소유) →
+  소재 동기화 + 4주 성과 수집 자동 실행 (초대된 마스터도 직접 등록 가능, 접근 목록에 본인 소유분 병합)
 
 ---
 
