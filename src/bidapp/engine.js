@@ -61,8 +61,9 @@ async function computeWeekly(account, { save = true, base = null } = {}) {
     }, settings);
 
     // 매출볼륨 감액 보류 (후처리): 감액 판정 + 기준매출 대비 최신주 매출 하락 → 승인 대기 강제
+    // 임계는 일반/핵심 별도 적용
     const baseline = m.baseline_weekly_revenue == null ? null : parseInt(m.baseline_weekly_revenue);
-    const verdict = logic.volumeHold(j.verdict, weekData[0].revenue, baseline, settings);
+    const verdict = logic.volumeHold(j.verdict, weekData[0].revenue, baseline, settings, isCore);
     let note = '';
     if (verdict === logic.VERDICT.DOWN_HOLD) {
       const dropPct = baseline > 0 ? ((1 - weekData[0].revenue / baseline) * 100).toFixed(1) : '-';
@@ -151,6 +152,7 @@ async function applyAdjustment(account, creds, adjId, { auto = false, actor = 's
 async function runWeekly(account, creds, { actor = 'cron' } = {}) {
   await collector.syncMaterials(account, creds);
   const stats = await collector.collectWeeklyStats(account, creds);
+  await computeBaselines(account, { actor }); // 기준매출 = 지난 4주 평균 (판정 전에 갱신)
   const { weekStart, rows, settings } = await computeWeekly(account, { save: true });
 
   let applied = 0, pending = 0, failed = 0;
@@ -209,25 +211,35 @@ async function runDailyMonitor(account, creds, dateStr) {
 }
 
 /**
- * 기준매출 산출 (매월 1일 크론 + 설정 화면 수동 실행):
- * 소재별 전월(달력 기준) 매출 합계 ÷ 전월 일수 × 7 → 주간 환산, 100원 단위 반올림.
- * 전월 데이터가 전무한 신규 소재는 null (볼륨 보류 조건 미적용).
- * @param {string} month 'YYYY-MM' (전월)
+ * 기준매출 산출 (매주 월요일 주간 실행 시 자동 + 설정 화면 수동 실행):
+ * 주차 집계 월요일 기준 "지난 4주(최근 완료 4주)" 소재별 주간 매출 평균, 100원 단위 반올림.
+ * DB의 bid_weekly_stats 를 사용하므로 API 호출 없음 — 성과 수집(collectWeeklyStats) 후 실행해야 한다.
+ * 4주간 활동 데이터가 전무한 신규 소재는 null (볼륨 보류 조건 미적용).
  */
-async function computeBaselines(account, creds, month, { actor = 'cron' } = {}) {
-  const [y, mo] = month.split('-').map(Number);
-  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-  const since = `${month}-01`;
-  const until = `${month}-${String(daysInMonth).padStart(2, '0')}`;
-  const collected = await collector.collectMonthlyRevenue(account, creds, since, until);
+async function computeBaselines(account, { actor = 'cron' } = {}) {
+  const weeks = logic.last4Weeks();
+  const weekStarts = weeks.map(w => w.start);
+  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
   let updated = 0, nulled = 0;
-  for (const { material: m, revenue, hasData } of collected) {
-    const baseline = hasData ? logic.calcBaselineWeekly(revenue, daysInMonth) : null;
+  for (const m of materials) {
+    const ws = statsMap[m.id] || {};
+    let revSum = 0, hasData = false;
+    for (const k of weekStarts) {
+      const row = ws[k];
+      if (!row) continue;
+      revSum += parseInt(row.revenue) || 0;
+      if ((parseInt(row.imp) || 0) + (parseInt(row.clk) || 0) + (parseInt(row.cost) || 0) + (parseInt(row.revenue) || 0) > 0) hasData = true;
+    }
+    // 4주 평균 주간 매출 = 4주 합계 ÷ 28일 × 7
+    const baseline = hasData ? logic.calcBaselineWeekly(revSum, 28) : null;
     await bidDb.setMaterialBaseline(m.id, account.id, baseline, { materialName: m.name, changedBy: actor });
     if (baseline == null) nulled++; else updated++;
   }
-  await bidDb.audit(account.id, actor, '기준매출 산출', { month, since, until, updated, noData: nulled });
-  return { month, updated, noData: nulled };
+  await bidDb.audit(account.id, actor, '기준매출 산출 (지난 4주 평균)', {
+    weeks: `${weekStarts[3]} ~ ${weeks[0].end}`, updated, noData: nulled,
+  });
+  return { weeks: weekStarts, updated, noData: nulled };
 }
 
 /**

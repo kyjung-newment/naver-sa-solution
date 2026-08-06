@@ -195,28 +195,6 @@ async function collectDailyStats(account, creds, dateStr) {
   return out;
 }
 
-// ─── 기준매출용: 전월(달력 기준) 소재별 구매전환매출 합계 ────────────
-// hasData=false → 해당 기간 API 행이 전무하거나 전 지표 0 (신규 소재 → 기준매출 null)
-async function collectMonthlyRevenue(account, creds, since, until) {
-  const client = makeClient(creds, account.customer_id);
-  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
-  const out = [];
-  await mapLimit(materials, 5, async (m) => {
-    try {
-      const result = await client.getEntityStats(m.ncc_ad_id, { since, until, fields: STAT_FIELDS });
-      let revenue = 0, hasData = false;
-      for (const d of (result?.data || [])) {
-        revenue += d.purchaseConvAmt || 0;
-        if ((d.impCnt || 0) + (d.clkCnt || 0) + (d.salesAmt || 0) + (d.purchaseConvAmt || 0) > 0) hasData = true;
-      }
-      out.push({ material: m, revenue, hasData });
-    } catch (e) {
-      console.log(`  ⚠️ 기준매출 수집 실패 (${m.ncc_ad_id}):`, e.message);
-    }
-  });
-  return out;
-}
-
 // ─── 적용 전 현재 입찰가 재조회 (안전장치) ──────────────────────────
 async function fetchLiveBid(account, creds, nccAdId) {
   const client = makeClient(creds, account.customer_id);
@@ -238,4 +216,4 @@ async function applyBid(account, creds, nccAdId, bidAmt) {
   return client.updateAdBid(nccAdId, bidAmt);
 }
 
-module.exports = { syncMaterials, collectWeeklyStats, collectDailyStats, collectMonthlyRevenue, fetchLiveBid, applyBid, mapLimit };
+module.exports = { syncMaterials, collectWeeklyStats, collectDailyStats, fetchLiveBid, applyBid, mapLimit };

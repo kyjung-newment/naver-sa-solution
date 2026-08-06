@@ -1251,9 +1251,10 @@ const SETTING_TAB_PARAMS = {
     { k: 'default_target_roas', label: '기본 목표ROAS (배수)', tip: '소재별 목표ROAS 미지정 시 사용. 5.5 = 550%. 분류 계수를 곱해 보정목표가 됩니다.' },
   ],
   volume: [
-    { k: 'volume_drop_threshold', label: '볼륨하락 임계', tip: '감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락' },
-    { k: 'core_share', label: '핵심소재 누적기여 기준', tip: '4주 누적 매출 상위 소재의 누적 기여가 이 비율 이내면 핵심소재. 0.70 = 70%' },
-    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 0.05 = 5%' },
+    { k: 'volume_drop_threshold', label: '볼륨하락 임계 (일반소재)', tip: '일반소재 감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락' },
+    { k: 'volume_drop_threshold_core', label: '볼륨하락 임계 (핵심소재)', tip: '핵심소재에 별도 적용되는 볼륨하락 임계. 예: 0.05로 두면 핵심소재는 5%만 하락해도 감액을 보류' },
+    { k: 'core_share', label: '핵심소재 누적기여 기준', tip: '개별 소재 기준이 아니라 "누적 기여" 기준: 4주 매출 상위 소재부터 차례로 더해, 누적합이 전체 매출×이 비율(0.70=70%)에 도달할 때까지 포함된 소재들이 핵심. 예: 전체 1,000만원이면 상위 소재부터 누적 700만원을 채우는 소재들. 0으로 설정하면 자동 판별 끔(소재별 설정의 수동 고정만 사용)' },
+    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 예: 일반 규칙이 -10%여도 핵심소재는 0.05면 최대 -5%까지만' },
   ],
   limits: [
     { k: 'min_bid', label: '최저입찰가 (원)', tip: '권장입찰가가 이 값 아래로 내려가지 않습니다.' },
@@ -1455,8 +1456,8 @@ router.get('/settings', requireLogin, async (req, res) => {
         <div class="card-body">
           <div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('volume')}</div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-            ${ro ? '' : `<button class="btn btn-outline btn-sm" id="btn-baseline" onclick="recalcBaseline()">🔁 기준매출 재계산 (전월 기준, 수동 실행)</button>`}
-            <span style="font-size:12px;color:#94a3b8">기준매출 = 전월 매출 합계 ÷ 전월 일수 × 7 (100원 단위 반올림). 매월 1일 크론에서 자동 산출되며, 소재별 값은 <b>소재별 설정</b> 탭에서 확인할 수 있습니다.</span>
+            ${ro ? '' : `<button class="btn btn-outline btn-sm" id="btn-baseline" onclick="recalcBaseline()">🔁 기준매출 재계산 (지난 4주 평균, 수동 실행)</button>`}
+            <span style="font-size:12px;color:#94a3b8">기준매출 = 주차 집계 월요일 기준 <b>지난 4주 소재별 주간 매출 평균</b> (100원 단위 반올림, 구매전환매출). 매주 월 08:00 주간 실행 때 자동 갱신되며, 소재별 값은 <b>소재별 설정</b> 탭에서 확인할 수 있습니다.</span>
           </div>
         </div></div>
 
@@ -1487,7 +1488,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
               <input type="checkbox" name="app_enabled" style="width:auto" ${settings.app_enabled === '1' ? 'checked' : ''} ${dis}> 이 광고주에 주기 자동 실행(크론) 사용</label>
-            <span style="font-size:12px;color:#94a3b8">크론 시각(KST): 매주 월 08:00 동기화+성과 수집+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 기준매출 산출+월간 리포트</span>
+            <span style="font-size:12px;color:#94a3b8">크론 시각(KST): 매주 월 08:00 동기화+성과 수집+기준매출 갱신+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 월간 리포트</span>
           </div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
         </div></div>
@@ -1584,11 +1585,11 @@ router.get('/settings', requireLogin, async (req, res) => {
     }
     ${ro ? '' : API_SECTION_SCRIPT}
     async function recalcBaseline(){
-      if(!confirm('전월(달력 기준) 데이터로 소재별 기준매출을 다시 계산합니다. 소재 수에 따라 수 분 걸릴 수 있습니다. 진행할까요?'))return;
+      if(!confirm('지난 4주(주차 집계 기준) 주간 매출 평균으로 소재별 기준매출을 다시 계산합니다. 진행할까요?'))return;
       var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
       var j=await api('${BASE}/api/settings/recalc-baseline',{});
-      b.disabled=false;b.textContent='🔁 기준매출 재계산 (전월 기준, 수동 실행)';
-      toast(j.ok?('기준매출 재계산 완료 — '+j.month+' 기준 · 산출 '+j.updated+'건 / 데이터없음 '+j.noData+'건'):('오류: '+(j.error||'')),!j.ok);
+      b.disabled=false;b.textContent='🔁 기준매출 재계산 (지난 4주 평균, 수동 실행)';
+      toast(j.ok?('기준매출 재계산 완료 — 산출 '+j.updated+'건 / 데이터없음 '+j.noData+'건'):('오류: '+(j.error||'')),!j.ok);
       if(j.ok)setTimeout(function(){location.reload()},1200);
     }
     </script>
@@ -1611,17 +1612,12 @@ router.post('/api/settings/save', requireLogin, requireMaster, async (req, res) 
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// 기준매출 수동 재계산 (전월 달력 기준)
+// 기준매출 수동 재계산 (지난 4주 평균 — DB 주차 데이터 기반, API 호출 없음)
 router.post('/api/settings/recalc-baseline', requireLogin, requireMaster, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const creds = await getCreds(req, account.id);
-    if (!creds) return res.json({ ok: false, error: 'API 자격증명 없음' });
-    const kst = logic.nowKST();
-    const prev = new Date(kst); prev.setUTCDate(0); // 전월 말일
-    const month = logic.fmtDate(prev).slice(0, 7);
-    const r = await engine.computeBaselines(account, creds, month, { actor: req.session.userName || 'manual' });
+    const r = await engine.computeBaselines(account, { actor: req.session.userName || 'manual' });
     res.json({ ok: true, ...r });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
@@ -1993,16 +1989,10 @@ router.get('/api/cron/tick', async (req, res) => {
           } catch (e) { results.push({ account: account.name, job: 'daily', error: e.message }); }
         }
       }
-      // 매월 1일 06시 (KST): ① 기준매출 산출(전월 주간환산) → ② 월간 리포트
+      // 매월 1일 06시 (KST): 월간 리포트 (기준매출은 매주 월 주간 실행에서 갱신)
       if (day === 1 && hour === 6) {
         const prev = new Date(kst); prev.setUTCDate(0);
         const prevMonth = logic.fmtDate(prev).slice(0, 7);
-        if (await bidDb.tryClaimCronRun(`baseline:${account.id}:${prevMonth}`)) {
-          try {
-            const r = await engine.computeBaselines(account, creds, prevMonth, { actor: 'cron' });
-            results.push({ account: account.name, job: 'baseline', ...r });
-          } catch (e) { results.push({ account: account.name, job: 'baseline', error: e.message }); }
-        }
         if (await bidDb.tryClaimCronRun(`monthly:${account.id}:${prevMonth}`)) {
           try {
             const r = await engine.runMonthlyReport(account, prevMonth);

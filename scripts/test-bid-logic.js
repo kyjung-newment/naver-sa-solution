@@ -59,12 +59,33 @@ t('유지 판정은 통과', () => {
   assert.strictEqual(volumeHold(VERDICT.KEEP, 0, 1000000, S), VERDICT.KEEP);
 });
 
-console.log('── 기준매출 산출 (전월 주간 환산) ──');
-t('31일 달 매출 443만 → ÷31×7 = 1,000,322.6 → 1,000,300 (100원 단위)', () => {
-  assert.strictEqual(calcBaselineWeekly(4430000, 31), 1000300);
+console.log('── 기준매출 산출 (지난 4주 평균 주간 매출) ──');
+t('4주 합계 420만 → ÷28×7 = 주간 평균 1,050,000', () => {
+  assert.strictEqual(calcBaselineWeekly(4200000, 28), 1050000);
 });
-t('30일 달 매출 0 → 0', () => {
-  assert.strictEqual(calcBaselineWeekly(0, 30), 0);
+t('4주 합계 443만 → 1,107,500 (100원 단위 반올림)', () => {
+  assert.strictEqual(calcBaselineWeekly(4430000, 28), 1107500);
+});
+t('매출 0 → 0', () => {
+  assert.strictEqual(calcBaselineWeekly(0, 28), 0);
+});
+
+console.log('── 볼륨하락 임계 일반/핵심 분리 ──');
+t('일반 10% · 핵심 5% 별도 적용 (기준 100만, 최신주 93만)', () => {
+  const s2 = { ...S, volume_drop_threshold: 0.10, volume_drop_threshold_core: 0.05 };
+  assert.strictEqual(volumeHold(VERDICT.DOWN, 930000, 1000000, s2, true), VERDICT.DOWN_HOLD); // 핵심: 95만 미만 → 보류
+  assert.strictEqual(volumeHold(VERDICT.DOWN, 930000, 1000000, s2, false), VERDICT.DOWN);     // 일반: 90만 이상 → 감액 진행
+});
+t('핵심소재 누적기여: 전체 1,000만 중 상위 누적 70% 도달까지 포함', () => {
+  // A 500만(누적 시작 0%) 포함 → B 200만(50%) 포함 → C 100만(70% 도달) 제외
+  const core = coreMaterialIds([
+    { id: 'A', revenue4w: 5000000 }, { id: 'B', revenue4w: 2000000 },
+    { id: 'C', revenue4w: 1000000 }, { id: 'D', revenue4w: 500000 },
+  ], 0.70);
+  assert.ok(core.has('A') && core.has('B') && !core.has('C') && !core.has('D'));
+});
+t('core_share=0 → 자동 판별 끔 (핵심 없음)', () => {
+  assert.strictEqual(coreMaterialIds([{ id: 1, revenue4w: 100 }], 0).size, 0);
 });
 
 console.log('── 핵심소재 (누적기여 70%) ──');
