@@ -397,6 +397,24 @@ router.get('/', requireLogin, async (req, res) => {
   const pend = await pendingCount(account.id);
   const alerts = await bidDb.getAlerts(account.id, { unresolvedOnly: true, limit: 30 });
 
+  // KPI 트렌드: 최근 12주 계정 전체 비용/구매전환매출/ROAS (활성 소재, 제외 캠페인 제외)
+  const excludedC = logic.parseExcludedCampaigns(settings.excluded_campaigns);
+  const trendRaw = (await bidDb.pool.query(`
+    SELECT m.campaign_name, ws.week_start, ws.cost, ws.revenue
+    FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
+    WHERE m.account_id = $1 AND m.enabled = 1 AND COALESCE(m.auto_disabled, 0) = 0
+  `, [account.id])).rows;
+  const trendMap = {};
+  for (const t of trendRaw) {
+    if (logic.isExcludedCampaign(t.campaign_name, excludedC)) continue;
+    const wk = wkKey(t.week_start);
+    if (!trendMap[wk]) trendMap[wk] = { cost: 0, revenue: 0 };
+    trendMap[wk].cost += parseInt(t.cost) || 0;
+    trendMap[wk].revenue += parseInt(t.revenue) || 0;
+  }
+  const trendWeeks = Object.keys(trendMap).sort().slice(-12)
+    .map(wk => ({ week: wk, cost: trendMap[wk].cost, revenue: trendMap[wk].revenue }));
+
   // 최신 주차 요약
   let cost1 = 0, rev1 = 0, cost4 = 0, rev4 = 0;
   const dist = {};
@@ -448,142 +466,46 @@ router.get('/', requireLogin, async (req, res) => {
       <div class="kpi p"><div class="kpi-l">가중 블렌딩 ROAS (전체)</div><div class="kpi-v">${fmtRoas(weightedBlended)}</div><div class="kpi-s">1주차 ${blendN}% · 2~4주차 ${100 - blendN}%</div></div>
       <div class="kpi o"><div class="kpi-l">승인 대기</div><div class="kpi-v">${pend}건</div><div class="kpi-s"><a href="${BASE}/approvals" style="color:#0ea5e9;font-weight:600">승인함 바로가기 →</a></div></div>
     </div>
+    <div class="card"><div class="card-header"><span class="card-title">📈 주간 성과 트렌드 (최근 12주)</span>
+      <span style="font-size:12px;color:#94a3b8">활성 소재 합산 · 매출 = 구매전환매출 · 하단 보라 = 주간 ROAS · 소재별 상세는 <a href="${BASE}/weekly" style="color:#0ea5e9;font-weight:600">주차별 데이터</a></span></div>
+      <div class="card-body" id="kpi-trend"><div class="empty" style="padding:16px"><span class="spinner"></span></div></div>
+    </div>
     <div class="card"><div class="card-header"><span class="card-title">판정 분포 (최신 주차 기준 계산)</span>
       <span style="font-size:12px;color:#94a3b8">소재 ${rows.length}개 · 데이터 기준 주 ${weeks[0].start} ~ ${weeks[0].end}</span></div>
       <div class="card-body">${distHtml || '<span class="empty" style="padding:0">데이터가 없습니다. 소재 동기화 후 성과가 수집되면 표시됩니다.</span>'}</div>
     </div>
     ${alertsHtml}
     ${!rows.length && !isClient(req) ? `<div class="alert alert-info">소재가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "소재 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
-    <div class="card" id="mx-card">
-      <div class="card-header"><span class="card-title">📑 소재별 주차 누적 데이터 <span style="font-weight:500;font-size:11.5px;color:#94a3b8">· 매출 = 구매전환매출</span></span>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <select id="mx-weeks" onchange="loadMx()" title="표시할 주차 기간" style="width:110px">
-            <option value="4">최근 4주</option><option value="8">최근 8주</option>
-            <option value="12" selected>최근 12주</option><option value="26">최근 26주</option>
-            <option value="52">최근 52주</option><option value="all">전체</option>
-          </select>
-          <input id="mx-q" placeholder="캠페인/그룹/소재 검색..." style="width:220px" oninput="renderMx()">
-          <button class="btn btn-outline btn-sm" onclick="mxCsv()">📥 CSV</button>
-          <button class="btn btn-outline btn-sm" id="mx-full-btn" onclick="mxToggleFull()">⛶ 크게 보기</button>
-        </div></div>
-      <div id="mx-wrap" style="overflow:auto;max-height:640px"><div class="empty"><span class="spinner"></span> 불러오는 중...</div></div>
-    </div>
-    <style>
-      #mx-card.mx-full{position:fixed;inset:12px;z-index:650;margin:0;display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.35)}
-      #mx-card.mx-full .card-header{flex:none}
-      #mx-card.mx-full #mx-wrap{max-height:none;flex:1}
-    </style>
     <script>
-    var MX={weeks:[],rows:[]};
-    function loadMx(){
-      var n=document.getElementById('mx-weeks').value;
-      document.getElementById('mx-wrap').innerHTML='<div class="empty"><span class="spinner"></span> 불러오는 중...</div>';
-      fetch('${BASE}/api/matrix?weeks='+n).then(function(r){return r.json()}).then(function(j){
-        if(!j.ok){document.getElementById('mx-wrap').innerHTML='<div class="empty">'+(j.error||'오류')+'</div>';return;}
-        MX=j;renderMx();
-        var w=document.getElementById('mx-wrap');w.scrollLeft=w.scrollWidth; // 최신 주가 오른쪽 — 기본 스크롤 끝으로
-      });
-    }
-    loadMx();
-    function mxToggleFull(){
-      var card=document.getElementById('mx-card'),btn=document.getElementById('mx-full-btn');
-      var on=card.classList.toggle('mx-full');
-      btn.textContent=on?'✕ 닫기':'⛶ 크게 보기';
-      document.body.style.overflow=on?'hidden':'';
-    }
-    document.addEventListener('keydown',function(e){if(e.key==='Escape'&&document.getElementById('mx-card').classList.contains('mx-full'))mxToggleFull();});
-    function mxNum(n){return n?Math.round(n).toLocaleString('ko-KR'):'0';}
-    function mxRows(){
-      var q=(document.getElementById('mx-q').value||'').toLowerCase();
-      return MX.rows.filter(function(r){return !q||(r.campaign+' '+r.adgroup+' '+r.name).toLowerCase().indexOf(q)!==-1;});
-    }
-    function renderMx(){
-      if(!MX.weeks.length){document.getElementById('mx-wrap').innerHTML='<div class="empty">주차 데이터가 없습니다. 소재 동기화 + 성과 수집을 먼저 실행해주세요.</div>';return;}
-      var stTh='position:sticky;top:0;z-index:5;background:#f8fafc;';
-      var s1='position:sticky;left:0;min-width:150px;max-width:150px;background:#fff;z-index:2;';
-      var s2='position:sticky;left:150px;min-width:150px;max-width:150px;background:#fff;z-index:2;';
-      var s3='position:sticky;left:300px;min-width:220px;max-width:220px;background:#fff;z-index:2;';
-      var h='<table style="border-collapse:separate;border-spacing:0"><thead><tr>'
-        +'<th style="'+stTh+s1+'z-index:6">캠페인</th>'
-        +'<th style="'+stTh+s2+'z-index:6">광고그룹</th>'
-        +'<th style="'+stTh+s3+'z-index:6">소재</th>'
-        +MX.weeks.map(function(w){var wk=w.slice(5);
-          return '<th class="num" style="'+stTh+'border-left:2px solid #e2e8f0">'+wk+'<br>비용</th>'
-            +'<th class="num" style="'+stTh+'">'+wk+'<br>매출</th>'
-            +'<th class="num" style="'+stTh+'">'+wk+'<br>ROAS</th>';}).join('')
-        +'</tr></thead><tbody>';
-      var rows=mxRows();
-      h+=rows.map(function(r){
-        return '<tr>'
-        +'<td style="'+s1+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.campaign+'">'+r.campaign+'</td>'
-        +'<td style="'+s2+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.adgroup+'">'+r.adgroup+'</td>'
-        +'<td style="'+s3+'overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+r.name+'"><b>'+r.name+'</b></td>'
-        +MX.weeks.map(function(w){
-          var d=r.d[w]||{c:0,r:0};
-          var roas=d.c>0?(d.r/d.c*100).toFixed(0)+'%':'-';
-          return '<td class="num" style="border-left:2px solid #f1f5f9">'+mxNum(d.c)+'</td>'
-            +'<td class="num">'+mxNum(d.r)+'</td>'
-            +'<td class="num" style="font-weight:600;color:#7c3aed">'+roas+'</td>';}).join('')
-        +'</tr>';
-      }).join('');
-      h+='</tbody></table>';
-      if(!rows.length)h='<div class="empty">검색 결과 없음</div>';
-      document.getElementById('mx-wrap').innerHTML=h;
-    }
-    function mxCsv(){
-      var head=['캠페인','광고그룹','소재','소재ID'];
-      MX.weeks.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS');});
-      var rows=mxRows().map(function(r){
-        var line=[r.campaign,r.adgroup,r.name,r.adId];
-        MX.weeks.forEach(function(w){var d=r.d[w]||{c:0,r:0};line.push(d.c,d.r,d.c>0?(d.r/d.c).toFixed(3):'');});
-        return line;});
-      csvExport([head].concat(rows),'이고진_소재별_주차누적.csv');
-    }
+    // KPI 트렌드 차트 (최근 12주 비용/구매전환매출 라인 + 주간 ROAS 라벨)
+    var TREND=${JSON.stringify(trendWeeks)};
+    (function(){
+      var el=document.getElementById('kpi-trend');
+      if(!TREND.length){el.innerHTML='<div class="empty" style="padding:16px">주차 데이터가 쌓이면 트렌드가 표시됩니다.</div>';return;}
+      var W=960,H=300,P=58;
+      var max=Math.max.apply(null,TREND.map(function(w){return Math.max(w.cost,w.revenue)}).concat([1]));
+      function x(i){return P+i*(W-2*P)/Math.max(TREND.length-1,1);}
+      function y(v){return H-P-(v/max)*(H-2*P);}
+      function fmtM(v){return v>=100000000?(v/100000000).toFixed(1)+'억':v>=10000?Math.round(v/10000).toLocaleString('ko-KR')+'만':Math.round(v).toLocaleString('ko-KR');}
+      var grid='';
+      for(var g=1;g<=4;g++){var gv=max*g/4,gy=y(gv);
+        grid+='<line x1="'+P+'" y1="'+gy+'" x2="'+(W-P)+'" y2="'+gy+'" stroke="#eef2f7"/>'
+          +'<text x="'+(P-8)+'" y="'+(gy+3)+'" text-anchor="end" font-size="10" fill="#94a3b8">'+fmtM(gv)+'</text>';}
+      function line(key,color){return '<polyline fill="none" stroke="'+color+'" stroke-width="2.5" points="'+TREND.map(function(w,i){return x(i)+','+y(w[key])}).join(' ')+'"/>'
+        +TREND.map(function(w,i){return '<circle cx="'+x(i)+'" cy="'+y(w[key])+'" r="3.5" fill="'+color+'"><title>'+w.week+' · '+w[key].toLocaleString('ko-KR')+'원</title></circle>'}).join('');}
+      var labels=TREND.map(function(w,i){var ro=w.cost>0?(w.revenue/w.cost*100).toFixed(0)+'%':'-';
+        return '<text x="'+x(i)+'" y="'+(H-P+18)+'" text-anchor="middle" font-size="10" fill="#64748b">'+w.week.slice(5).replace('-','/')+'</text>'
+          +'<text x="'+x(i)+'" y="'+(H-P+33)+'" text-anchor="middle" font-size="10" fill="#8b5cf6" font-weight="700">'+ro+'</text>';}).join('');
+      el.innerHTML='<svg viewBox="0 0 '+W+' '+(H+16)+'" style="width:100%;background:#fafcfe;border-radius:10px">'
+        +grid
+        +'<line x1="'+P+'" y1="'+(H-P)+'" x2="'+(W-P)+'" y2="'+(H-P)+'" stroke="#e2e8f0"/>'
+        +line('cost','#0ea5e9')+line('revenue','#10b981')+labels
+        +'<rect x="'+P+'" y="14" width="10" height="10" fill="#0ea5e9"/><text x="'+(P+16)+'" y="23" font-size="11" fill="#334155">비용</text>'
+        +'<rect x="'+(P+74)+'" y="14" width="10" height="10" fill="#10b981"/><text x="'+(P+90)+'" y="23" font-size="11" fill="#334155">구매전환매출</text></svg>';
+    })();
     </script>
   `;
   res.send(appLayout(req, '대시보드', content, 'dashboard', { accounts, account, user, pendingCount: pend }));
-});
-
-// 소재별 주차 누적 매트릭스 (대시보드 시트형 테이블) — 캠페인명, 광고그룹명 순 정렬
-// ?weeks=N 최근 N주만 (기본 12, all=전체). 제외 캠페인은 표시하지 않음.
-router.get('/api/matrix', requireLogin, async (req, res) => {
-  try {
-    const { account } = await getSelectedAccount(req);
-    if (!account) return res.json({ ok: false, error: '광고주 없음' });
-    const settings = await bidDb.getSettings(account.id);
-    const excluded = logic.parseExcludedCampaigns(settings.excluded_campaigns);
-    const mats = (await bidDb.getMaterials(account.id, { enabledOnly: true })) // ORDER BY campaign_name, adgroup_name, name
-      .filter(m => !logic.isExcludedCampaign(m.campaign_name, excluded));
-    const stat = (await bidDb.pool.query(`
-      SELECT ws.material_id, ws.week_start, ws.cost, ws.revenue
-      FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
-      WHERE m.account_id = $1
-    `, [account.id])).rows;
-    const weekSet = new Set();
-    const map = {};
-    for (const r of stat) {
-      const wk = wkKey(r.week_start);
-      weekSet.add(wk);
-      if (!map[r.material_id]) map[r.material_id] = {};
-      map[r.material_id][wk] = { c: parseInt(r.cost) || 0, r: parseInt(r.revenue) || 0 };
-    }
-    let weeks = [...weekSet].sort(); // 과거 → 최신 (누적식, 새 주가 오른쪽에 추가)
-    const nWeeks = String(req.query.weeks || '12');
-    if (nWeeks !== 'all') {
-      const n = Math.max(1, parseInt(nWeeks) || 12);
-      weeks = weeks.slice(-n);
-    }
-    const sel = new Set(weeks);
-    res.json({
-      ok: true, weeks,
-      rows: mats.map(m => {
-        const full = map[m.id] || {};
-        const d = {};
-        for (const wk of Object.keys(full)) if (sel.has(wk)) d[wk] = full[wk];
-        return { id: m.id, campaign: m.campaign_name, adgroup: m.adgroup_name, name: m.name, adId: m.ncc_ad_id, d };
-      }),
-    });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
