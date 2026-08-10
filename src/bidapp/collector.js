@@ -77,8 +77,13 @@ async function syncMaterials(account, creds) {
     if (!t) return true;
     return !(t.includes('BRAND') || t.includes('CATALOG'));
   };
+  // 기존 저장 입찰가 맵 (외부 변경 감지용 — API 수신값과 비교)
+  const prevBids = {};
+  for (const m of await bidDb.getMaterials(account.id)) prevBids[m.ncc_ad_id] = { id: m.id, bid: parseInt(m.current_bid) || 0 };
+  const latestWeek = last4Weeks()[0].start; // 입찰가 스냅샷 귀속 주차 (최신 완료 주)
+
   const adRes = await mapLimit(allAgs, 5, ({ camp, ag }) => client.getAds(ag.nccAdgroupId).then(ads => ({ camp, ag, ads: ads || [] })));
-  let count = 0;
+  let count = 0, bidChanges = 0;
   const seenAdIds = new Set();
   for (const r of adRes) {
     if (r.status !== 'fulfilled') continue;
@@ -91,16 +96,24 @@ async function syncMaterials(account, creds) {
       const bid = (!useGroupBid && adAttr.bidAmt) ? adAttr.bidAmt : (ag.adgroupAttrJson?.bidAmt || ag.bidAmt || adAttr.bidAmt || 0);
       const name = ad.ad?.headline || ad.ad?.subject || adAttr.headline
         || ad.referenceData?.productName || ad.ad?.productName || ad.nccAdId;
-      await bidDb.upsertMaterial(account.id, {
+      const newBid = parseInt(bid) || 0;
+      const materialId = await bidDb.upsertMaterial(account.id, {
         nccAdId: ad.nccAdId,
         nccAdgroupId: ag.nccAdgroupId,
         name: String(name).slice(0, 200),
         campaignName: camp.name || '',
         adgroupName: ag.name || '',
-        currentBid: parseInt(bid) || 0,
+        currentBid: newBid,
         useGroupBid,
         registeredAt: ad.regTm || ad.regTime || '',
       });
+      // 주간 입찰가 스냅샷: 이전 저장값과 다르면(솔루션 외 광고시스템 변경 포함) 변경 전 값을 함께 기록
+      const prev = prevBids[ad.nccAdId];
+      const changed = prev && prev.bid > 0 && newBid > 0 && prev.bid !== newBid;
+      if (changed) bidChanges++;
+      try {
+        await bidDb.setWeekBid(materialId, latestWeek, { weekBid: newBid, changedFrom: changed ? prev.bid : null });
+      } catch (e) { /* 스냅샷 실패는 동기화를 막지 않음 */ }
       seenAdIds.add(ad.nccAdId);
       count++;
     }
@@ -120,9 +133,9 @@ async function syncMaterials(account, creds) {
   }
   await bidDb.audit(account.id, 'sync', '소재 동기화 진단', {
     campaigns: (campaigns || []).length, shoppingTargets: targets.length,
-    productGroups: allAgs.length, synced: count, types: diag,
+    productGroups: allAgs.length, synced: count, bidChanges, types: diag,
   });
-  return { synced: count, diag };
+  return { synced: count, bidChanges, diag };
 }
 
 // ─── 주차별 성과 수집 ──────────────────────────────────────────────

@@ -118,6 +118,10 @@ async function applyAdjustment(account, creds, adjId, { auto = false, actor = 's
       apiResponse: JSON.stringify({ ok: true, note, liveBid: live.bid, at: new Date().toISOString() }),
     });
     await bidDb.setMaterialBid(adj.material_id, adj.calc_bid);
+    // 주차별 입찰가 변경 이력 스냅샷 (해당 조정 주차에 변경 전→후 기록)
+    try {
+      await bidDb.setWeekBid(adj.material_id, wkKey(adj.week_start), { weekBid: adj.calc_bid, changedFrom: adj.prev_bid });
+    } catch (e) { /* 스냅샷 실패는 적용 결과에 영향 없음 */ }
     await bidDb.audit(account.id, actor, auto ? '입찰가 자동적용' : '입찰가 적용', {
       material: adj.material_name, nccAdId: adj.ncc_ad_id,
       from: adj.prev_bid, to: adj.calc_bid, verdict: adj.verdict, note,

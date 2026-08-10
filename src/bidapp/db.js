@@ -175,6 +175,10 @@ async function initBidDb() {
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS core_override TEXT NOT NULL DEFAULT ''`);
   // v2.3: 자동 비활성(동기화에서 미발견/유형 제외) 을 수동 제외(enabled)와 분리
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS auto_disabled INTEGER NOT NULL DEFAULT 0`);
+  // v2.5: 주차별 입찰가 스냅샷 — week_bid=해당 주 입찰가, bid_change_from=그 주 변경이 감지된 경우 변경 전 값
+  // (솔루션 적용 시 즉시 기록 + 매주 월요일 동기화 때 광고시스템 외부 변경 감지)
+  await safe(`ALTER TABLE bid_weekly_stats ADD COLUMN IF NOT EXISTS week_bid INTEGER DEFAULT NULL`);
+  await safe(`ALTER TABLE bid_weekly_stats ADD COLUMN IF NOT EXISTS bid_change_from INTEGER DEFAULT NULL`);
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
   // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
@@ -340,6 +344,18 @@ async function upsertWeeklyStat(materialId, weekStart, s) {
   `, [materialId, weekStart, s.imp || 0, s.clk || 0, s.avgRank || 0, s.avgCpc || 0, s.cost || 0, s.revenue || 0, s.convCnt || 0]);
 }
 
+// 주차별 입찰가 스냅샷 기록: week_bid=해당 주 입찰가(최신값), bid_change_from=그 주 첫 변경 전 값 유지
+// changedFrom이 null이면 기존 감지값을 보존한다 (같은 주 내 재동기화가 변경 이력을 지우지 않도록)
+async function setWeekBid(materialId, weekStart, { weekBid, changedFrom = null }) {
+  return pool.query(`
+    INSERT INTO bid_weekly_stats (material_id, week_start, week_bid, bid_change_from)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (material_id, week_start) DO UPDATE SET
+      week_bid = $3,
+      bid_change_from = COALESCE(bid_weekly_stats.bid_change_from, $4)
+  `, [materialId, weekStart, weekBid ?? null, changedFrom ?? null]);
+}
+
 // 소재별 주차 데이터 맵: { materialId: { weekStart: row } }
 async function getWeeklyStatsMap(accountId, weekStarts) {
   const rows = await all(`
@@ -500,7 +516,7 @@ module.exports = {
   getSettings, setSetting, getSettingHistory,
   getCategoryRules, setCategoryRule,
   getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid, setMaterialBaseline, setMaterialAutoDisabled,
-  upsertWeeklyStat, getWeeklyStatsMap,
+  upsertWeeklyStat, getWeeklyStatsMap, setWeekBid,
   upsertAdjustment, getAdjustmentById, getAdjustments, setAdjustmentStatus,
   setViewerRole, setViewerActive, isInvitedMaster,
   audit, getAuditLog,

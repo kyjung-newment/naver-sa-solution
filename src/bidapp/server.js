@@ -544,19 +544,21 @@ router.get('/weekly', requireLogin, async (req, res) => {
         <select id="wk-to">${weekOpts.map((w, i) => `<option value="${w.start}" ${i === 0 ? 'selected' : ''}>${w.start} ~ ${w.end}</option>`).join('')}</select>
         <button class="btn btn-outline btn-sm" onclick="loadData()">적용</button>
       </span>
-      <select id="f-cat"><option value="">전체 분류</option>${logic.CATEGORIES.map(c => `<option>${c}</option>`).join('')}</select>
-      <select id="f-verdict"><option value="">전체 판정</option>${Object.values(logic.VERDICT).map(v => `<option>${v}</option>`).join('')}</select>
-      <input id="f-q" placeholder="소재/캠페인 검색..." style="width:200px">
+      <input id="f-q" placeholder="소재/캠페인/소재ID 검색..." style="width:220px">
+      <button class="btn btn-outline btn-sm" onclick="resetFilt()" id="filt-reset" style="display:none">필터 초기화</button>
       <span style="flex:1"></span>
       <button class="btn btn-outline btn-sm" onclick="exportCsv()">📥 CSV 내보내기</button>
     </div>
-    <div class="alert alert-info" style="font-size:12.5px">주차 열(비용/매출/ROAS)은 선택한 기간의 각 주(월~일)이며 오른쪽으로 누적됩니다. <b>소재~보정목표 열은 고정</b>되고, 가로 스크롤로 주차와 판정 열을 열람합니다. 판정(블렌딩·권장입찰가)은 항상 최근 4주 기준입니다.</div>
+    <div class="alert alert-info" style="font-size:12.5px">열 제목의 <b>⏷</b>를 누르면 엑셀처럼 값을 골라 필터링할 수 있습니다. 주차 열은 [비용/매출/ROAS/입찰가/변경입찰가] — 변경입찰가는 그 주에 입찰가 변경(솔루션 적용 또는 광고시스템 외부 변경)이 있었을 때만 표시됩니다. <b>소재~보정목표 열 고정</b>, 판정 열은 최근 4주 기준으로 맨 오른쪽에 있습니다.</div>
     <div class="tbl-wrap" id="wk-wrap"><div class="empty"><span class="spinner"></span> 불러오는 중...</div></div>
+    <div id="filt-pop" style="display:none;position:fixed;background:#fff;border:1px solid #e5e7eb;border-radius:11px;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:700;min-width:200px;max-width:300px"></div>
     <div id="trend-modal" style="display:none"></div>
     <script>
     var DATA=[],WEEKS=[],SORT_K='',SORT_DIR=-1,MASTER=${master ? 'true' : 'false'};
     var CATS=${JSON.stringify(logic.CATEGORIES)};
     var LATEST='${weekOpts[0].start}';
+    var FILT={campaignName:null,category:null,verdict:null,coreLabel:null}; // null=전체, Set=선택값만
+    var FILT_LABEL={campaignName:'캠페인',category:'분류',verdict:'판정',coreLabel:'핵심'};
     function addDays(iso,d){var t=new Date(iso+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+d);return t.toISOString().slice(0,10);}
     document.getElementById('wk-preset').onchange=function(){
       var custom=this.value==='custom';
@@ -577,33 +579,75 @@ router.get('/weekly', requireLogin, async (req, res) => {
       document.getElementById('wk-wrap').innerHTML='<div class="empty"><span class="spinner"></span> 불러오는 중...</div>';
       fetch('${BASE}/api/weekly?from='+rg.from+'&to='+rg.to).then(function(r){return r.json()}).then(function(j){
         if(!j.ok){document.getElementById('wk-wrap').innerHTML='<div class="empty">'+(j.error||'오류')+'</div>';return;}
-        DATA=j.rows;WEEKS=j.weeks;render();
+        DATA=j.rows.map(function(r){r.coreLabel=r.isCore?'핵심':'일반';return r;});
+        WEEKS=j.weeks;render();
         var w=document.getElementById('wk-wrap');w.scrollLeft=w.scrollWidth; // 최신 주·판정 열이 보이도록 오른쪽 끝으로
       });
     }
     loadData();
-    document.getElementById('f-cat').onchange=function(){render()};
-    document.getElementById('f-verdict').onchange=function(){render()};
     document.getElementById('f-q').oninput=function(){render()};
     function fnum(n){return n==null?'-':Math.round(n).toLocaleString('ko-KR');}
     function froas(r){return r==null?'-':(r*100).toFixed(0)+'%';}
     function getVal(r,k){
       if(k.indexOf('wk:')===0){
-        var p=k.split(':'),d=r.wk[WEEKS[parseInt(p[1])]]||{c:0,r:0};
-        if(p[2]==='c')return d.c; if(p[2]==='r')return d.r;
-        return d.c>0?d.r/d.c:null;
+        var p=k.split(':'),d=r.wk[WEEKS[parseInt(p[1])]]||{};
+        if(p[2]==='c')return d.c||0; if(p[2]==='r')return d.r||0;
+        if(p[2]==='b')return d.b==null?null:d.b; if(p[2]==='a')return d.a==null?null:d.a;
+        return (d.c>0)?(d.r||0)/d.c:null;
       }
       return r[k];
     }
+    // ─── 엑셀식 열 필터 ───
+    function openFilt(key,ev){
+      ev.stopPropagation();
+      var pop=document.getElementById('filt-pop');
+      var vals={};DATA.forEach(function(r){vals[r[key]||'(없음)']=1;});
+      var list=Object.keys(vals).sort(function(a,b){return a.localeCompare(b,'ko')});
+      var cur=FILT[key];
+      pop.innerHTML='<div style="padding:10px 12px;border-bottom:1px solid #f1f5f9;font-weight:700;font-size:12.5px">'+FILT_LABEL[key]+' 필터</div>'
+        +'<div style="max-height:260px;overflow:auto;padding:6px 0">'
+        +list.map(function(v){
+          var chk=(cur===null||cur.has(v))?'checked':'';
+          return '<label style="display:flex;align-items:center;gap:8px;padding:5px 14px;margin:0;font-size:12.5px;color:#334155;cursor:pointer;font-weight:400">'
+            +'<input type="checkbox" class="filt-chk" value="'+v.replace(/"/g,'&quot;')+'" '+chk+' style="width:auto">'+v+'</label>';
+        }).join('')+'</div>'
+        +'<div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid #f1f5f9">'
+        +'<button class="btn btn-primary btn-sm" onclick="applyFilt(\\''+key+'\\')">적용</button>'
+        +'<button class="btn btn-outline btn-sm" onclick="document.querySelectorAll(\\'.filt-chk\\').forEach(function(c){c.checked=true})">전체 선택</button>'
+        +'<button class="btn btn-outline btn-sm" onclick="document.querySelectorAll(\\'.filt-chk\\').forEach(function(c){c.checked=false})">해제</button>'
+        +'</div>';
+      pop.style.display='block';
+      var x=Math.min(ev.clientX,window.innerWidth-320),y=Math.min(ev.clientY+12,window.innerHeight-380);
+      pop.style.left=Math.max(8,x)+'px';pop.style.top=Math.max(8,y)+'px';
+    }
+    function applyFilt(key){
+      var checked=[],total=0;
+      document.querySelectorAll('.filt-chk').forEach(function(c){total++;if(c.checked)checked.push(c.value);});
+      FILT[key]=(checked.length===total)?null:new Set(checked);
+      document.getElementById('filt-pop').style.display='none';
+      updateFiltReset();render();
+    }
+    function resetFilt(){FILT={campaignName:null,category:null,verdict:null,coreLabel:null};updateFiltReset();render();}
+    function updateFiltReset(){
+      var on=Object.keys(FILT).some(function(k){return FILT[k]!==null});
+      document.getElementById('filt-reset').style.display=on?'':'none';
+    }
+    document.addEventListener('click',function(e){
+      var pop=document.getElementById('filt-pop');
+      if(pop.style.display!=='none'&&(!e.target.closest||!e.target.closest('#filt-pop')))pop.style.display='none';
+    });
+    function fIcon(key){
+      var on=FILT[key]!==null;
+      return ' <span onclick="openFilt(\\''+key+'\\',event)" title="'+FILT_LABEL[key]+' 필터" style="cursor:pointer;color:'+(on?'#0ea5e9':'#b7c3d0')+';font-size:11px">'+(on?'▼':'⏷')+'</span>';
+    }
     function filtered(){
-      var cat=document.getElementById('f-cat').value,vd=document.getElementById('f-verdict').value,q=document.getElementById('f-q').value.toLowerCase();
+      var q=document.getElementById('f-q').value.toLowerCase();
       var rows=DATA.filter(function(r){
-        if(cat&&r.category!==cat)return false;
-        if(vd&&r.verdict!==vd)return false;
-        if(q&&(r.name+' '+r.campaignName+' '+r.adgroupName).toLowerCase().indexOf(q)===-1)return false;
+        for(var k in FILT){if(FILT[k]&&!FILT[k].has(r[k]||'(없음)'))return false;}
+        if(q&&(r.name+' '+r.campaignName+' '+r.adgroupName+' '+r.adId).toLowerCase().indexOf(q)===-1)return false;
         return true;});
       if(SORT_K){
-        var strKeys={name:1,category:1,verdict:1};
+        var strKeys={name:1,adId:1,category:1,verdict:1};
         rows=rows.slice().sort(function(a,b){
           var x=getVal(a,SORT_K),y=getVal(b,SORT_K);
           if(strKeys[SORT_K])return String(x||'').localeCompare(String(y||''),'ko')*(-SORT_DIR);
@@ -625,15 +669,16 @@ router.get('/weekly', requireLogin, async (req, res) => {
       if(j.ok){toast('분류 저장 완료 — 판정은 새로고침 시 반영');var r=DATA.find(function(x){return x.id===id});if(r)r.category=v;}
       else toast(j.error||'저장 실패',true);
     }
-    // 고정(좌측 sticky) 열: 소재 / 분류 / 목표 / 보정목표
-    var S1='position:sticky;left:0;min-width:240px;max-width:240px;background:#fff;z-index:2;';
-    var S2='position:sticky;left:240px;min-width:108px;max-width:108px;background:#fff;z-index:2;';
-    var S3='position:sticky;left:348px;min-width:66px;max-width:66px;background:#fff;z-index:2;';
-    var S4='position:sticky;left:414px;min-width:80px;max-width:80px;background:#fff;z-index:2;';
+    // 고정(좌측 sticky) 열: 소재 / 소재ID / 분류 / 목표 / 보정목표
+    var S1='position:sticky;left:0;min-width:220px;max-width:220px;background:#fff;z-index:2;';
+    var S1b='position:sticky;left:220px;min-width:128px;max-width:128px;background:#fff;z-index:2;';
+    var S2='position:sticky;left:348px;min-width:104px;max-width:104px;background:#fff;z-index:2;';
+    var S3='position:sticky;left:452px;min-width:62px;max-width:62px;background:#fff;z-index:2;';
+    var S4='position:sticky;left:514px;min-width:78px;max-width:78px;background:#fff;z-index:2;';
     var HS='background:#f8fafc;z-index:6;';
-    function sortTh(k,label,extra,cls){
+    function sortTh(k,label,extra,cls,fkey){
       var arrow=SORT_K===k?(SORT_DIR<0?' ▼':' ▲'):'';
-      return '<th class="'+(cls||'')+'" style="cursor:pointer;'+(extra||'')+'" onclick="doSort(\\''+k+'\\')">'+label+arrow+'</th>';
+      return '<th class="'+(cls||'')+'" style="cursor:pointer;'+(extra||'')+'" onclick="doSort(\\''+k+'\\')">'+label+arrow+(fkey?fIcon(fkey):'')+'</th>';
     }
     function doSort(k){
       if(SORT_K===k){SORT_DIR=-SORT_DIR;}else{SORT_K=k;SORT_DIR=-1;}
@@ -642,33 +687,45 @@ router.get('/weekly', requireLogin, async (req, res) => {
     function render(){
       var rows=filtered();
       var h='<table style="border-collapse:separate;border-spacing:0"><thead><tr>'
-        +sortTh('name','소재',S1+HS)
-        +sortTh('category','분류',S2+HS)
+        +sortTh('name','소재',S1+HS,'','campaignName')
+        +sortTh('adId','소재ID',S1b+HS)
+        +sortTh('category','분류',S2+HS,'','category')
         +sortTh('targetRoas','목표',S3+HS,'num')
         +sortTh('adjustedTarget','보정목표',S4+HS,'num');
       WEEKS.forEach(function(w,i){
         var wk=w.slice(5).replace('-','/');
         h+=sortTh('wk:'+i+':c',wk+'<br>비용','border-left:2px solid #e2e8f0;','num')
           +sortTh('wk:'+i+':r',wk+'<br>매출','','num')
-          +sortTh('wk:'+i+':o',wk+'<br>ROAS','','num');
+          +sortTh('wk:'+i+':o',wk+'<br>ROAS','','num')
+          +sortTh('wk:'+i+':b',wk+'<br>입찰가','','num')
+          +sortTh('wk:'+i+':a',wk+'<br>변경입찰가','','num');
       });
       h+=sortTh('blended','블렌딩ROAS','border-left:2px solid #e2e8f0;','num')
         +sortTh('rank1','노출순위','','num')+sortTh('share','매출비중','','num')
-        +sortTh('isCore','핵심','')+sortTh('verdict','판정','')
+        +sortTh('coreLabel','핵심','','','coreLabel')+sortTh('verdict','판정','','','verdict')
         +sortTh('currentBid','현재입찰가','','num')+sortTh('calcBid','권장입찰가','','num')
         +'</tr></thead><tbody>';
       h+=rows.map(function(r){
         var row='<tr style="cursor:pointer" onclick="showTrend('+r.id+')">'
         +'<td style="'+S1+'"><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+' · '+r.adgroupName+'</span></td>'
+        +'<td style="'+S1b+'font-size:11px;color:#64748b;word-break:break-all">'+r.adId+'</td>'
         +'<td style="'+S2+'">'+catCell(r)+'</td>'
         +'<td class="num" style="'+S3+'">'+froas(r.targetRoas)+'</td>'
         +'<td class="num" style="'+S4+'">'+froas(r.adjustedTarget)+'</td>';
         WEEKS.forEach(function(w){
-          var d=r.wk[w]||{c:0,r:0};
-          var ro=d.c>0?(d.r/d.c*100).toFixed(0)+'%':'-';
-          row+='<td class="num" style="border-left:2px solid #f1f5f9">'+fnum(d.c)+'</td>'
-            +'<td class="num">'+fnum(d.r)+'</td>'
-            +'<td class="num" style="font-weight:600;color:#7c3aed">'+ro+'</td>';
+          var d=r.wk[w]||{};
+          var c=d.c||0,rev=d.r||0;
+          var ro=c>0?(rev/c*100).toFixed(0)+'%':'-';
+          var chg='';
+          if(d.a!=null){
+            var up=d.b!=null&&d.a>d.b;
+            chg='<span style="font-weight:700;color:'+(up?'#059669':'#dc2626')+'">'+fnum(d.a)+'</span>';
+          }
+          row+='<td class="num" style="border-left:2px solid #f1f5f9">'+fnum(c)+'</td>'
+            +'<td class="num">'+fnum(rev)+'</td>'
+            +'<td class="num" style="font-weight:600;color:#7c3aed">'+ro+'</td>'
+            +'<td class="num">'+(d.b==null?'-':fnum(d.b))+'</td>'
+            +'<td class="num">'+chg+'</td>';
         });
         row+='<td class="num" style="font-weight:700;border-left:2px solid #f1f5f9">'+froas(r.blended)+'</td>'
         +'<td class="num">'+(r.rank1?r.rank1.toFixed(1):'-')+'</td>'
@@ -684,12 +741,12 @@ router.get('/weekly', requireLogin, async (req, res) => {
       document.getElementById('wk-wrap').innerHTML=h;
     }
     function exportCsv(){
-      var head=['소재','캠페인','광고그룹','분류','목표ROAS','보정목표'];
-      WEEKS.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS');});
+      var head=['소재','소재ID','캠페인','광고그룹','분류','목표ROAS','보정목표'];
+      WEEKS.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS',w+' 입찰가',w+' 변경입찰가');});
       head=head.concat(['블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가']);
       var rows=filtered().map(function(r){
-        var line=[r.name,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget];
-        WEEKS.forEach(function(w){var d=r.wk[w]||{c:0,r:0};line.push(d.c,d.r,d.c>0?(d.r/d.c).toFixed(3):'');});
+        var line=[r.name,r.adId,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget];
+        WEEKS.forEach(function(w){var d=r.wk[w]||{};line.push(d.c||0,d.r||0,(d.c>0)?((d.r||0)/d.c).toFixed(3):'',d.b==null?'':d.b,d.a==null?'':d.a);});
         return line.concat([r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid]);
       });
       var rg=range();
@@ -726,8 +783,10 @@ router.get('/weekly', requireLogin, async (req, res) => {
   res.send(appLayout(req, '주차별 데이터', content, 'weekly', { accounts, account, user, pendingCount: pend }));
 });
 
-// 주차별 데이터: 판정(최근 4주 기준) + 선택 기간의 주차별 비용/매출 매트릭스
+// 주차별 데이터: 판정(최근 4주 기준) + 선택 기간의 주차별 비용/매출/입찰가 매트릭스
 // ?from=YYYY-MM-DD&to=YYYY-MM-DD (월요일, 월~일 주 단위) — 기본 최근 4주
+// 주차별 입찰가: b=해당 주 입찰가(변경 전), a=변경 후 입찰가(그 주 변경이 있었을 때만)
+//   출처 ① 솔루션 적용 이력(bid_adjustments applied/auto_applied) ② 주간 동기화 외부 변경 감지(bid_weekly_stats 스냅샷)
 router.get('/api/weekly', requireLogin, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
@@ -744,29 +803,65 @@ router.get('/api/weekly', requireLogin, async (req, res) => {
 
     const { rows } = await engine.computeWeekly(account, { save: false });
     const stat = (await bidDb.pool.query(`
-      SELECT ws.material_id, ws.week_start, ws.cost, ws.revenue
+      SELECT ws.material_id, ws.week_start, ws.cost, ws.revenue, ws.week_bid, ws.bid_change_from
       FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
       WHERE m.account_id = $1 AND ws.week_start BETWEEN $2 AND $3
     `, [account.id, from, to])).rows;
+    // 솔루션 적용 이력 (그 주 첫 변경 전 값 + 마지막 변경 후 값)
+    const adjRows = (await bidDb.pool.query(`
+      SELECT material_id, week_start, prev_bid, applied_bid, applied_at
+      FROM bid_adjustments
+      WHERE account_id = $1 AND status IN ('applied','auto_applied') AND applied_bid IS NOT NULL
+        AND week_start BETWEEN $2 AND $3
+      ORDER BY applied_at ASC NULLS FIRST
+    `, [account.id, from, to])).rows;
+    const adjMap = {};
+    for (const a of adjRows) {
+      const wk = wkKey(a.week_start);
+      if (!adjMap[a.material_id]) adjMap[a.material_id] = {};
+      const cur = adjMap[a.material_id][wk];
+      if (!cur) adjMap[a.material_id][wk] = { before: parseInt(a.prev_bid) || null, after: parseInt(a.applied_bid) || null };
+      else cur.after = parseInt(a.applied_bid) || cur.after; // 같은 주 여러 번 적용 → 마지막 값
+    }
     const wkMap = {};
     for (const s of stat) {
       const wk = wkKey(s.week_start);
       if (!wkMap[s.material_id]) wkMap[s.material_id] = {};
-      wkMap[s.material_id][wk] = { c: parseInt(s.cost) || 0, r: parseInt(s.revenue) || 0 };
+      wkMap[s.material_id][wk] = {
+        c: parseInt(s.cost) || 0, r: parseInt(s.revenue) || 0,
+        wb: s.week_bid == null ? null : parseInt(s.week_bid),
+        cf: s.bid_change_from == null ? null : parseInt(s.bid_change_from),
+      };
     }
     const totalRev = rows.reduce((a, r) => a + r.revenue4w, 0);
     res.json({
       ok: true, weeks,
-      rows: rows.map(r => ({
-        id: r.materialId, name: r.material.name, campaignName: r.material.campaign_name, adgroupName: r.material.adgroup_name,
-        category: r.material.category, targetRoas: r.material.target_roas,
-        adjustedTarget: r.adjustedTarget, blended: r.blendedRoas,
-        rank1: r.weekData[0].rank,
-        share: totalRev > 0 ? r.revenue4w / totalRev : 0,
-        isCore: r.isCore, verdict: r.verdict,
-        currentBid: r.prevBid, calcBid: r.calcBid,
-        wk: wkMap[r.materialId] || {},
-      })),
+      rows: rows.map(r => {
+        const wkOut = {};
+        const snaps = wkMap[r.materialId] || {};
+        const adjs = adjMap[r.materialId] || {};
+        for (const wk of weeks) {
+          const s = snaps[wk]; const adj = adjs[wk];
+          if (!s && !adj) continue;
+          const cf = s?.cf ?? null, wb = s?.wb ?? null;
+          // 변경 전 값: 스냅샷 감지값 → 솔루션 이력 → 해당 주 입찰가 순
+          const before = cf != null ? cf : (adj ? adj.before : wb);
+          // 변경 후 값: 솔루션 이력 → 스냅샷 감지(변경 전 값이 있으면 주 입찰가가 곧 변경 후) 순
+          const after = adj ? adj.after : (cf != null ? wb : null);
+          wkOut[wk] = { c: s?.c || 0, r: s?.r || 0, b: before, a: after };
+        }
+        return {
+          id: r.materialId, name: r.material.name, adId: r.material.ncc_ad_id,
+          campaignName: r.material.campaign_name, adgroupName: r.material.adgroup_name,
+          category: r.material.category, targetRoas: r.material.target_roas,
+          adjustedTarget: r.adjustedTarget, blended: r.blendedRoas,
+          rank1: r.weekData[0].rank,
+          share: totalRev > 0 ? r.revenue4w / totalRev : 0,
+          isCore: r.isCore, verdict: r.verdict,
+          currentBid: r.prevBid, calcBid: r.calcBid,
+          wk: wkOut,
+        };
+      }),
     });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
