@@ -162,8 +162,11 @@ t('⑧ 블렌딩 null(분모0) → 데이터부족', () => {
 });
 
 console.log('── 제외 캠페인 ──');
-t('기본 제외 목록 4건 파싱', () => {
-  const pats = parseExcludedCampaigns(DEFAULT_SETTINGS.excluded_campaigns);
+t('기본값은 빈 목록 (브랜드별 목록은 계정 설정에 저장)', () => {
+  assert.strictEqual(parseExcludedCampaigns(DEFAULT_SETTINGS.excluded_campaigns).length, 0);
+});
+t('멀티라인 목록 4건 파싱', () => {
+  const pats = parseExcludedCampaigns('[이고진_카테고리] 키워드\n[이고진] 키워드\n#렌탈 벌크\n#전체 벌크');
   assert.strictEqual(pats.length, 4);
   assert.ok(pats.includes('[이고진] 키워드') && pats.includes('#렌탈 벌크'));
 });

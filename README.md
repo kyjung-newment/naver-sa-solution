@@ -98,8 +98,12 @@ npm run report:daily      # 리포트 즉시 테스트 (weekly/monthly 동일)
 
 네이버 쇼핑검색 소재(nccAdId) 입찰가를 **블렌딩 ROAS 기반으로 주기 자동 조정**하는 별도 웹앱.
 기존 솔루션과 같은 서버·DB·계정을 공유하지만 URL과 UI가 독립되어 있다.
-**이고진(Customer ID 242566) 광고주 전용** — 사이드바 광고주가 이고진으로 고정되며(`EGOJIN_CUSTOMER_ID`),
-다른 Customer ID 연동은 차단. 미연동 상태면 설정 화면이 API 연동 섹션만 노출한다.
+**팩토리 구조(`createBidApp`)로 같은 코드가 URL 2종으로 마운트**된다 (데이터는 account_id 기준 공유):
+- `/egojin-bid` — **이고진(242566) 전용**: 광고주 고정, 다른 Customer ID 연동 차단 (기존 링크 유지)
+- `/auto-bid` — **범용 멀티 브랜드 (NEWMENT 오토비드)**: 사이드바 광고주 선택 드롭다운, 설정 > API 연동에서
+  Customer ID로 광고주 자유 추가. 앱별 선택 세션 키 분리(`bidAcct_<base>`), 크론 tick은 계정 기반이라
+  `/egojin-bid/api/cron/tick` 하나가 모든 브랜드를 처리
+미연동 상태면 설정 화면이 API 연동 섹션만 노출한다. 이고진 전용 제외 캠페인 4건은 계정 설정으로 이관(v2.6).
 
 ### 구조 (`src/bidapp/`)
 | 파일 | 역할 |

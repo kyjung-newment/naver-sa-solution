@@ -189,6 +189,21 @@ async function initBidDb() {
   `);
   await safe(`DELETE FROM bid_settings WHERE key IN ('w1','w2','w3')`);
 
+  // v2.6 일회성: 이고진 전용 기본 제외 캠페인 4건을 계정 설정으로 이관
+  // (DEFAULT_SETTINGS.excluded_campaigns가 빈 값이 되면서 — 멀티 브랜드화 — 기존 동작 유지용)
+  try {
+    if (await tryClaimCronRun('migrate:egojin-excluded-campaigns-v2.6')) {
+      const val = '[이고진_카테고리] 키워드\n[이고진] 키워드\n#렌탈 벌크\n#전체 벌크';
+      const r = await pool.query(`
+        INSERT INTO bid_settings (account_id, key, value)
+        SELECT a.id, 'excluded_campaigns', $1 FROM ad_accounts a
+        WHERE a.customer_id = '242566'
+          AND NOT EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id AND s.key = 'excluded_campaigns')
+      `, [val]);
+      console.log(`✅ 이고진 제외 캠페인 기본값 이관: ${r.rowCount}건`);
+    }
+  } catch (e) { console.log('제외 캠페인 이관 마이그레이션 실패:', e.message); }
+
   // v2.3 일회성 복구: 엄격 유형 필터 버그로 전체 소재가 enabled=0 처리된 것을 복구.
   // 수동 제외 여부를 구분할 수 없으므로 enabled=1 + auto_disabled=1 로 되돌리고,
   // 다음 동기화에서 실제 발견되는(상품형) 소재만 auto_disabled=0 으로 활성화된다.

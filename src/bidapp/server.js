@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-//  이고진 네이버SA 입찰관리 웹앱  (/egojin-bid)
+//  네이버SA 입찰 자동 조정 웹앱 (팩토리 — /egojin-bid 전용 + /auto-bid 멀티 브랜드)
 //  쇼핑검색 소재 입찰가 주기 자동 조정·관리 (데스크톱 우선 UI)
 //  역할: master(마스터=마케터·마스터 초대 계정, 전체 설정/실행/승인)
 //       / client(광고주, 조회+승인, 설정은 열람만)
@@ -17,11 +17,18 @@ const engine = require('./engine');
 const collector = require('./collector');
 const { sendInviteEmail } = require('../email/sender');
 
+// ─── 앱 팩토리 ──────────────────────────────────────────────────────
+// 같은 코드로 두 종류의 인스턴스를 만든다:
+//  - 전용(pinnedCustomerId 지정): 특정 광고주 고정 (예: /egojin-bid = 이고진 242566)
+//  - 범용(pinnedCustomerId null): 멀티 브랜드 — 광고주 선택·추가 가능 (예: /auto-bid)
+// 데이터(테이블)는 account_id 기준으로 공유되므로 두 URL이 같은 광고주를 함께 관리할 수 있다.
+function createBidApp(appConfig) {
+const BASE = appConfig.base;
+const APP_NAME = appConfig.appName;
+const APP_SUBTITLE = appConfig.appSubtitle || 'Naver SA Auto Bidding';
+const PINNED_CUSTOMER_ID = appConfig.pinnedCustomerId || null;
+const PINNED_LABEL = appConfig.pinnedLabel || '';
 const router = express.Router();
-const BASE = '/egojin-bid';
-// 이 앱은 이고진 광고주 전용 솔루션 — 광고주가 이고진(242566)으로 고정된다.
-const EGOJIN_CUSTOMER_ID = '242566';
-const EGOJIN_LABEL = '이고진';
 
 const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtNum = (n) => (n == null ? '-' : Math.round(n).toLocaleString('ko-KR'));
@@ -104,31 +111,52 @@ async function getUser(req) {
   return db.getUserById(req.session.userId);
 }
 
-// 접근 가능한 광고주 목록 — 이고진(242566) 전용 앱이므로 해당 광고주만 노출
-// - 광고주(client): 초대받은 계정 중 이고진
-// - 마스터: 누가 연동했든 이고진 계정 전체 공유 (입찰 데이터가 붙은 계정 행 우선)
+// 접근 가능한 광고주 목록
+// - 전용 앱(PINNED): 고정 광고주만 (마스터는 누가 연동했든 공유, 입찰 데이터가 붙은 계정 행 우선)
+// - 범용 앱(멀티 브랜드): 광고주(client)=초대받은 계정 / 마스터=본인 소유 + 초대 + 입찰관리 연동 광고주 전체 공유
 async function getAccessibleAccounts(req) {
   if (isClient(req)) {
     const viewer = await db.getViewerAccounts(req.session.userId);
-    return viewer.filter(a => String(a.customer_id) === EGOJIN_CUSTOMER_ID);
+    return PINNED_CUSTOMER_ID ? viewer.filter(a => String(a.customer_id) === PINNED_CUSTOMER_ID) : viewer;
   }
-  const rows = (await bidDb.pool.query(`
-    SELECT a.*,
-      (EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id))::int
-      + (EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id))::int AS bid_weight
-    FROM ad_accounts a
-    WHERE a.customer_id = $1
-    ORDER BY bid_weight DESC, a.id ASC
-  `, [EGOJIN_CUSTOMER_ID])).rows;
-  return rows;
+  if (PINNED_CUSTOMER_ID) {
+    return (await bidDb.pool.query(`
+      SELECT a.*,
+        (EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id))::int
+        + (EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id))::int AS bid_weight
+      FROM ad_accounts a
+      WHERE a.customer_id = $1
+      ORDER BY bid_weight DESC, a.id ASC
+    `, [PINNED_CUSTOMER_ID])).rows;
+  }
+  // 멀티 브랜드: 본인 소유 + 초대받은 계정 + 입찰관리 데이터가 있는 광고주 전체 (마스터 간 공유)
+  const viewer = isInvited(req) ? await db.getViewerAccounts(req.session.userId) : [];
+  const owned = await db.getAccountsByUser(req.session.userId);
+  const shared = (await bidDb.pool.query(`
+    SELECT DISTINCT a.* FROM ad_accounts a
+    WHERE EXISTS (SELECT 1 FROM bid_materials m WHERE m.account_id = a.id)
+       OR EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id)
+  `)).rows;
+  const seen = new Set(); const out = [];
+  for (const a of [...viewer, ...owned, ...shared]) {
+    if (seen.has(String(a.id))) continue;
+    seen.add(String(a.id)); out.push(a);
+  }
+  return out.sort((x, y) => String(x.name).localeCompare(String(y.name), 'ko'));
 }
+
+// 앱별 선택 광고주 세션 키 (전용/범용 앱이 서로의 선택을 덮지 않도록 분리)
+const SEL_KEY = 'bidAcct_' + BASE.replace(/[^a-z0-9]/gi, '');
 
 async function getSelectedAccount(req) {
   const accounts = await getAccessibleAccounts(req);
   if (!accounts.length) return { accounts, account: null };
-  // 이고진 고정: 항상 첫 번째(입찰 데이터가 붙은) 계정 행 사용
-  const account = accounts[0];
-  req.session.bidAccountId = account.id;
+  if (PINNED_CUSTOMER_ID) {
+    // 고정 광고주: 항상 첫 번째(입찰 데이터가 붙은) 계정 행 사용
+    return { accounts, account: accounts[0] };
+  }
+  let account = accounts.find(a => String(a.id) === String(req.session[SEL_KEY] || ''));
+  if (!account) { account = accounts[0]; req.session[SEL_KEY] = account.id; }
   return { accounts, account };
 }
 
@@ -243,7 +271,7 @@ const css = `
 
 function layout(title, body) {
   return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(title)} - 이고진 입찰관리</title><style>${css}</style></head><body>${body}
+<title>${escHtml(title)} - ${escHtml(APP_NAME)}</title><style>${css}</style></head><body>${body}
 <div class="toast-wrap" id="toast-wrap"></div>
 <script>
 function toast(msg,isErr){var w=document.getElementById('toast-wrap'),el=document.createElement('div');el.className='toast '+(isErr?'toast-err':'toast-ok');el.textContent=msg;w.appendChild(el);setTimeout(function(){el.remove()},3500);}
@@ -271,21 +299,30 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
     menu.push({ id: 'viewers', label: '✉️ 광고주 초대', href: `${BASE}/viewers` });
   }
 
-  // 이고진 전용 솔루션 — 광고주 고정 표시 (선택 불가)
-  const acctSel = `
+  // 전용 앱: 광고주 고정 표시 / 범용 앱: 광고주 선택 드롭다운
+  const acctSel = PINNED_CUSTOMER_ID ? `
     <div style="padding:12px 16px;border-bottom:1px solid #1e293b">
       <label style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.08em">광고주</label>
       <div style="margin-top:6px;background:#1e293b;border:1px solid #334155;border-radius:9px;padding:9px 12px;color:#e2e8f0;font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:8px">
-        🎯 ${EGOJIN_LABEL} (${EGOJIN_CUSTOMER_ID})
+        🎯 ${PINNED_LABEL} (${PINNED_CUSTOMER_ID})
         ${account ? '' : '<span style="color:#f59e0b;font-weight:500;font-size:11px">· 미연동</span>'}
       </div>
+    </div>` : `
+    <div style="padding:12px 16px;border-bottom:1px solid #1e293b">
+      <label style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.08em">광고주 선택</label>
+      ${accounts.length ? `
+      <select onchange="fetch('${BASE}/api/select-account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:this.value})}).then(function(){location.href='${BASE}'})"
+        style="background:#1e293b;border-color:#334155;color:#e2e8f0;font-size:12.5px;margin-top:6px">
+        ${accounts.map(a => `<option value="${a.id}" ${account && String(a.id) === String(account.id) ? 'selected' : ''}>${escHtml(a.name)} (${escHtml(a.customer_id)})</option>`).join('')}
+      </select>` : `
+      <div style="margin-top:6px;background:#1e293b;border:1px solid #334155;border-radius:9px;padding:9px 12px;color:#94a3b8;font-size:12px">등록된 광고주 없음</div>`}
     </div>`;
 
   return layout(title, `
   <div class="sidebar">
     <div class="sb-head">
-      <div class="sb-logo">이고진 입찰관리</div>
-      <div class="sb-sub">Naver SA Shopping Bid Manager</div>
+      <div class="sb-logo">${escHtml(APP_NAME)}</div>
+      <div class="sb-sub">${escHtml(APP_SUBTITLE)}</div>
     </div>
     ${acctSel}
     <div class="sb-section">메뉴</div>
@@ -338,7 +375,7 @@ router.get('/login', (req, res) => {
       <div style="width:100%;max-width:400px;padding:16px">
         <div style="text-align:center;margin-bottom:30px">
           <div style="font-size:38px;margin-bottom:10px">🎯</div>
-          <h1 style="font-size:22px;font-weight:800;color:#fff">이고진 입찰관리</h1>
+          <h1 style="font-size:22px;font-weight:800;color:#fff">${escHtml(APP_NAME)}</h1>
           <p style="color:#94a3b8;font-size:13px;margin-top:6px">네이버 쇼핑검색 입찰 자동 조정 시스템</p>
         </div>
         <div class="card"><div class="card-body">
@@ -375,7 +412,7 @@ router.get('/logout', (req, res) => {
 router.post('/api/select-account', requireLogin, async (req, res) => {
   const accounts = await getAccessibleAccounts(req);
   const target = accounts.find(a => String(a.id) === String(req.body.accountId));
-  if (target) req.session.bidAccountId = target.id;
+  if (target) req.session[SEL_KEY] = target.id;
   req.session.save(() => res.json({ ok: !!target }));
 });
 
@@ -387,7 +424,7 @@ router.get('/', requireLogin, async (req, res) => {
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) {
     return res.send(appLayout(req, '대시보드', `
-      <div class="empty">🎯 ${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID}) 광고주가 아직 연동되지 않았습니다.${isClient(req) ? ' 담당 마케터에게 문의해주세요.' : ` <a href="${BASE}/settings" style="color:#0ea5e9;font-weight:600">설정 &gt; API 연동</a>에서 연동해주세요.`}</div>
+      <div class="empty">🎯 ${PINNED_CUSTOMER_ID ? `${PINNED_LABEL}(${PINNED_CUSTOMER_ID}) 광고주가 아직 연동되지 않았습니다.` : '연동된 광고주가 없습니다.'}${isClient(req) ? ' 담당 마케터에게 문의해주세요.' : ` <a href="${BASE}/settings" style="color:#0ea5e9;font-weight:600">설정 &gt; API 연동</a>에서 ${PINNED_CUSTOMER_ID ? '연동' : '광고주를 추가'}해주세요.`}</div>
     `, 'dashboard', { accounts, account, user }));
   }
 
@@ -1386,7 +1423,7 @@ const secTitle = (icon, title, desc) => `
 // API 연동 섹션 (마스터 전용) — 설정 탭 내부와 "이고진 미연동" 초기 화면에서 공용
 function apiSectionHtml(credInfo) {
   return `
-      ${secTitle('🔗', 'API 연동', '기존 솔루션과 동일: ① 마케터 API 계정 등록(1회) → ② 이고진 광고주를 Customer ID로 연동')}
+      ${secTitle('🔗', 'API 연동', '① 마케터 API 계정 등록(1회) → ② 광고주를 Customer ID로 연동')}
       <div class="card"><div class="card-header"><span class="card-title">🔑 네이버 검색광고 API 계정 (마케터 연동)</span></div>
         <div class="card-body">
           <p style="font-size:13px;color:#64748b;margin-bottom:12px">
@@ -1405,14 +1442,16 @@ function apiSectionHtml(credInfo) {
             <span style="font-size:12px;color:#94a3b8">저장 전 캠페인 목록 조회로 API 연결을 검증합니다. 검증 실패 시 저장되지 않습니다.</span>
           </div>
         </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">➕ 이고진 광고주 연동 (Customer ID)</span></div>
+      <div class="card"><div class="card-header"><span class="card-title">${PINNED_CUSTOMER_ID ? `➕ ${PINNED_LABEL} 광고주 연동 (Customer ID)` : '➕ 광고주 추가 (Customer ID 연동)'}</span></div>
         <div class="card-body">
           <p style="font-size:13px;color:#64748b;margin-bottom:12px">
-            이 솔루션은 <b>${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID})</b> 광고주 전용입니다. 연동(추가) 성공 시
-            <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장되며, 어느 마스터가 연동했든 모든 마스터가 공유합니다.</p>
+            ${PINNED_CUSTOMER_ID
+              ? `이 솔루션은 <b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주 전용입니다.`
+              : `광고주를 <b>Customer ID만 입력</b>해 추가합니다. Customer ID는 네이버 검색광고 센터 &gt; 도구 &gt; SA API 사용 관리 &gt; <b>검색광고 Key?</b>에서 확인한 숫자입니다.`}
+            연동(추가) 성공 시 <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장되며, 어느 마스터가 연동했든 모든 마스터가 공유합니다.</p>
           <div style="display:flex;gap:10px;align-items:flex-end;max-width:640px;flex-wrap:wrap">
-            <div style="flex:1;min-width:180px"><label>광고주명</label><input id="na-name" value="${EGOJIN_LABEL}" autocomplete="off"></div>
-            <div style="flex:1;min-width:180px"><label>Customer ID</label><input id="na-cid" value="${EGOJIN_CUSTOMER_ID}" autocomplete="off"></div>
+            <div style="flex:1;min-width:180px"><label>광고주명</label><input id="na-name" value="${PINNED_CUSTOMER_ID ? PINNED_LABEL : ''}" placeholder="예: 브랜드명" autocomplete="off"></div>
+            <div style="flex:1;min-width:180px"><label>Customer ID</label><input id="na-cid" value="${PINNED_CUSTOMER_ID || ''}" placeholder="검색광고 Key에서 확인한 숫자" autocomplete="off"></div>
             <button class="btn btn-green" id="btn-connect" onclick="connectAccount()" style="white-space:nowrap">🔍 확인 및 연동</button>
           </div>
           <div style="margin-top:8px"><span id="connect-status" style="font-size:12px;color:#94a3b8">등록된 마케터 API 계정으로 접근 권한을 확인한 뒤 광고주를 연동하고 데이터를 수집합니다. (소재 수에 따라 수 분 소요)</span></div>
@@ -1460,7 +1499,7 @@ router.get('/settings', requireLogin, async (req, res) => {
       if (myCred && myCred.api_key) credInfo = { masked: String(myCred.api_key).slice(0, 10) + '••••••', mgr: myCred.manager_customer_id || '' };
     } catch (e) { /* 미연동 표시 */ }
     const content = `
-      <div class="alert alert-info">🎯 <b>${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다. 아래에서 마케터 API 계정을 등록한 뒤 이고진 광고주를 연동해주세요.</div>
+      <div class="alert alert-info">🎯 ${PINNED_CUSTOMER_ID ? `<b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다.` : '연동된 광고주가 없습니다.'} 아래에서 마케터 API 계정을 등록한 뒤 광고주를 연동해주세요.</div>
       ${apiSectionHtml(credInfo)}
       <script>${API_SECTION_SCRIPT}</script>`;
     return res.send(appLayout(req, '설정', content, 'settings', { accounts, account: null, user }));
@@ -1764,8 +1803,8 @@ router.post('/api/settings/connect-account', requireLogin, requireMaster, async 
     const customer_id = String(req.body.customer_id || '').trim();
     if (!name || !customer_id) return res.json({ ok: false, error: '광고주명과 Customer ID를 입력해주세요.' });
     if (!/^[0-9]+$/.test(customer_id)) return res.json({ ok: false, error: 'Customer ID는 숫자만 입력해주세요. (검색광고 Key에서 확인한 값)' });
-    if (customer_id !== EGOJIN_CUSTOMER_ID) {
-      return res.json({ ok: false, error: `이 솔루션은 ${EGOJIN_LABEL}(${EGOJIN_CUSTOMER_ID}) 광고주 전용입니다. Customer ID를 확인해주세요.` });
+    if (PINNED_CUSTOMER_ID && customer_id !== PINNED_CUSTOMER_ID) {
+      return res.json({ ok: false, error: `이 솔루션은 ${PINNED_LABEL}(${PINNED_CUSTOMER_ID}) 광고주 전용입니다. Customer ID를 확인해주세요.` });
     }
 
     // 1) 마케터 자격증명 확인
@@ -1791,7 +1830,7 @@ router.post('/api/settings/connect-account', requireLogin, requireMaster, async 
     }
     // 입찰관리 연동 마커 — 소재가 0개여도 모든 마스터에게 공유되도록 bid_settings에 기록
     await bidDb.setSetting(accountId, 'app_account', '1', req.session.userName || '');
-    req.session.bidAccountId = accountId;
+    req.session[SEL_KEY] = accountId;
 
     // 4) 데이터 자동 저장: 소재 동기화 + 4주 성과 수집
     const account = await db.getAccountById(accountId, req.session.userId);
@@ -2030,7 +2069,7 @@ router.post('/invite/:token', async (req, res) => {
     req.session.isAdmin = false;
     req.session.approved = 1;
     req.session.role = 'viewer';
-    req.session.bidAccountId = inv.account_id;
+    req.session[SEL_KEY] = inv.account_id;
     req.session.bidRole = null;
     await resolveBidRole(req);
     req.session.save(() => res.redirect(303, BASE));
@@ -2115,4 +2154,7 @@ router.get('/api/cron/tick', async (req, res) => {
   }
 });
 
-module.exports = { router };
+return router;
+}
+
+module.exports = { createBidApp };

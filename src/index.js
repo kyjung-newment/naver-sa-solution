@@ -3,7 +3,7 @@ const express = require('express');
 const path = require('path');
 const { config } = require('../config');
 const { router: dashboardRouter } = require('./dashboard/server');
-const { router: bidAppRouter } = require('./bidapp/server');
+const { createBidApp } = require('./bidapp/server');
 const { initDb } = require('./db/database');
 const { initBidDb } = require('./bidapp/db');
 
@@ -20,8 +20,21 @@ app.get('/', (req, res) => res.redirect('/smart-sa'));
 // 대시보드
 app.use('/smart-sa', dashboardRouter);
 
-// 이고진 입찰관리 (쇼핑검색 입찰 자동 조정 — 별도 URL)
-app.use('/egojin-bid', bidAppRouter);
+// 입찰 자동 조정 웹앱 (같은 코드·데이터, URL 2종)
+// - /egojin-bid : 이고진(242566) 전용 (기존 링크 유지)
+// - /auto-bid   : 범용 멀티 브랜드 — 광고주 선택·추가 가능
+app.use('/egojin-bid', createBidApp({
+  base: '/egojin-bid',
+  appName: '이고진 입찰관리',
+  appSubtitle: 'Naver SA Shopping Bid Manager',
+  pinnedCustomerId: '242566',
+  pinnedLabel: '이고진',
+}));
+app.use('/auto-bid', createBidApp({
+  base: '/auto-bid',
+  appName: 'NEWMENT 오토비드',
+  appSubtitle: 'Naver SA Auto Bidding · Multi-Brand',
+}));
 
 // 헬스체크
 app.get('/health', async (req, res) => {
