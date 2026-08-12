@@ -353,7 +353,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   const sidebar = `
   <div class="sidebar">
     <div class="sidebar-header">
-      ${logoBase64 ? `<img src="${logoBase64}" class="sidebar-logo-img" alt="NEWMENT">` : '<div class="sidebar-logo">NEWMENT</div>'}
+      <div class="sidebar-logo" style="font-size:17px;font-weight:800;letter-spacing:.02em">AUTO REPORT</div>
     </div>
     ${accountSelector}
     <div class="sidebar-section">메뉴</div>

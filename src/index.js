@@ -14,8 +14,14 @@ const app = express();
 // 정적 파일
 app.use('/public', express.static(path.join(__dirname, '../public')));
 
-// 루트 → 대시보드로 리디렉션
-app.get('/', (req, res) => res.redirect('/smart-sa'));
+// 루트 → 접속 도메인에 따라 솔루션 분기
+// - *auto-bid*.vercel.app (예: tf-auto-bid.vercel.app) → AUTO BID
+// - *auto-report*.vercel.app (예: tf-auto-report.vercel.app) 및 그 외 → AUTO REPORT(/smart-sa)
+app.get('/', (req, res) => {
+  const host = String(req.hostname || req.headers.host || '').toLowerCase();
+  if (host.includes('auto-bid')) return res.redirect('/auto-bid');
+  return res.redirect('/smart-sa');
+});
 
 // 대시보드
 app.use('/smart-sa', dashboardRouter);
@@ -32,7 +38,7 @@ app.use('/egojin-bid', createBidApp({
 }));
 app.use('/auto-bid', createBidApp({
   base: '/auto-bid',
-  appName: 'NEWMENT 오토비드',
+  appName: 'AUTO BID',
   appSubtitle: 'Naver SA Auto Bidding · Multi-Brand',
 }));
 
