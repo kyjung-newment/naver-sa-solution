@@ -19,13 +19,20 @@ function makeClient(creds, customerId) {
   return createApiClient({ apiKey: creds.api_key, secretKey: creds.secret_key, customerId });
 }
 
+// ─── 동기화 (채널 분기) ─────────────────────────────────────────────
+// shopping: 쇼핑검색 캠페인의 '쇼핑몰 상품형' 소재(nccAdId) / powerlink: 파워링크 캠페인의 키워드(nccKeywordId)
+async function syncMaterials(account, creds, channel = 'shopping') {
+  if (channel === 'powerlink') return syncPowerlinkKeywords(account, creds);
+  return syncShoppingAds(account, creds);
+}
+
 // ─── 쇼핑검색 소재 동기화 ──────────────────────────────────────────
 // 쇼핑검색(campaignTp SHOPPING/2) 캠페인의 '쇼핑몰 상품형' 소재만 대상 — 엄격 매칭:
 // 유형 필드가 없거나 다른 값이면 무조건 제외 (파워링크·브랜드검색·파워콘텐츠·플레이스 등).
 // 설정의 제외 캠페인(excluded_campaigns) 목록에 걸리는 캠페인도 수집·조정 대상에서 제외.
-async function syncMaterials(account, creds) {
+async function syncShoppingAds(account, creds) {
   const client = makeClient(creds, account.customer_id);
-  const settings = await bidDb.getSettings(account.id);
+  const settings = await bidDb.getSettings(account.id, 'shopping');
   const excluded = parseExcludedCampaigns(settings.excluded_campaigns);
   const campaigns = await client.getCampaigns();
 
@@ -79,7 +86,7 @@ async function syncMaterials(account, creds) {
   };
   // 기존 저장 입찰가 맵 (외부 변경 감지용 — API 수신값과 비교)
   const prevBids = {};
-  for (const m of await bidDb.getMaterials(account.id)) prevBids[m.ncc_ad_id] = { id: m.id, bid: parseInt(m.current_bid) || 0 };
+  for (const m of await bidDb.getMaterials(account.id, { channel: 'shopping' })) prevBids[m.ncc_ad_id] = { id: m.id, bid: parseInt(m.current_bid) || 0 };
   const latestWeek = last4Weeks()[0].start; // 입찰가 스냅샷 귀속 주차 (최신 완료 주)
 
   const adRes = await mapLimit(allAgs, 5, ({ camp, ag }) => client.getAds(ag.nccAdgroupId).then(ads => ({ camp, ag, ads: ads || [] })));
@@ -106,7 +113,7 @@ async function syncMaterials(account, creds) {
         currentBid: newBid,
         useGroupBid,
         registeredAt: ad.regTm || ad.regTime || '',
-      });
+      }, 'shopping');
       // 주간 입찰가 스냅샷: 이전 저장값과 다르면(솔루션 외 광고시스템 변경 포함) 변경 전 값을 함께 기록
       const prev = prevBids[ad.nccAdId];
       const changed = prev && prev.bid > 0 && newBid > 0 && prev.bid !== newBid;
@@ -122,7 +129,7 @@ async function syncMaterials(account, creds) {
   // API에서 사라진(삭제/중지/유형 제외) 소재는 '자동 비활성' 처리 — 수동 제외(enabled)와 분리.
   // 안전장치: 이번 동기화가 0건이면(필터/API 이상 가능성) 기존 소재를 건드리지 않는다.
   if (count > 0) {
-    const existing = await bidDb.getMaterials(account.id);
+    const existing = await bidDb.getMaterials(account.id, { channel: 'shopping' });
     for (const m of existing) {
       if (!seenAdIds.has(m.ncc_ad_id) && !m.auto_disabled) {
         await bidDb.setMaterialAutoDisabled(m.id, true);
@@ -138,18 +145,110 @@ async function syncMaterials(account, creds) {
   return { synced: count, bidChanges, diag };
 }
 
+// ─── 파워링크 키워드 동기화 ─────────────────────────────────────────
+// 파워링크(WEB_SITE) 캠페인의 키워드(nccKeywordId)를 조정 단위로 수집.
+// ncc_ad_id 컬럼에 키워드ID를 저장한다 — /stats·입찰 변경 API 모두 이 ID 사용.
+async function syncPowerlinkKeywords(account, creds) {
+  const client = makeClient(creds, account.customer_id);
+  const settings = await bidDb.getSettings(account.id, 'powerlink');
+  const excluded = parseExcludedCampaigns(settings.excluded_campaigns);
+  const campaigns = await client.getCampaigns();
+
+  const diag = { campaignTp: {}, keywordFields: {} };
+  const bump = (o, k) => { const key = String(k ?? '(없음)'); o[key] = (o[key] || 0) + 1; };
+
+  // 파워링크 캠페인: 쇼핑/브랜드검색/파워콘텐츠/플레이스는 명시 제외 (차단목록 방식)
+  const NON_POWERLINK = ['SHOPPING', 'BRAND_SEARCH', 'POWER_CONTENTS', 'PLACE'];
+  const isPowerlink = (c) => {
+    const raw = c.campaignTp ?? c.campaignType;
+    bump(diag.campaignTp, raw);
+    if (raw === 1 || raw === '1') return true;
+    const t = String(raw ?? '').toUpperCase();
+    if (NON_POWERLINK.some(x => t.includes(x))) return false;
+    return true; // WEB_SITE 및 미확인 표기는 통과 (차단목록 방식)
+  };
+  const targets = (campaigns || []).filter(c =>
+    (c.status === 'ELIGIBLE' || !c.status)
+    && isPowerlink(c)
+    && !isExcludedCampaign(c.name, excluded));
+
+  const agRes = await mapLimit(targets, 5, c => client.getAdGroups(c.nccCampaignId).then(ags => ({ camp: c, ags: ags || [] })));
+  const allAgs = [];
+  for (const r of agRes) {
+    if (r.status !== 'fulfilled') continue;
+    for (const ag of r.value.ags) {
+      if (ag.status && ag.status !== 'ELIGIBLE') continue;
+      allAgs.push({ camp: r.value.camp, ag });
+    }
+  }
+
+  // 기존 저장 입찰가 맵 (외부 변경 감지)
+  const prevBids = {};
+  for (const m of await bidDb.getMaterials(account.id, { channel: 'powerlink' })) prevBids[m.ncc_ad_id] = { id: m.id, bid: parseInt(m.current_bid) || 0 };
+  const latestWeek = last4Weeks()[0].start;
+
+  const kwRes = await mapLimit(allAgs, 5, ({ camp, ag }) => client.getKeywords(ag.nccAdgroupId).then(kws => ({ camp, ag, kws: kws || [] })));
+  let count = 0, bidChanges = 0;
+  const seenIds = new Set();
+  for (const r of kwRes) {
+    if (r.status !== 'fulfilled') continue;
+    const { camp, ag, kws } = r.value;
+    for (const kw of kws) {
+      if (kw.status && kw.status !== 'ELIGIBLE') continue;
+      const useGroupBid = kw.useGroupBidAmt === true;
+      const groupBid = ag.adgroupAttrJson?.bidAmt || ag.bidAmt || 0;
+      const newBid = parseInt(useGroupBid ? groupBid : (kw.bidAmt || groupBid)) || 0;
+      bump(diag.keywordFields, useGroupBid ? 'groupBid' : 'ownBid');
+      const materialId = await bidDb.upsertMaterial(account.id, {
+        nccAdId: kw.nccKeywordId,
+        nccAdgroupId: ag.nccAdgroupId,
+        name: String(kw.keyword || kw.nccKeywordId).slice(0, 200),
+        campaignName: camp.name || '',
+        adgroupName: ag.name || '',
+        currentBid: newBid,
+        useGroupBid,
+        registeredAt: kw.regTm || kw.regTime || '',
+      }, 'powerlink');
+      const prev = prevBids[kw.nccKeywordId];
+      const changed = prev && prev.bid > 0 && newBid > 0 && prev.bid !== newBid;
+      if (changed) bidChanges++;
+      try {
+        await bidDb.setWeekBid(materialId, latestWeek, { weekBid: newBid, changedFrom: changed ? prev.bid : null });
+      } catch (e) { /* 스냅샷 실패는 동기화를 막지 않음 */ }
+      seenIds.add(kw.nccKeywordId);
+      count++;
+    }
+  }
+
+  if (count > 0) {
+    const existing = await bidDb.getMaterials(account.id, { channel: 'powerlink' });
+    for (const m of existing) {
+      if (!seenIds.has(m.ncc_ad_id) && !m.auto_disabled) {
+        await bidDb.setMaterialAutoDisabled(m.id, true);
+      }
+    }
+  } else {
+    console.log(`  ⚠️ [${account.name}] 파워링크 키워드 동기화 0건 — 기존 키워드 자동 비활성 처리 건너뜀`);
+  }
+  await bidDb.audit(account.id, 'sync', '파워링크 키워드 동기화 진단', {
+    campaigns: (campaigns || []).length, powerlinkTargets: targets.length,
+    adgroups: allAgs.length, synced: count, bidChanges, types: diag,
+  });
+  return { synced: count, bidChanges, diag };
+}
+
 // ─── 주차별 성과 수집 ──────────────────────────────────────────────
 // 소재당 /stats 1회 (4주 범위 일별 행) → 주차별 집계 저장
 // 매출 지표 = 구매전환매출(purchaseConvAmt) — 총전환매출(convAmt, 장바구니 등 포함)이 아닌
 // 구매 완료 기준. 모든 조정 판정(블렌딩ROAS·기준매출·일간 트리거)이 이 값 기준으로 계산된다.
 const STAT_FIELDS = ['clkCnt', 'impCnt', 'salesAmt', 'cpc', 'avgRnk', 'ccnt', 'convAmt', 'purchaseCcnt', 'purchaseConvAmt'];
 
-async function collectWeeklyStats(account, creds, { weeks } = {}) {
+async function collectWeeklyStats(account, creds, { weeks, channel = 'shopping' } = {}) {
   const client = makeClient(creds, account.customer_id);
   const wks = weeks || last4Weeks();
   const since = wks[wks.length - 1].start;
   const until = wks[0].end;
-  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true, channel });
   let ok = 0, fail = 0;
 
   await mapLimit(materials, 5, async (m) => {
@@ -189,10 +288,10 @@ async function collectWeeklyStats(account, creds, { weeks } = {}) {
   return { materials: materials.length, ok, fail, weeks: wks };
 }
 
-// ─── 일간 모니터용: 전일 소재별 성과 (구매전환매출 기준) ─────────────
-async function collectDailyStats(account, creds, dateStr) {
+// ─── 일간 모니터용: 전일 소재/키워드별 성과 (구매전환매출 기준) ──────
+async function collectDailyStats(account, creds, dateStr, channel = 'shopping') {
   const client = makeClient(creds, account.customer_id);
-  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true, channel });
   const out = [];
   await mapLimit(materials, 5, async (m) => {
     try {
@@ -209,9 +308,20 @@ async function collectDailyStats(account, creds, dateStr) {
 }
 
 // ─── 적용 전 현재 입찰가 재조회 (안전장치) ──────────────────────────
-async function fetchLiveBid(account, creds, nccAdId) {
+async function fetchLiveBid(account, creds, entityId, channel = 'shopping') {
   const client = makeClient(creds, account.customer_id);
-  const ad = await client.getAdDetail(nccAdId);
+  if (channel === 'powerlink') {
+    // 파워링크 키워드: nccKeywordId 기준
+    const kw = await client.getKeywordInfo(entityId);
+    if (kw?.useGroupBidAmt !== true && kw?.bidAmt) return { bid: kw.bidAmt, useGroupBid: false };
+    try {
+      const ag = await client.getAdGroupDetail(kw.nccAdgroupId);
+      return { bid: ag?.bidAmt || kw?.bidAmt || 0, useGroupBid: true };
+    } catch (e) {
+      return { bid: kw?.bidAmt || 0, useGroupBid: kw?.useGroupBidAmt === true };
+    }
+  }
+  const ad = await client.getAdDetail(entityId);
   const adAttr = ad?.adAttr || {};
   if (adAttr.useGroupBidAmt === false && adAttr.bidAmt) return { bid: adAttr.bidAmt, useGroupBid: false };
   // 그룹입찰가 사용 소재
@@ -223,10 +333,11 @@ async function fetchLiveBid(account, creds, nccAdId) {
   }
 }
 
-// ─── 입찰가 적용 (쇼핑검색 소재 adAttr.bidAmt PUT) ──────────────────
-async function applyBid(account, creds, nccAdId, bidAmt) {
+// ─── 입찰가 적용 (shopping: 소재 adAttr.bidAmt PUT / powerlink: 키워드 bidAmt PUT) ──
+async function applyBid(account, creds, entityId, bidAmt, channel = 'shopping') {
   const client = makeClient(creds, account.customer_id);
-  return client.updateAdBid(nccAdId, bidAmt);
+  if (channel === 'powerlink') return client.updateKeywordBid(entityId, bidAmt);
+  return client.updateAdBid(entityId, bidAmt);
 }
 
 module.exports = { syncMaterials, collectWeeklyStats, collectDailyStats, fetchLiveBid, applyBid, mapLimit };

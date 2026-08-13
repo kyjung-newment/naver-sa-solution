@@ -26,21 +26,21 @@ app.get('/', (req, res) => {
 // 대시보드
 app.use('/smart-sa', dashboardRouter);
 
-// 입찰 자동 조정 웹앱 (같은 코드·데이터, URL 2종)
-// - /egojin-bid : 이고진(242566) 전용 (기존 링크 유지)
-// - /auto-bid   : 범용 멀티 브랜드 — 광고주 선택·추가 가능
-app.use('/egojin-bid', createBidApp({
-  base: '/egojin-bid',
-  appName: '이고진 입찰관리',
-  appSubtitle: 'Naver SA Shopping Bid Manager',
-  pinnedCustomerId: '242566',
-  pinnedLabel: '이고진',
-}));
-app.use('/auto-bid', createBidApp({
-  base: '/auto-bid',
-  appName: 'AUTO BID',
-  appSubtitle: 'Naver SA Auto Bidding · Multi-Brand',
-}));
+// 입찰 자동 조정 웹앱 — 채널 2종(SPO=쇼핑검색 소재 / PPO=파워링크 키워드) × URL 2종
+// - /egojin-bid/spo·/ppo : 이고진(242566) 전용 (레거시 /egojin-bid = SPO 재마운트, 크론 tick 포함)
+// - /auto-bid/spo·/ppo   : 범용 멀티 브랜드 (레거시 /auto-bid = SPO 재마운트)
+const egojinCfg = { appName: '이고진 입찰관리', pinnedCustomerId: '242566', pinnedLabel: '이고진' };
+const egojinSpo = createBidApp({ ...egojinCfg, base: '/egojin-bid/spo', channel: 'shopping', appSubtitle: '쇼핑검색 성과최적화 (SPO)' });
+const egojinPpo = createBidApp({ ...egojinCfg, base: '/egojin-bid/ppo', channel: 'powerlink', appSubtitle: '파워링크 성과최적화 (PPO)' });
+app.use('/egojin-bid/spo', egojinSpo);
+app.use('/egojin-bid/ppo', egojinPpo);
+app.use('/egojin-bid', egojinSpo); // 레거시 경로 — 링크는 /spo 기준으로 렌더링됨
+
+const autoSpo = createBidApp({ base: '/auto-bid/spo', channel: 'shopping', appName: 'AUTO BID', appSubtitle: '쇼핑검색 성과최적화 (SPO)' });
+const autoPpo = createBidApp({ base: '/auto-bid/ppo', channel: 'powerlink', appName: 'AUTO BID', appSubtitle: '파워링크 성과최적화 (PPO)' });
+app.use('/auto-bid/spo', autoSpo);
+app.use('/auto-bid/ppo', autoPpo);
+app.use('/auto-bid', autoSpo); // 레거시 경로
 
 // 헬스체크
 app.get('/health', async (req, res) => {

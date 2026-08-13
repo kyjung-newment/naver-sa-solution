@@ -179,6 +179,13 @@ async function initBidDb() {
   // (솔루션 적용 시 즉시 기록 + 매주 월요일 동기화 때 광고시스템 외부 변경 감지)
   await safe(`ALTER TABLE bid_weekly_stats ADD COLUMN IF NOT EXISTS week_bid INTEGER DEFAULT NULL`);
   await safe(`ALTER TABLE bid_weekly_stats ADD COLUMN IF NOT EXISTS bid_change_from INTEGER DEFAULT NULL`);
+  // v3: 채널 분리 — shopping(쇼핑검색 소재=nccAdId) / powerlink(파워링크 키워드=nccKeywordId)
+  // 파워링크는 ncc_ad_id 컬럼에 키워드ID를 저장한다 (엔티티 ID로서 /stats·입찰 API에 동일하게 사용)
+  await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'shopping'`);
+  await safe(`ALTER TABLE bid_category_rules ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'shopping'`);
+  await safe(`ALTER TABLE bid_category_rules DROP CONSTRAINT IF EXISTS bid_category_rules_pkey`);
+  await safe(`ALTER TABLE bid_category_rules ADD PRIMARY KEY (account_id, category, channel)`);
+  await safe(`CREATE INDEX IF NOT EXISTS ix_bid_materials_channel ON bid_materials (account_id, channel)`);
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
   // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
@@ -238,60 +245,68 @@ async function initBidDb() {
 }
 
 // ─── 설정 ──────────────────────────────────────────────────────────
-async function getSettings(accountId) {
+// 채널 분리: shopping = 접두사 없는 키(기존 호환) / powerlink = 'pl_' 접두사 키
+const chKey = (key, channel) => (channel === 'powerlink' ? 'pl_' + key : key);
+
+async function getSettings(accountId, channel = 'shopping') {
   const rows = await all('SELECT key, value FROM bid_settings WHERE account_id = $1', [accountId]);
   const s = { ...DEFAULT_SETTINGS };
+  const isPl = channel === 'powerlink';
   for (const r of rows) {
-    if (!(r.key in s)) { s[r.key] = r.value; continue; }
-    s[r.key] = (typeof DEFAULT_SETTINGS[r.key] === 'number') ? parseFloat(r.value) : r.value;
+    if (isPl !== r.key.startsWith('pl_')) continue; // 채널 불일치 키 무시
+    const k = isPl ? r.key.slice(3) : r.key;
+    if (!(k in s)) { s[k] = r.value; continue; }
+    s[k] = (typeof DEFAULT_SETTINGS[k] === 'number') ? parseFloat(r.value) : r.value;
   }
   return s;
 }
 
-async function setSetting(accountId, key, value, changedBy = '') {
-  const old = await get('SELECT value FROM bid_settings WHERE account_id = $1 AND key = $2', [accountId, key]);
+async function setSetting(accountId, key, value, changedBy = '', channel = 'shopping') {
+  const storeKey = chKey(key, channel);
+  const old = await get('SELECT value FROM bid_settings WHERE account_id = $1 AND key = $2', [accountId, storeKey]);
   const oldVal = old ? old.value : String(DEFAULT_SETTINGS[key] ?? '');
   if (String(value) === oldVal) return false;
   await pool.query(`
     INSERT INTO bid_settings (account_id, key, value, updated_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
     ON CONFLICT (account_id, key) DO UPDATE SET value = $3, updated_at = CURRENT_TIMESTAMP
-  `, [accountId, key, String(value)]);
+  `, [accountId, storeKey, String(value)]);
   await pool.query(
     'INSERT INTO bid_setting_history (account_id, key, old_value, new_value, changed_by) VALUES ($1, $2, $3, $4, $5)',
-    [accountId, key, oldVal, String(value), changedBy]
+    [accountId, storeKey, oldVal, String(value), changedBy]
   );
   return true;
 }
 
-async function getSettingHistory(accountId, limit = 100) {
-  return all('SELECT * FROM bid_setting_history WHERE account_id = $1 ORDER BY changed_at DESC LIMIT $2', [accountId, limit]);
+async function getSettingHistory(accountId, limit = 100, channel = 'shopping') {
+  const cond = channel === 'powerlink' ? "AND key LIKE 'pl\\_%'" : "AND key NOT LIKE 'pl\\_%'";
+  return all(`SELECT * FROM bid_setting_history WHERE account_id = $1 ${cond} ORDER BY changed_at DESC LIMIT $2`, [accountId, limit]);
 }
 
 // ─── 분류 규칙 ─────────────────────────────────────────────────────
-async function getCategoryRules(accountId) {
-  const rows = await all('SELECT * FROM bid_category_rules WHERE account_id = $1', [accountId]);
+async function getCategoryRules(accountId, channel = 'shopping') {
+  const rows = await all('SELECT * FROM bid_category_rules WHERE account_id = $1 AND channel = $2', [accountId, channel]);
   const rules = {};
   for (const c of CATEGORIES) rules[c] = { ...DEFAULT_CATEGORY_RULES[c] };
   for (const r of rows) rules[r.category] = { coef: r.coef, up: r.up_rate, down: r.down_rate };
   return rules;
 }
 
-async function setCategoryRule(accountId, category, { coef, up, down }, changedBy = '') {
+async function setCategoryRule(accountId, category, { coef, up, down }, changedBy = '', channel = 'shopping') {
   await pool.query(`
-    INSERT INTO bid_category_rules (account_id, category, coef, up_rate, down_rate) VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (account_id, category) DO UPDATE SET coef = $3, up_rate = $4, down_rate = $5
-  `, [accountId, category, coef, up, down]);
+    INSERT INTO bid_category_rules (account_id, category, channel, coef, up_rate, down_rate) VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (account_id, category, channel) DO UPDATE SET coef = $4, up_rate = $5, down_rate = $6
+  `, [accountId, category, channel, coef, up, down]);
   await pool.query(
     'INSERT INTO bid_setting_history (account_id, key, old_value, new_value, changed_by) VALUES ($1, $2, $3, $4, $5)',
-    [accountId, `분류규칙:${category}`, '', `계수 ${coef} / 증액 ${Math.round(up * 100)}% / 감액 ${Math.round(down * 100)}%`, changedBy]
+    [accountId, chKey(`분류규칙:${category}`, channel), '', `계수 ${coef} / 증액 ${Math.round(up * 100)}% / 감액 ${Math.round(down * 100)}%`, changedBy]
   );
 }
 
 // ─── 소재 ──────────────────────────────────────────────────────────
-async function getMaterials(accountId, { enabledOnly = false } = {}) {
+async function getMaterials(accountId, { enabledOnly = false, channel = 'shopping' } = {}) {
   return all(
-    `SELECT * FROM bid_materials WHERE account_id = $1 ${enabledOnly ? 'AND enabled = 1 AND COALESCE(auto_disabled, 0) = 0' : ''} ORDER BY campaign_name, adgroup_name, name`,
-    [accountId]
+    `SELECT * FROM bid_materials WHERE account_id = $1 AND channel = $2 ${enabledOnly ? 'AND enabled = 1 AND COALESCE(auto_disabled, 0) = 0' : ''} ORDER BY campaign_name, adgroup_name, name`,
+    [accountId, channel]
   );
 }
 
@@ -299,17 +314,17 @@ async function getMaterialById(id, accountId) {
   return get('SELECT * FROM bid_materials WHERE id = $1 AND account_id = $2', [id, accountId]);
 }
 
-async function upsertMaterial(accountId, m) {
-  // 동기화에서 다시 발견된 소재는 자동 비활성 해제 (수동 제외 enabled 는 건드리지 않음)
+async function upsertMaterial(accountId, m, channel = 'shopping') {
+  // 동기화에서 다시 발견된 소재/키워드는 자동 비활성 해제 (수동 제외 enabled 는 건드리지 않음)
   const r = await pool.query(`
-    INSERT INTO bid_materials (account_id, ncc_ad_id, ncc_adgroup_id, name, campaign_name, adgroup_name, current_bid, use_group_bid, registered_at, auto_disabled, synced_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, CURRENT_TIMESTAMP)
+    INSERT INTO bid_materials (account_id, ncc_ad_id, ncc_adgroup_id, name, campaign_name, adgroup_name, current_bid, use_group_bid, registered_at, auto_disabled, channel, synced_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, CURRENT_TIMESTAMP)
     ON CONFLICT (account_id, ncc_ad_id) DO UPDATE SET
       ncc_adgroup_id = $3, name = $4, campaign_name = $5, adgroup_name = $6,
-      current_bid = $7, use_group_bid = $8, auto_disabled = 0, synced_at = CURRENT_TIMESTAMP
+      current_bid = $7, use_group_bid = $8, auto_disabled = 0, channel = $10, synced_at = CURRENT_TIMESTAMP
     RETURNING id
   `, [accountId, m.nccAdId, m.nccAdgroupId || '', m.name || '', m.campaignName || '', m.adgroupName || '',
-      m.currentBid || 0, m.useGroupBid ? 1 : 0, m.registeredAt || '']);
+      m.currentBid || 0, m.useGroupBid ? 1 : 0, m.registeredAt || '', channel]);
   return r.rows[0].id;
 }
 
@@ -335,7 +350,7 @@ async function setMaterialBid(id, bid) {
 
 // 기준매출 저장 (null 허용) + 변경 시 이력 기록
 async function setMaterialBaseline(id, accountId, value, { materialName = '', changedBy = 'cron' } = {}) {
-  const old = await get('SELECT baseline_weekly_revenue FROM bid_materials WHERE id = $1 AND account_id = $2', [id, accountId]);
+  const old = await get('SELECT baseline_weekly_revenue, channel FROM bid_materials WHERE id = $1 AND account_id = $2', [id, accountId]);
   if (!old) return false;
   const oldVal = old.baseline_weekly_revenue == null ? null : parseInt(old.baseline_weekly_revenue);
   const newVal = value == null ? null : parseInt(value);
@@ -343,7 +358,7 @@ async function setMaterialBaseline(id, accountId, value, { materialName = '', ch
   if (oldVal !== newVal) {
     await pool.query(
       'INSERT INTO bid_setting_history (account_id, key, old_value, new_value, changed_by) VALUES ($1, $2, $3, $4, $5)',
-      [accountId, `기준매출:${materialName || id}`, oldVal == null ? '-' : String(oldVal), newVal == null ? '-' : String(newVal), changedBy]
+      [accountId, chKey(`기준매출:${materialName || id}`, old.channel || 'shopping'), oldVal == null ? '-' : String(oldVal), newVal == null ? '-' : String(newVal), changedBy]
     );
   }
   return true;
@@ -406,21 +421,22 @@ async function upsertAdjustment(a) {
 
 async function getAdjustmentById(id, accountId) {
   return get(`
-    SELECT a.*, m.name AS material_name, m.ncc_ad_id, m.campaign_name, m.adgroup_name, m.category, m.current_bid
+    SELECT a.*, m.name AS material_name, m.ncc_ad_id, m.campaign_name, m.adgroup_name, m.category, m.current_bid, m.channel
     FROM bid_adjustments a JOIN bid_materials m ON m.id = a.material_id
     WHERE a.id = $1 AND a.account_id = $2
   `, [id, accountId]);
 }
 
-async function getAdjustments(accountId, { weekStart, status, statusIn, limit = 500 } = {}) {
+async function getAdjustments(accountId, { weekStart, status, statusIn, channel, limit = 500 } = {}) {
   const conds = ['a.account_id = $1'];
   const params = [accountId];
   if (weekStart) { params.push(weekStart); conds.push(`a.week_start = $${params.length}`); }
   if (status) { params.push(status); conds.push(`a.status = $${params.length}`); }
   if (statusIn && statusIn.length) { params.push(statusIn); conds.push(`a.status = ANY($${params.length}::text[])`); }
+  if (channel) { params.push(channel); conds.push(`m.channel = $${params.length}`); }
   params.push(limit);
   return all(`
-    SELECT a.*, m.name AS material_name, m.ncc_ad_id, m.campaign_name, m.adgroup_name, m.category
+    SELECT a.*, m.name AS material_name, m.ncc_ad_id, m.campaign_name, m.adgroup_name, m.category, m.channel
     FROM bid_adjustments a JOIN bid_materials m ON m.id = a.material_id
     WHERE ${conds.join(' AND ')}
     ORDER BY a.week_start DESC, m.campaign_name, m.name
@@ -464,13 +480,13 @@ async function upsertAlert(accountId, materialId, alertDate, data) {
   `, [accountId, materialId, alertDate, data.dayCost || 0, data.avgCost || 0, data.dayRoas || 0, data.targetRoas || 0]);
 }
 
-async function getAlerts(accountId, { unresolvedOnly = true, limit = 100 } = {}) {
+async function getAlerts(accountId, { unresolvedOnly = true, limit = 100, channel = 'shopping' } = {}) {
   return all(`
     SELECT al.*, m.name AS material_name, m.campaign_name, m.adgroup_name, m.current_bid, m.category
     FROM bid_alerts al JOIN bid_materials m ON m.id = al.material_id
-    WHERE al.account_id = $1 ${unresolvedOnly ? 'AND al.resolved = 0' : ''}
+    WHERE al.account_id = $1 AND m.channel = $3 ${unresolvedOnly ? 'AND al.resolved = 0' : ''}
     ORDER BY al.alert_date DESC, al.day_cost DESC LIMIT $2
-  `, [accountId, limit]);
+  `, [accountId, limit, channel]);
 }
 
 async function resolveAlert(id, accountId) {
@@ -485,8 +501,10 @@ async function saveMonthlyReport(accountId, month, payload) {
   `, [accountId, month, JSON.stringify(payload)]);
 }
 
-async function getMonthlyReports(accountId, limit = 12) {
-  return all('SELECT * FROM bid_monthly_reports WHERE account_id = $1 ORDER BY month DESC LIMIT $2', [accountId, limit]);
+async function getMonthlyReports(accountId, limit = 12, channel = 'shopping') {
+  // powerlink 리포트는 month 값에 'pl:' 접두사로 저장된다
+  const cond = channel === 'powerlink' ? "AND month LIKE 'pl:%'" : "AND month NOT LIKE 'pl:%'";
+  return all(`SELECT * FROM bid_monthly_reports WHERE account_id = $1 ${cond} ORDER BY month DESC LIMIT $2`, [accountId, limit]);
 }
 
 // ─── 초대 역할/상태 (account_viewers 확장 — 소유자 검증 포함) ──────

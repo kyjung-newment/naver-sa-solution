@@ -11,11 +11,47 @@ const crypto = require('crypto');
 const { config } = require('../../config');
 const db = require('../db/database');
 const { createApiClient } = require('../api/naverApi');
-const bidDb = require('./db');
+const rawBidDb = require('./db');
 const logic = require('./logic');
-const engine = require('./engine');
-const collector = require('./collector');
+const rawEngine = require('./engine');
+const rawCollector = require('./collector');
 const { sendInviteEmail } = require('../email/sender');
+
+// ─── 채널 바인딩 래퍼 ───────────────────────────────────────────────
+// 팩토리 인스턴스의 채널(shopping/powerlink)을 DAO·엔진·수집기 호출에 자동 주입한다.
+// (라우트 코드는 채널을 모른 채 bidDb/engine/collector 를 그대로 사용)
+function channelDb(ch) {
+  return {
+    ...rawBidDb,
+    getSettings: (a) => rawBidDb.getSettings(a, ch),
+    setSetting: (a, k, v, by) => rawBidDb.setSetting(a, k, v, by, ch),
+    getSettingHistory: (a, l) => rawBidDb.getSettingHistory(a, l, ch),
+    getCategoryRules: (a) => rawBidDb.getCategoryRules(a, ch),
+    setCategoryRule: (a, c, r, by) => rawBidDb.setCategoryRule(a, c, r, by, ch),
+    getMaterials: (a, o = {}) => rawBidDb.getMaterials(a, { ...o, channel: ch }),
+    getAdjustments: (a, o = {}) => rawBidDb.getAdjustments(a, { ...o, channel: ch }),
+    getAlerts: (a, o = {}) => rawBidDb.getAlerts(a, { ...o, channel: ch }),
+    getMonthlyReports: (a, l) => rawBidDb.getMonthlyReports(a, l, ch),
+  };
+}
+function channelEngine(ch) {
+  return {
+    ...rawEngine,
+    computeWeekly: (a, o = {}) => rawEngine.computeWeekly(a, { ...o, channel: ch }),
+    runWeekly: (a, c, o = {}) => rawEngine.runWeekly(a, c, { ...o, channel: ch }),
+    computeBaselines: (a, o = {}) => rawEngine.computeBaselines(a, { ...o, channel: ch }),
+    runDailyMonitor: (a, c, d) => rawEngine.runDailyMonitor(a, c, d, ch),
+    runMonthlyReport: (a, m) => rawEngine.runMonthlyReport(a, m, ch),
+    createManualAdjustment: (a, id, r, o = {}) => rawEngine.createManualAdjustment(a, id, r, { ...o, channel: ch }),
+  };
+}
+function channelCollector(ch) {
+  return {
+    ...rawCollector,
+    syncMaterials: (a, c) => rawCollector.syncMaterials(a, c, ch),
+    collectWeeklyStats: (a, c, o = {}) => rawCollector.collectWeeklyStats(a, c, { ...o, channel: ch }),
+  };
+}
 
 // ─── 앱 팩토리 ──────────────────────────────────────────────────────
 // 같은 코드로 두 종류의 인스턴스를 만든다:
@@ -28,6 +64,12 @@ const APP_NAME = appConfig.appName;
 const APP_SUBTITLE = appConfig.appSubtitle || 'Naver SA Auto Bidding';
 const PINNED_CUSTOMER_ID = appConfig.pinnedCustomerId || null;
 const PINNED_LABEL = appConfig.pinnedLabel || '';
+// 채널: shopping(쇼핑검색 소재) | powerlink(파워링크 키워드) — 조정 단위·데이터·설정이 채널별 분리
+const CHANNEL = appConfig.channel || 'shopping';
+const UNIT = CHANNEL === 'powerlink' ? '키워드' : '소재';
+const bidDb = channelDb(CHANNEL);
+const engine = channelEngine(CHANNEL);
+const collector = channelCollector(CHANNEL);
 const router = express.Router();
 
 const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -322,12 +364,19 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
       <div style="margin-top:6px;background:#1e293b;border:1px solid #334155;border-radius:9px;padding:9px 12px;color:#94a3b8;font-size:12px">등록된 광고주 없음</div>`}
     </div>`;
 
+  // 채널 전환 (SPO ↔ PPO) — BASE 가 /spo 또는 /ppo 로 끝나는 마운트에서만 표시
+  const chNav = /\/(spo|ppo)$/.test(BASE) ? `
+    <div class="sb-section">솔루션</div>
+    <a href="${BASE.replace(/\/(spo|ppo)$/, '/spo')}" class="sb-link ${CHANNEL === 'shopping' ? 'active' : ''}">🛒 쇼핑검색 성과최적화</a>
+    <a href="${BASE.replace(/\/(spo|ppo)$/, '/ppo')}" class="sb-link ${CHANNEL === 'powerlink' ? 'active' : ''}">🔗 파워링크 성과최적화</a>` : '';
+
   return layout(title, `
   <div class="sidebar">
     <div class="sb-head">
       <div class="sb-logo">${escHtml(APP_NAME)}</div>
       <div class="sb-sub">${escHtml(APP_SUBTITLE)}</div>
     </div>
+    ${chNav}
     ${acctSel}
     <div class="sb-section">메뉴</div>
     <div style="flex:1">
@@ -444,8 +493,8 @@ router.get('/', requireLogin, async (req, res) => {
   const trendRaw = (await bidDb.pool.query(`
     SELECT m.campaign_name, ws.week_start, ws.cost, ws.revenue
     FROM bid_weekly_stats ws JOIN bid_materials m ON m.id = ws.material_id
-    WHERE m.account_id = $1 AND m.enabled = 1 AND COALESCE(m.auto_disabled, 0) = 0
-  `, [account.id])).rows;
+    WHERE m.account_id = $1 AND m.channel = $2 AND m.enabled = 1 AND COALESCE(m.auto_disabled, 0) = 0
+  `, [account.id, CHANNEL])).rows;
   const trendMap = {};
   for (const t of trendRaw) {
     if (logic.isExcludedCampaign(t.campaign_name, excludedC)) continue;
@@ -586,7 +635,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         <select id="wk-to">${weekOpts.map((w, i) => `<option value="${w.start}" ${i === 0 ? 'selected' : ''}>${w.start} ~ ${w.end}</option>`).join('')}</select>
         <button class="btn btn-outline btn-sm" onclick="loadData()">적용</button>
       </span>
-      <input id="f-q" placeholder="소재/캠페인/소재ID 검색..." style="width:220px">
+      <input id="f-q" placeholder="${UNIT}/캠페인/ID 검색..." style="width:220px">
       <button class="btn btn-outline btn-sm" onclick="resetFilt()" id="filt-reset" style="display:none">필터 초기화</button>
       <span style="flex:1"></span>
       <button class="btn btn-outline btn-sm" onclick="exportCsv()">📥 CSV 내보내기</button>
@@ -596,7 +645,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
     <div id="filt-pop" style="display:none;position:fixed;background:#fff;border:1px solid #e5e7eb;border-radius:11px;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:700;min-width:200px;max-width:300px"></div>
     <div id="trend-modal" style="display:none"></div>
     <script>
-    var DATA=[],WEEKS=[],SORT_K='',SORT_DIR=-1,MASTER=${master ? 'true' : 'false'};
+    var DATA=[],WEEKS=[],SORT_K='',SORT_DIR=-1,MASTER=${master ? 'true' : 'false'},UNIT='${UNIT}';
     var CATS=${JSON.stringify(logic.CATEGORIES)};
     var LATEST='${weekOpts[0].start}';
     var FILT={campaignName:null,category:null,verdict:null,coreLabel:null}; // null=전체, Set=선택값만
@@ -729,8 +778,8 @@ router.get('/weekly', requireLogin, async (req, res) => {
     function render(){
       var rows=filtered();
       var h='<table style="border-collapse:separate;border-spacing:0"><thead><tr>'
-        +sortTh('name','소재',S1+HS,'','campaignName')
-        +sortTh('adId','소재ID',S1b+HS)
+        +sortTh('name','${UNIT}',S1+HS,'','campaignName')
+        +sortTh('adId','${UNIT}ID',S1b+HS)
         +sortTh('category','분류',S2+HS,'','category')
         +sortTh('targetRoas','목표',S3+HS,'num')
         +sortTh('adjustedTarget','보정목표',S4+HS,'num');
@@ -951,21 +1000,21 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
         : `⏰ <b>주간 자동 실행 OFF</b> — <a href="${BASE}/settings#auto" style="font-weight:700;color:#dc2626;text-decoration:underline">설정 &gt; 자동화</a>에서 "주기 자동 실행(크론) 사용"을 켜면 매주 월요일 08:00에 수집·판정이 자동 실행됩니다.`}
     </div>
     <div class="card"><div class="card-header"><span class="card-title">1) 데이터 준비</span>
-      <span style="font-size:12px;color:#94a3b8">활성 소재 ${mats.length}개${lastSync ? ` · 마지막 수집 ${lastSync}` : ''}</span></div>
+      <span style="font-size:12px;color:#94a3b8">활성 ${UNIT} ${mats.length}개${lastSync ? ` · 마지막 수집 ${lastSync}` : ''}</span></div>
       <div class="card-body">
-        <button class="btn btn-primary" id="btn-sync" onclick="runSync()">🔄 소재 동기화 + 4주 성과 수집 (수동)</button>
+        <button class="btn btn-primary" id="btn-sync" onclick="runSync()">🔄 ${UNIT} 동기화 + 4주 성과 수집 (수동)</button>
         <span id="sync-status" style="margin-left:10px;font-size:13px;color:#64748b">${lastSync ? `마지막 수집: ${lastSync}` : '아직 수집 이력이 없습니다.'}</span>
       </div></div>
     <div class="card"><div class="card-header"><span class="card-title">2) 계산 결과 미리보기 → 적용</span>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="pv-q" placeholder="소재 이름 검색..." style="width:200px" oninput="renderPv()">
+        <input id="pv-q" placeholder="${UNIT} 이름 검색..." style="width:200px" oninput="renderPv()">
         <button class="btn btn-outline btn-sm" onclick="loadPreview()">미리보기 새로고침</button>
         <button class="btn btn-green btn-sm" id="btn-apply-sel" onclick="applySelected()" disabled>선택 적용</button>
         <button class="btn btn-danger btn-sm" id="btn-apply-all" onclick="applyAll()" disabled>전체 적용 (모드 규칙 준수)</button>
       </div></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table><thead><tr>
         <th><input type="checkbox" id="chk-all" style="width:auto" onclick="toggleAll(this)"></th>
-        <th class="sortable" data-k="name">소재</th><th class="sortable" data-k="category">분류</th>
+        <th class="sortable" data-k="name">${UNIT}</th><th class="sortable" data-k="category">분류</th>
         <th class="num sortable" data-k="blended">블렌딩ROAS</th><th class="num sortable" data-k="adjustedTarget">보정목표</th>
         <th class="sortable" data-k="isCore">핵심</th><th class="sortable" data-k="verdict">판정</th>
         <th class="num sortable" data-k="prevBid">현재</th><th class="num sortable" data-k="calcBid">권장</th>
@@ -979,7 +1028,7 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
       b.disabled=true;s.innerHTML='<span class="spinner"></span> 동기화 중... (소재 수에 따라 수 분 소요)';
       try{
         var j=await api('${BASE}/api/sync',{});
-        s.textContent=j.ok?('완료: 소재 '+j.synced+'개, 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')'):('오류: '+j.error);
+        s.textContent=j.ok?('완료: ${UNIT} '+j.synced+'개, 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')'):('오류: '+j.error);
         if(j.ok)loadPreview();
       }catch(e){s.textContent='오류: '+e.message;}
       b.disabled=false;
@@ -1187,7 +1236,7 @@ router.get('/approvals', requireLogin, async (req, res) => {
   const failedHtml = failed.length ? `
     <div class="card"><div class="card-header"><span class="card-title">❌ 적용 실패 (재시도 필요)</span></div>
     <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-      <tr><th>소재</th><th class="num">이전</th><th class="num">목표 입찰가</th><th>오류</th><th></th></tr>
+      <tr><th>${UNIT}</th><th class="num">이전</th><th class="num">목표 입찰가</th><th>오류</th><th></th></tr>
       ${failed.map(a => `<tr><td><b>${escHtml(a.material_name)}</b></td>
         <td class="num">${fmtNum(a.prev_bid)}원</td><td class="num">${fmtNum(a.calc_bid)}원</td>
         <td style="font-size:11px;color:#dc2626;max-width:340px">${escHtml((a.api_response || '').slice(0, 200))}</td>
@@ -1204,7 +1253,7 @@ router.get('/approvals', requireLogin, async (req, res) => {
       </div></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table>
         <thead><tr><th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll('.ap-chk').forEach(c=>c.checked=this.checked)"></th>
-        <th>등록일</th><th>소재</th><th>분류</th><th>판정</th><th>근거</th><th class="num">현재</th><th class="num">권장 (변경폭)</th><th>처리</th></tr></thead>
+        <th>등록일</th><th>${UNIT}</th><th>분류</th><th>판정</th><th>근거</th><th class="num">현재</th><th class="num">권장 (변경폭)</th><th>처리</th></tr></thead>
         <tbody>${rowsHtml || '<tr><td colspan="9" class="empty">승인 대기 건이 없습니다.</td></tr>'}</tbody>
       </table></div></div>
     ${failedHtml}
@@ -1282,20 +1331,20 @@ router.get('/history', requireLogin, async (req, res) => {
 
   const content = `
     <div class="toolbar">
-      <input id="h-q" placeholder="소재 검색..." style="width:220px">
+      <input id="h-q" placeholder="${UNIT} 검색..." style="width:220px">
       <span style="flex:1"></span>
       <button class="btn btn-outline btn-sm" onclick="loadHist()">새로고침</button>
     </div>
     <div class="card"><div class="card-header"><span class="card-title">조정 내역 (승인 완료 — 입찰가가 실제 조정된 기록)</span>
       <span style="font-size:12px;color:#94a3b8">승인 후 적용 + 자동 적용 건만 표시됩니다</span></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table><thead><tr>
-        <th>주차</th><th>소재</th><th>판정</th><th class="num">이전</th><th class="num">계산</th><th class="num">적용</th>
+        <th>주차</th><th>${UNIT}</th><th>판정</th><th class="num">이전</th><th class="num">계산</th><th class="num">적용</th>
         <th class="num">블렌딩ROAS</th><th>상태</th><th>승인자</th><th>적용시각</th>
       </tr></thead><tbody id="h-body"><tr><td colspan="10" class="empty"><span class="spinner"></span></td></tr></tbody></table></div>
     </div>
-    <div class="card"><div class="card-header"><span class="card-title">📈 소재별 입찰가 변화 타임라인</span>
+    <div class="card"><div class="card-header"><span class="card-title">📈 ${UNIT}별 입찰가 변화 타임라인</span>
       <div style="position:relative;width:300px">
-        <input id="tl-q" placeholder="소재 이름 검색..." oninput="tlSearch()" onfocus="tlSearch()" autocomplete="off">
+        <input id="tl-q" placeholder="${UNIT} 이름 검색..." oninput="tlSearch()" onfocus="tlSearch()" autocomplete="off">
         <div id="tl-sug" style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:60;display:none;max-height:280px;overflow:auto"></div>
       </div></div>
       <div class="card-body" id="tl-chart"><div class="empty" style="padding:12px">소재 이름을 검색해 선택하면 입찰가 변화 차트가 표시됩니다.</div></div>
@@ -1614,7 +1663,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     { id: 'params', title: '🧮 조정 기준' },
     { id: 'rules', title: '🗂️ 분류 규칙' },
     { id: 'auto', title: (!ro && PINNED_CUSTOMER_ID) ? '🤖 자동화·API 연동' : '🤖 자동화·알림' },
-    { id: 'materials', title: '📦 소재별 설정' },
+    { id: 'materials', title: `📦 ${UNIT}별 설정` },
   ];
 
   const content = `
@@ -1683,13 +1732,13 @@ router.get('/settings', requireLogin, async (req, res) => {
 
     <!-- ④ 소재별 설정 -->
     <div class="tab-pane" id="pane-materials">
-      <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
+      <div class="tab-desc">${UNIT} 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
       <div class="card" id="sec-excl"><div class="card-header"><span class="card-title">🚫 제외 캠페인 (수집·조정 제외)</span><div style="display:flex;gap:8px;align-items:center">${HELP.excl}${saveBtn('excl', '제외 목록 저장')}</div></div>
         <div class="card-body">
           <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
           <textarea name="excluded_campaigns" rows="5" style="font-family:inherit;resize:vertical" ${dis}>${escHtml(settings.excluded_campaigns || '')}</textarea>
         </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div></div>
+      <div class="card"><div class="card-header"><span class="card-title">${UNIT}별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div></div>
         ${ro ? '' : `
         <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
           <b style="font-size:12.5px;color:#334155;white-space:nowrap">✔ 선택 일괄 변경:</b>
@@ -1702,7 +1751,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
         </div>`}
         <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr>${ro ? '' : '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>'}<th>소재</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          <tr>${ro ? '' : '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>'}<th>${UNIT}</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
           ${matRows || `<tr><td colspan="${ro ? 9 : 10}" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
     </div>
 
@@ -2145,20 +2194,22 @@ router.post('/invite/:token', async (req, res) => {
 //  크론 (매시 정각 tick — KST 시각으로 주간/일간/월간 분기)
 // ═══════════════════════════════════════════════════════════════════
 async function getCronAccounts() {
-  // app_enabled='1' 설정된 광고주 + 소유자/연결 대행사 자격증명
+  // 어느 채널이든 크론 사용(app_enabled / pl_app_enabled)이 켜진 광고주 + 자격증명
   const r = await bidDb.pool.query(`
-    SELECT a.*,
+    SELECT DISTINCT a.*,
            COALESCE(ac.api_key, u.api_key) AS api_key,
            COALESCE(ac.secret_key, u.secret_key) AS secret_key,
            COALESCE(ac.manager_customer_id, u.manager_customer_id) AS manager_customer_id
     FROM ad_accounts a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN agency_credentials ac ON ac.id = a.agency_credential_id
-    JOIN bid_settings s ON s.account_id = a.id AND s.key = 'app_enabled' AND s.value = '1'
+    JOIN bid_settings s ON s.account_id = a.id AND s.key IN ('app_enabled', 'pl_app_enabled') AND s.value = '1'
   `);
   return r.rows.filter(a => a.api_key);
 }
 
+// 크론 tick 은 인스턴스 채널과 무관하게 두 채널(shopping/powerlink)을 모두 처리한다.
+// (레거시 경로 /egojin-bid/api/cron/tick 하나로 전 채널·전 브랜드 커버, 클레임 키로 중복 방지)
 router.get('/api/cron/tick', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -2169,7 +2220,6 @@ router.get('/api/cron/tick', async (req, res) => {
   const dow = kst.getUTCDay(); // 1=월
   const day = kst.getUTCDate();
   const dateStr = logic.fmtDate(kst);
-  const month = dateStr.slice(0, 7);
   const results = [];
 
   try {
@@ -2177,35 +2227,44 @@ router.get('/api/cron/tick', async (req, res) => {
     for (const account of accounts) {
       const creds = { api_key: account.api_key, secret_key: account.secret_key, manager_customer_id: account.manager_customer_id };
 
-      // 주간: 월요일 08시 (KST) — 소재 동기화 + 4주 성과 수집 + 증액/감액 판정 자동 실행
-      if (dow === 1 && hour === 8) {
-        const weekStart = logic.last4Weeks()[0].start;
-        if (await bidDb.tryClaimCronRun(`weekly:${account.id}:${weekStart}`)) {
-          try {
-            const r = await engine.runWeekly(account, creds, { actor: 'cron' });
-            results.push({ account: account.name, job: 'weekly', ...r });
-          } catch (e) { results.push({ account: account.name, job: 'weekly', error: e.message }); }
+      for (const ch of ['shopping', 'powerlink']) {
+        // 채널별 크론 사용 여부 (shopping=app_enabled, powerlink=pl_app_enabled)
+        const chSettings = await rawBidDb.getSettings(account.id, ch);
+        if (chSettings.app_enabled !== '1') continue;
+        const chEngine = channelEngine(ch);
+        const kp = ch === 'powerlink' ? 'pl-' : ''; // 클레임 키 접두사 (shopping은 기존 키 유지)
+        const chTag = ch === 'powerlink' ? 'PPO' : 'SPO';
+
+        // 주간: 월요일 08시 (KST) — 동기화 + 4주 성과 수집 + 기준매출 + 판정 자동 실행
+        if (dow === 1 && hour === 8) {
+          const weekStart = logic.last4Weeks()[0].start;
+          if (await bidDb.tryClaimCronRun(`${kp}weekly:${account.id}:${weekStart}`)) {
+            try {
+              const r = await chEngine.runWeekly(account, creds, { actor: 'cron' });
+              results.push({ account: account.name, channel: chTag, job: 'weekly', ...r });
+            } catch (e) { results.push({ account: account.name, channel: chTag, job: 'weekly', error: e.message }); }
+          }
         }
-      }
-      // 일간 모니터: 매일 07시 (KST) — 전일 데이터
-      if (hour === 7) {
-        const yesterday = logic.fmtDate(new Date(kst.getTime() - 24 * 60 * 60 * 1000));
-        if (await bidDb.tryClaimCronRun(`daily:${account.id}:${yesterday}`)) {
-          try {
-            const r = await engine.runDailyMonitor(account, creds, yesterday);
-            results.push({ account: account.name, job: 'daily', ...r });
-          } catch (e) { results.push({ account: account.name, job: 'daily', error: e.message }); }
+        // 일간 모니터: 매일 07시 (KST) — 전일 데이터
+        if (hour === 7) {
+          const yesterday = logic.fmtDate(new Date(kst.getTime() - 24 * 60 * 60 * 1000));
+          if (await bidDb.tryClaimCronRun(`${kp}daily:${account.id}:${yesterday}`)) {
+            try {
+              const r = await chEngine.runDailyMonitor(account, creds, yesterday);
+              results.push({ account: account.name, channel: chTag, job: 'daily', ...r });
+            } catch (e) { results.push({ account: account.name, channel: chTag, job: 'daily', error: e.message }); }
+          }
         }
-      }
-      // 매월 1일 06시 (KST): 월간 리포트 (기준매출은 매주 월 주간 실행에서 갱신)
-      if (day === 1 && hour === 6) {
-        const prev = new Date(kst); prev.setUTCDate(0);
-        const prevMonth = logic.fmtDate(prev).slice(0, 7);
-        if (await bidDb.tryClaimCronRun(`monthly:${account.id}:${prevMonth}`)) {
-          try {
-            const r = await engine.runMonthlyReport(account, prevMonth);
-            results.push({ account: account.name, job: 'monthly', month: prevMonth, targets: r.reviewTargets.length });
-          } catch (e) { results.push({ account: account.name, job: 'monthly', error: e.message }); }
+        // 매월 1일 06시 (KST): 월간 리포트
+        if (day === 1 && hour === 6) {
+          const prev = new Date(kst); prev.setUTCDate(0);
+          const prevMonth = logic.fmtDate(prev).slice(0, 7);
+          if (await bidDb.tryClaimCronRun(`${kp}monthly:${account.id}:${prevMonth}`)) {
+            try {
+              const r = await chEngine.runMonthlyReport(account, prevMonth);
+              results.push({ account: account.name, channel: chTag, job: 'monthly', month: prevMonth, targets: r.reviewTargets.length });
+            } catch (e) { results.push({ account: account.name, channel: chTag, job: 'monthly', error: e.message }); }
+          }
         }
       }
     }

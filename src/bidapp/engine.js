@@ -11,15 +11,15 @@ const wkKey = (w) => (w instanceof Date) ? w.toISOString().slice(0, 10) : String
  * 주간 계산: 4주 성과 기반 판정 → bid_adjustments upsert
  * @returns {{weekStart, rows: [...]}} 계산 결과 (미리보기 데이터와 동일)
  */
-async function computeWeekly(account, { save = true, base = null } = {}) {
+async function computeWeekly(account, { save = true, base = null, channel = 'shopping' } = {}) {
   if (base) save = false; // 과거 주간 조회는 조정안을 덮어쓰지 않음
-  const settings = await bidDb.getSettings(account.id);
-  const rules = await bidDb.getCategoryRules(account.id);
+  const settings = await bidDb.getSettings(account.id, channel);
+  const rules = await bidDb.getCategoryRules(account.id, channel);
   const weeks = logic.last4Weeks(base);
   const weekStarts = weeks.map(w => w.start);
   // 제외 캠페인은 판정·표시에서 즉시 배제 (동기화 전이라도 반영)
   const excluded = logic.parseExcludedCampaigns(settings.excluded_campaigns);
-  const materials = (await bidDb.getMaterials(account.id, { enabledOnly: true }))
+  const materials = (await bidDb.getMaterials(account.id, { enabledOnly: true, channel }))
     .filter(m => !logic.isExcludedCampaign(m.campaign_name, excluded));
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
 
@@ -105,12 +105,12 @@ async function applyAdjustment(account, creds, adjId, { auto = false, actor = 's
   let note = '';
   try {
     // 안전장치: 적용 전 현재 입찰가 재조회
-    const live = await collector.fetchLiveBid(account, creds, adj.ncc_ad_id);
+    const live = await collector.fetchLiveBid(account, creds, adj.ncc_ad_id, adj.channel || 'shopping');
     if (live.bid && live.bid !== adj.prev_bid) {
       note = `경고: 적용 시점 실제 입찰가 ${live.bid}원 ≠ 계산 기준 ${adj.prev_bid}원`;
       console.log(`  ⚠️ [${adj.material_name}] ${note}`);
     }
-    await collector.applyBid(account, creds, adj.ncc_ad_id, adj.calc_bid);
+    await collector.applyBid(account, creds, adj.ncc_ad_id, adj.calc_bid, adj.channel || 'shopping');
     await bidDb.setAdjustmentStatus(adjId, account.id, {
       status: auto ? 'auto_applied' : 'applied',
       approvedBy: actor,
@@ -144,15 +144,15 @@ async function applyAdjustment(account, creds, adjId, { auto = false, actor = 's
  * auto 모드: |조정률| ≤ force_approval_delta 인 건만 자동 적용, 초과분은 승인 대기.
  * approval 모드: 전부 승인 대기. 소재별 mode_override 우선.
  */
-async function runWeekly(account, creds, { actor = 'cron' } = {}) {
-  await collector.syncMaterials(account, creds);
-  const stats = await collector.collectWeeklyStats(account, creds);
-  await computeBaselines(account, { actor }); // 기준매출 = 지난 4주 평균 (판정 전에 갱신)
-  const { weekStart, rows, settings } = await computeWeekly(account, { save: true });
+async function runWeekly(account, creds, { actor = 'cron', channel = 'shopping' } = {}) {
+  await collector.syncMaterials(account, creds, channel);
+  const stats = await collector.collectWeeklyStats(account, creds, { channel });
+  await computeBaselines(account, { actor, channel }); // 기준매출 = 지난 4주 평균 (판정 전에 갱신)
+  const { weekStart, rows, settings } = await computeWeekly(account, { save: true, channel });
 
   let applied = 0, pending = 0, failed = 0;
   // hold_volume(감액보류)은 auto 모드여도 자동 적용 대상에서 제외 — 승인함에서만 처리
-  const adjustables = await bidDb.getAdjustments(account.id, { weekStart, status: 'pending' });
+  const adjustables = await bidDb.getAdjustments(account.id, { weekStart, status: 'pending', channel });
   for (const adj of adjustables) {
     const m = await bidDb.getMaterialById(adj.material_id, account.id);
     const mode = (m?.mode_override === 'auto' || m?.mode_override === 'approval') ? m.mode_override : settings.adjust_mode;
@@ -165,7 +165,7 @@ async function runWeekly(account, creds, { actor = 'cron' } = {}) {
       pending++; // 승인 대기 유지 (auto 모드여도 ±20% 초과는 무조건 승인)
     }
   }
-  const held = (await bidDb.getAdjustments(account.id, { weekStart, status: 'hold_volume' })).length;
+  const held = (await bidDb.getAdjustments(account.id, { weekStart, status: 'hold_volume', channel })).length;
   pending += held;
   await bidDb.audit(account.id, actor, '주간 조정 실행', {
     weekStart, materials: stats.materials, statOk: stats.ok, statFail: stats.fail, applied, pending, held, failed,
@@ -177,12 +177,12 @@ async function runWeekly(account, creds, { actor = 'cron' } = {}) {
  * 일간 모니터 (자동 조정 없음 — 알림만):
  * 일 비용 > 4주 일평균 × daily_cost_mult AND 당일 ROAS < 보정목표 × daily_roas_mult
  */
-async function runDailyMonitor(account, creds, dateStr) {
-  const settings = await bidDb.getSettings(account.id);
-  const rules = await bidDb.getCategoryRules(account.id);
+async function runDailyMonitor(account, creds, dateStr, channel = 'shopping') {
+  const settings = await bidDb.getSettings(account.id, channel);
+  const rules = await bidDb.getCategoryRules(account.id, channel);
   const weeks = logic.last4Weeks();
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weeks.map(w => w.start));
-  const daily = await collector.collectDailyStats(account, creds, dateStr);
+  const daily = await collector.collectDailyStats(account, creds, dateStr, channel);
 
   let alerts = 0;
   for (const { material: m, cost, revenue } of daily) {
@@ -211,10 +211,10 @@ async function runDailyMonitor(account, creds, dateStr) {
  * DB의 bid_weekly_stats 를 사용하므로 API 호출 없음 — 성과 수집(collectWeeklyStats) 후 실행해야 한다.
  * 4주간 활동 데이터가 전무한 신규 소재는 null (볼륨 보류 조건 미적용).
  */
-async function computeBaselines(account, { actor = 'cron' } = {}) {
+async function computeBaselines(account, { actor = 'cron', channel = 'shopping' } = {}) {
   const weeks = logic.last4Weeks();
   const weekStarts = weeks.map(w => w.start);
-  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  const materials = await bidDb.getMaterials(account.id, { enabledOnly: true, channel });
   const statsMap = await bidDb.getWeeklyStatsMap(account.id, weekStarts);
   let updated = 0, nulled = 0;
   for (const m of materials) {
@@ -240,10 +240,10 @@ async function computeBaselines(account, { actor = 'cron' } = {}) {
 /**
  * 월간 리포트: 4주 연속 감액/증액 소재 + 목표ROAS 재검토 대상
  */
-async function runMonthlyReport(account, month) {
-  const materials = await bidDb.getMaterials(account.id);
+async function runMonthlyReport(account, month, channel = 'shopping') {
+  const materials = await bidDb.getMaterials(account.id, { channel });
   const byMat = {};
-  const recent = await bidDb.getAdjustments(account.id, { limit: 5000 });
+  const recent = await bidDb.getAdjustments(account.id, { limit: 5000, channel });
   for (const a of recent) {
     if (!byMat[a.material_id]) byMat[a.material_id] = [];
     byMat[a.material_id].push(a);
@@ -257,8 +257,9 @@ async function runMonthlyReport(account, month) {
     if (verdicts.every(v => v === logic.VERDICT.UP)) { consecUp.push(entry); reviewTargets.push({ ...entry, reason: '4주 연속 증액 — 목표ROAS 상향 검토' }); }
     if (verdicts.every(v => v === logic.VERDICT.DOWN)) { consecDown.push(entry); reviewTargets.push({ ...entry, reason: '4주 연속 감액 — 목표ROAS 하향 또는 소재 재검토' }); }
   }
-  const payload = { month, consecUp, consecDown, reviewTargets, generatedAt: new Date().toISOString() };
-  await bidDb.saveMonthlyReport(account.id, month, payload);
+  const payload = { month, channel, consecUp, consecDown, reviewTargets, generatedAt: new Date().toISOString() };
+  // powerlink 리포트는 month 키에 'pl:' 접두사로 채널 분리 저장
+  await bidDb.saveMonthlyReport(account.id, channel === 'powerlink' ? `pl:${month}` : month, payload);
   await bidDb.audit(account.id, 'cron', '월간 리포트 생성', { month, up: consecUp.length, down: consecDown.length });
   return payload;
 }
@@ -266,8 +267,8 @@ async function runMonthlyReport(account, month) {
 /**
  * 수동 조정 (일간 트리거 ±3%, 월간 ±15% 등): 즉시 조정안 생성 후 승인 대기
  */
-async function createManualAdjustment(account, materialId, rate, { actor = '', note = '' } = {}) {
-  const settings = await bidDb.getSettings(account.id);
+async function createManualAdjustment(account, materialId, rate, { actor = '', note = '', channel = 'shopping' } = {}) {
+  const settings = await bidDb.getSettings(account.id, channel);
   const m = await bidDb.getMaterialById(materialId, account.id);
   if (!m || !m.current_bid) return { ok: false, error: '소재 또는 현재 입찰가 없음' };
   const calcBid = Math.max(logic.roundBid10(m.current_bid * (1 + rate)), settings.min_bid);
