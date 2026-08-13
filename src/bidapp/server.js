@@ -931,16 +931,26 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
   const settings = await bidDb.getSettings(account.id);
   const pend = await pendingCount(account.id);
   const mats = await bidDb.getMaterials(account.id, { enabledOnly: true });
+  // 마지막 수집 시각 (소재 동기화 기준)
+  const lastSyncRow = (await bidDb.pool.query(
+    'SELECT MAX(synced_at) AS t FROM bid_materials WHERE account_id = $1', [account.id])).rows[0];
+  const lastSync = lastSyncRow?.t ? new Date(lastSyncRow.t).toLocaleString('ko-KR') : null;
+  const cronOn = settings.app_enabled === '1';
 
   const content = `
     <div class="alert alert-info">현재 조정 모드: <b>${settings.adjust_mode === 'auto' ? '자동 적용 (auto)' : '승인 후 적용 (approval)'}</b>
       · auto 모드여도 변경 폭 ±${Math.round(settings.force_approval_delta * 100)}% 초과 건은 무조건 승인이 필요합니다.
       모드는 <a href="${BASE}/settings" style="font-weight:700;color:#0369a1">설정</a>에서 변경.</div>
+    <div class="alert ${cronOn ? 'alert-ok' : 'alert-err'}">
+      ${cronOn
+        ? '⏰ <b>주간 자동 실행 ON</b> — 매주 월요일 08:00(KST)에 소재 동기화 + 4주 성과 수집 + 판정이 자동 실행됩니다. 아래 버튼은 그 사이 수동으로 갱신하고 싶을 때만 사용하면 됩니다.'
+        : `⏰ <b>주간 자동 실행 OFF</b> — <a href="${BASE}/settings#auto" style="font-weight:700;color:#dc2626;text-decoration:underline">설정 &gt; 자동화</a>에서 "주기 자동 실행(크론) 사용"을 켜면 매주 월요일 08:00에 수집·판정이 자동 실행됩니다.`}
+    </div>
     <div class="card"><div class="card-header"><span class="card-title">1) 데이터 준비</span>
-      <span style="font-size:12px;color:#94a3b8">활성 소재 ${mats.length}개</span></div>
+      <span style="font-size:12px;color:#94a3b8">활성 소재 ${mats.length}개${lastSync ? ` · 마지막 수집 ${lastSync}` : ''}</span></div>
       <div class="card-body">
-        <button class="btn btn-primary" id="btn-sync" onclick="runSync()">🔄 소재 동기화 + 4주 성과 수집</button>
-        <span id="sync-status" style="margin-left:10px;font-size:13px;color:#64748b"></span>
+        <button class="btn btn-primary" id="btn-sync" onclick="runSync()">🔄 소재 동기화 + 4주 성과 수집 (수동)</button>
+        <span id="sync-status" style="margin-left:10px;font-size:13px;color:#64748b">${lastSync ? `마지막 수집: ${lastSync}` : '아직 수집 이력이 없습니다.'}</span>
       </div></div>
     <div class="card"><div class="card-header"><span class="card-title">2) 계산 결과 미리보기 → 적용</span>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1046,6 +1056,8 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
       toast(j.ok?('자동적용 '+j.applied+'건 / 승인대기 '+j.pending+'건 / 실패 '+j.failed+'건'):(j.error||'오류'),!j.ok);
       loadPreview();
     }
+    // 페이지 진입 시 마지막 수집 데이터 기준으로 미리보기 자동 로드 (재수집 전까지 유지)
+    loadPreview();
     </script>
   `;
   res.send(appLayout(req, '조정 실행', content, 'run', { accounts, account, user, pendingCount: pend }));
@@ -1152,8 +1164,10 @@ router.get('/approvals', requireLogin, async (req, res) => {
 
   const rowsHtml = pendings.map(a => {
     const delta = a.prev_bid > 0 ? ((a.calc_bid - a.prev_bid) / a.prev_bid * 100) : 0;
+    const regAt = a.created_at ? new Date(a.created_at).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
     return `<tr>
       <td><input type="checkbox" class="ap-chk" value="${a.id}" style="width:auto"></td>
+      <td style="white-space:nowrap;font-size:12px;color:#64748b">${regAt}</td>
       <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
       <td>${escHtml(a.category)}</td>
       <td>${verdictBadge(a.verdict)}${a.is_core ? ' <span class="badge b-core">핵심</span>' : ''}${a.status === 'hold_volume' ? '<br>' + statusBadge(a.status) : ''}</td>
@@ -1186,8 +1200,8 @@ router.get('/approvals', requireLogin, async (req, res) => {
       </div></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table>
         <thead><tr><th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll('.ap-chk').forEach(c=>c.checked=this.checked)"></th>
-        <th>소재</th><th>분류</th><th>판정</th><th>근거</th><th class="num">현재</th><th class="num">권장 (변경폭)</th><th>처리</th></tr></thead>
-        <tbody>${rowsHtml || '<tr><td colspan="8" class="empty">승인 대기 건이 없습니다.</td></tr>'}</tbody>
+        <th>등록일</th><th>소재</th><th>분류</th><th>판정</th><th>근거</th><th class="num">현재</th><th class="num">권장 (변경폭)</th><th>처리</th></tr></thead>
+        <tbody>${rowsHtml || '<tr><td colspan="9" class="empty">승인 대기 건이 없습니다.</td></tr>'}</tbody>
       </table></div></div>
     ${failedHtml}
     <script>
