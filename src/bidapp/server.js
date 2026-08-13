@@ -524,7 +524,7 @@ router.get('/', requireLogin, async (req, res) => {
     <div class="card">
       <div class="card-header"><span class="card-title">🚨 일간 트리거 알림 (자동 조정 없음 — 수동 대응)</span></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-        <tr><th>일자</th><th>소재</th><th>분류</th><th class="num">당일 비용</th><th class="num">4주 일평균</th><th class="num">당일 ROAS</th><th class="num">보정목표</th>${isClient(req) ? '' : '<th>조치</th>'}</tr>
+        <tr><th>일자</th><th>${UNIT}</th><th>분류</th><th class="num">당일 비용</th><th class="num">4주 일평균</th><th class="num">당일 ROAS</th><th class="num">보정목표</th>${isClient(req) ? '' : '<th>조치</th>'}</tr>
         ${alerts.map(a => `<tr>
           <td>${wkKey(a.alert_date)}</td>
           <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
@@ -558,15 +558,15 @@ router.get('/', requireLogin, async (req, res) => {
       <div class="kpi o"><div class="kpi-l">승인 대기</div><div class="kpi-v">${pend}건</div><div class="kpi-s"><a href="${BASE}/approvals" style="color:#0ea5e9;font-weight:600">승인함 바로가기 →</a></div></div>
     </div>
     <div class="card"><div class="card-header"><span class="card-title">📈 주간 성과 트렌드 (최근 12주)</span>
-      <span style="font-size:12px;color:#94a3b8">활성 소재 합산 · 매출 = 구매전환매출 · 하단 보라 = 주간 ROAS · 소재별 상세는 <a href="${BASE}/weekly" style="color:#0ea5e9;font-weight:600">주차별 데이터</a></span></div>
+      <span style="font-size:12px;color:#94a3b8">활성 ${UNIT} 합산 · 매출 = 구매전환매출 · 하단 보라 = 주간 ROAS · ${UNIT}별 상세는 <a href="${BASE}/weekly" style="color:#0ea5e9;font-weight:600">주차별 데이터</a></span></div>
       <div class="card-body" id="kpi-trend"><div class="empty" style="padding:16px"><span class="spinner"></span></div></div>
     </div>
     <div class="card"><div class="card-header"><span class="card-title">판정 분포 (최신 주차 기준 계산)</span>
-      <span style="font-size:12px;color:#94a3b8">소재 ${rows.length}개 · 데이터 기준 주 ${weeks[0].start} ~ ${weeks[0].end}</span></div>
-      <div class="card-body">${distHtml || '<span class="empty" style="padding:0">데이터가 없습니다. 소재 동기화 후 성과가 수집되면 표시됩니다.</span>'}</div>
+      <span style="font-size:12px;color:#94a3b8">${UNIT} ${rows.length}개 · 데이터 기준 주 ${weeks[0].start} ~ ${weeks[0].end}</span></div>
+      <div class="card-body">${distHtml || '<span class="empty" style="padding:0">데이터가 없습니다. ${UNIT} 동기화 후 성과가 수집되면 표시됩니다.</span>'}</div>
     </div>
     ${alertsHtml}
-    ${!rows.length && !isClient(req) ? `<div class="alert alert-info">소재가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "소재 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
+    ${!rows.length && !isClient(req) ? `<div class="alert alert-info">${UNIT}가 없습니다. <a href="${BASE}/run" style="font-weight:700;color:#0369a1">조정 실행</a> 페이지에서 "${UNIT} 동기화 + 성과 수집"을 먼저 실행해주세요.</div>` : ''}
     <script>
     // KPI 트렌드 차트 (최근 12주 비용/구매전환매출 라인 + 주간 ROAS 라벨)
     var TREND=${JSON.stringify(trendWeeks)};
@@ -640,7 +640,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
       <span style="flex:1"></span>
       <button class="btn btn-outline btn-sm" onclick="exportCsv()">📥 CSV 내보내기</button>
     </div>
-    <div class="alert alert-info" style="font-size:12.5px">열 제목의 <b>⏷</b>를 누르면 엑셀처럼 값을 골라 필터링할 수 있습니다. 주차 열은 [비용/매출/ROAS/입찰가/변경입찰가] — 변경입찰가는 그 주에 입찰가 변경(솔루션 적용 또는 광고시스템 외부 변경)이 있었을 때만 표시됩니다. <b>소재~보정목표 열 고정</b>, 판정 열은 최근 4주 기준으로 맨 오른쪽에 있습니다.</div>
+    <div class="alert alert-info" style="font-size:12.5px">열 제목의 <b>⏷</b>를 누르면 엑셀처럼 값을 골라 필터링할 수 있습니다. 주차 열은 [비용/매출/ROAS/입찰가/변경입찰가] — 변경입찰가는 그 주에 입찰가 변경(솔루션 적용 또는 광고시스템 외부 변경)이 있었을 때만 표시됩니다. <b>${UNIT}~보정목표 열 고정</b>, 판정 열은 최근 4주 기준으로 맨 오른쪽에 있습니다.</div>
     <div class="tbl-wrap" id="wk-wrap"><div class="empty"><span class="spinner"></span> 불러오는 중...</div></div>
     <div id="filt-pop" style="display:none;position:fixed;background:#fff;border:1px solid #e5e7eb;border-radius:11px;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:700;min-width:200px;max-width:300px"></div>
     <div id="trend-modal" style="display:none"></div>
@@ -832,7 +832,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
       document.getElementById('wk-wrap').innerHTML=h;
     }
     function exportCsv(){
-      var head=['소재','소재ID','캠페인','광고그룹','분류','목표ROAS','보정목표'];
+      var head=[UNIT,UNIT+'ID','캠페인','광고그룹','분류','목표ROAS','보정목표'];
       WEEKS.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS',w+' 입찰가',w+' 변경입찰가');});
       head=head.concat(['블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가']);
       var rows=filtered().map(function(r){
@@ -962,7 +962,7 @@ router.get('/api/material-trend', requireLogin, async (req, res) => {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
     const m = await bidDb.getMaterialById(req.query.materialId, account.id);
-    if (!m) return res.json({ ok: false, error: '소재 없음' });
+    if (!m) return res.json({ ok: false, error: `${UNIT} 없음` });
     const rows = await bidDb.pool.query(
       'SELECT * FROM bid_weekly_stats WHERE material_id = $1 ORDER BY week_start ASC LIMIT 26', [m.id]);
     res.json({
@@ -996,7 +996,7 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
       모드는 <a href="${BASE}/settings" style="font-weight:700;color:#0369a1">설정</a>에서 변경.</div>
     <div class="alert ${cronOn ? 'alert-ok' : 'alert-err'}">
       ${cronOn
-        ? '⏰ <b>주간 자동 실행 ON</b> — 매주 월요일 08:00(KST)에 소재 동기화 + 4주 성과 수집 + 판정이 자동 실행됩니다. 아래 버튼은 그 사이 수동으로 갱신하고 싶을 때만 사용하면 됩니다.'
+        ? '⏰ <b>주간 자동 실행 ON</b> — 매주 월요일 08:00(KST)에 ${UNIT} 동기화 + 4주 성과 수집 + 판정이 자동 실행됩니다. 아래 버튼은 그 사이 수동으로 갱신하고 싶을 때만 사용하면 됩니다.'
         : `⏰ <b>주간 자동 실행 OFF</b> — <a href="${BASE}/settings#auto" style="font-weight:700;color:#dc2626;text-decoration:underline">설정 &gt; 자동화</a>에서 "주기 자동 실행(크론) 사용"을 켜면 매주 월요일 08:00에 수집·판정이 자동 실행됩니다.`}
     </div>
     <div class="card"><div class="card-header"><span class="card-title">1) 데이터 준비</span>
@@ -1025,7 +1025,7 @@ router.get('/run', requireLogin, requireMaster, async (req, res) => {
     var PV=[];
     async function runSync(){
       var b=document.getElementById('btn-sync'),s=document.getElementById('sync-status');
-      b.disabled=true;s.innerHTML='<span class="spinner"></span> 동기화 중... (소재 수에 따라 수 분 소요)';
+      b.disabled=true;s.innerHTML='<span class="spinner"></span> 동기화 중... (${UNIT} 수에 따라 수 분 소요)';
       try{
         var j=await api('${BASE}/api/sync',{});
         s.textContent=j.ok?('완료: ${UNIT} '+j.synced+'개, 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')'):('오류: '+j.error);
@@ -1124,7 +1124,7 @@ router.post('/api/sync', requireLogin, requireMaster, async (req, res) => {
     if (!creds) return res.json({ ok: false, error: PINNED_CUSTOMER_ID ? 'API 자격증명이 없습니다. 설정 > API 연동 탭에서 등록해주세요.' : 'API 자격증명이 없습니다. AUTO REPORT > API 설정에서 마케터 API를 등록해주세요.' });
     const sync = await collector.syncMaterials(account, creds);
     const stats = await collector.collectWeeklyStats(account, creds);
-    await bidDb.audit(account.id, req.session.userName, '소재 동기화·성과 수집', { synced: sync.synced, statOk: stats.ok, statFail: stats.fail });
+    await bidDb.audit(account.id, req.session.userName, `${UNIT} 동기화·성과 수집`, { synced: sync.synced, statOk: stats.ok, statFail: stats.fail });
     res.json({ ok: true, synced: sync.synced, statOk: stats.ok, statFail: stats.fail });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
@@ -1245,7 +1245,7 @@ router.get('/approvals', requireLogin, async (req, res) => {
 
   const content = `
     <div class="alert alert-info">승인 즉시 네이버 API로 입찰가가 반영됩니다. 각 건의 판정 근거(블렌딩 ROAS vs 보정목표)를 확인 후 승인해주세요.
-      <b>감액보류(볼륨하락)</b> 건은 매출볼륨이 이미 하락 중인 소재로, auto 모드여도 자동 적용되지 않으며 승인된 소재만 입찰가가 수정됩니다. (반려 시 현재 입찰가 유지)</div>
+      <b>감액보류(볼륨하락)</b> 건은 매출볼륨이 이미 하락 중인 ${UNIT}로, auto 모드여도 자동 적용되지 않으며 승인된 ${UNIT}만 입찰가가 수정됩니다. (반려 시 현재 입찰가 유지)</div>
     <div class="card"><div class="card-header"><span class="card-title">승인 대기 (${pendings.length}건)</span>
       <div style="display:flex;gap:8px">
         <button class="btn btn-green btn-sm" onclick="bulk('approve')">선택 일괄 승인</button>
@@ -1323,7 +1323,7 @@ router.get('/history', requireLogin, async (req, res) => {
     try { p = JSON.parse(mr.payload); } catch (e) {}
     const targets = p.reviewTargets || [];
     return `<div style="margin-bottom:14px"><b>${escHtml(mr.month)}</b> — 4주 연속 증액 ${p.consecUp?.length || 0}개 · 4주 연속 감액 ${p.consecDown?.length || 0}개
-      ${targets.length ? `<div class="tbl-wrap" style="margin-top:8px;max-height:220px"><table><tr><th>소재</th><th>분류</th><th class="num">목표ROAS</th><th>사유</th>${isClient(req) ? '' : '<th>수동 조정 (±15%)</th>'}</tr>
+      ${targets.length ? `<div class="tbl-wrap" style="margin-top:8px;max-height:220px"><table><tr><th>${UNIT}</th><th>분류</th><th class="num">목표ROAS</th><th>사유</th>${isClient(req) ? '' : '<th>수동 조정 (±15%)</th>'}</tr>
       ${targets.map(t => `<tr><td>${escHtml(t.name)}</td><td>${escHtml(t.category)}</td><td class="num">${fmtRoas(t.target_roas)}</td><td style="font-size:11.5px;color:#64748b">${escHtml(t.reason)}</td>
       ${isClient(req) ? '' : `<td><button class="btn btn-outline btn-sm" onclick="manual(${t.id},0.15)">+15%</button> <button class="btn btn-outline btn-sm" onclick="manual(${t.id},-0.15)">-15%</button></td>`}</tr>`).join('')}
       </table></div>` : '<span style="color:#94a3b8;font-size:12px"> — 재검토 대상 없음</span>'}</div>`;
@@ -1347,7 +1347,7 @@ router.get('/history', requireLogin, async (req, res) => {
         <input id="tl-q" placeholder="${UNIT} 이름 검색..." oninput="tlSearch()" onfocus="tlSearch()" autocomplete="off">
         <div id="tl-sug" style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:60;display:none;max-height:280px;overflow:auto"></div>
       </div></div>
-      <div class="card-body" id="tl-chart"><div class="empty" style="padding:12px">소재 이름을 검색해 선택하면 입찰가 변화 차트가 표시됩니다.</div></div>
+      <div class="card-body" id="tl-chart"><div class="empty" style="padding:12px">${UNIT} 이름을 검색해 선택하면 입찰가 변화 차트가 표시됩니다.</div></div>
     </div>
     <div class="card"><div class="card-header"><span class="card-title">🗓 월간 리포트 (목표ROAS 재검토 대상)</span></div>
       <div class="card-body">${monthlyHtml}</div></div>
@@ -1458,17 +1458,17 @@ router.post('/api/manual-adjust', requireLogin, requireMaster, async (req, res) 
 // ═══════════════════════════════════════════════════════════════════
 //  설정 (마스터=수정 / 광고주=열람 전용)
 // ═══════════════════════════════════════════════════════════════════
-// 탭별 파라미터 정의 — tip은 판정 로직에서의 역할 (툴팁 표시)
-const SETTING_TAB_PARAMS = {
+// 탭별 파라미터 정의 — tip은 판정 로직에서의 역할 (툴팁 표시). U = 조정 단위(소재/키워드)
+const SETTING_TAB_PARAMS_FOR = (U) => ({
   blend: [
     { k: 'band_up', label: '판정 밴드 상단 (+)', tip: '블렌딩ROAS ≥ 보정목표×(1+상단)이면 증액. 곱연산 — 예: 목표 400%·상단 0.3 → 400%×1.3 = 520% 이상일 때 증액 (430%가 아님)' },
     { k: 'band_down', label: '판정 밴드 하단 (-)', tip: '블렌딩ROAS < 보정목표×(1-하단)이면 감액. 곱연산 — 예: 목표 400%·하단 0.3 → 400%×0.7 = 280% 미만일 때 감액' },
-    { k: 'default_target_roas', label: '기본 목표ROAS (배수)', tip: '소재별 목표ROAS 미지정 시 사용. 5.5 = 550%. 분류 계수를 곱해 보정목표가 됩니다.' },
+    { k: 'default_target_roas', label: '기본 목표ROAS (배수)', tip: `${U}별 목표ROAS 미지정 시 사용. 5.5 = 550%. 분류 계수를 곱해 보정목표가 됩니다.` },
   ],
   volume: [
-    { k: 'volume_drop_threshold', label: '볼륨하락 임계 (일반소재)', tip: '일반소재 감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락' },
-    { k: 'volume_drop_threshold_core', label: '볼륨하락 임계 (핵심소재)', tip: '핵심소재에 별도 적용되는 볼륨하락 임계. 예: 0.05로 두면 핵심소재는 5%만 하락해도 감액을 보류' },
-    { k: 'core_down_cap', label: '핵심소재 감액 상한', tip: '핵심소재는 분류 감액률 대신 이 상한까지만 감액. 예: 일반 규칙이 -10%여도 핵심소재는 0.05면 최대 -5%까지만. 핵심소재는 자동 분류 없이 소재별 설정에서 수동 지정' },
+    { k: 'volume_drop_threshold', label: `볼륨하락 임계 (일반${U})`, tip: `일반${U} 감액 판정 시 최신주 매출 < 기준매출×(1-임계)이면 감액보류(볼륨하락) → 승인 대기. 0.10 = 10% 하락` },
+    { k: 'volume_drop_threshold_core', label: `볼륨하락 임계 (핵심${U})`, tip: `핵심${U}에 별도 적용되는 볼륨하락 임계. 예: 0.05로 두면 핵심${U}는 5%만 하락해도 감액을 보류` },
+    { k: 'core_down_cap', label: `핵심${U} 감액 상한`, tip: `핵심${U}는 분류 감액률 대신 이 상한까지만 감액. 예: 일반 규칙이 -10%여도 핵심${U}는 0.05면 최대 -5%까지만. 핵심${U}는 자동 분류 없이 ${U}별 설정에서 수동 지정` },
   ],
   limits: [
     { k: 'min_bid', label: '최저입찰가 (원)', tip: '권장입찰가가 이 값 아래로 내려가지 않습니다.' },
@@ -1480,7 +1480,8 @@ const SETTING_TAB_PARAMS = {
     { k: 'daily_cost_mult', label: '일간 트리거 비용 배수', tip: '일 비용 > 4주 일평균 × 이 배수이면 일간 알림 후보. 2.0 = 200%' },
     { k: 'daily_roas_mult', label: '일간 트리거 ROAS 배수', tip: '당일 ROAS < 보정목표 × 이 배수이면 (비용 조건과 함께) 일간 알림 발생. 0.5 = 50%' },
   ],
-};
+});
+const SETTING_TAB_PARAMS = SETTING_TAB_PARAMS_FOR(UNIT);
 
 const secTitle = (icon, title, desc) => `
     <div style="display:flex;align-items:baseline;gap:10px;margin:22px 0 10px">
@@ -1516,13 +1517,13 @@ function apiSectionHtml(credInfo) {
             ${PINNED_CUSTOMER_ID
               ? `이 솔루션은 <b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주 전용입니다.`
               : `광고주를 <b>Customer ID만 입력</b>해 추가합니다. Customer ID는 네이버 검색광고 센터 &gt; 도구 &gt; SA API 사용 관리 &gt; <b>검색광고 Key?</b>에서 확인한 숫자입니다.`}
-            연동(추가) 성공 시 <b>소재 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장되며, 어느 마스터가 연동했든 모든 마스터가 공유합니다.</p>
+            연동(추가) 성공 시 <b>${UNIT} 동기화 + 4주 성과 수집이 자동 실행</b>되어 데이터가 바로 저장되며, 어느 마스터가 연동했든 모든 마스터가 공유합니다.</p>
           <div style="display:flex;gap:10px;align-items:flex-end;max-width:640px;flex-wrap:wrap">
             <div style="flex:1;min-width:180px"><label>광고주명</label><input id="na-name" value="${PINNED_CUSTOMER_ID ? PINNED_LABEL : ''}" placeholder="예: 브랜드명" autocomplete="off"></div>
             <div style="flex:1;min-width:180px"><label>Customer ID</label><input id="na-cid" value="${PINNED_CUSTOMER_ID || ''}" placeholder="검색광고 Key에서 확인한 숫자" autocomplete="off"></div>
             <button class="btn btn-green" id="btn-connect" onclick="connectAccount()" style="white-space:nowrap">🔍 확인 및 연동</button>
           </div>
-          <div style="margin-top:8px"><span id="connect-status" style="font-size:12px;color:#94a3b8">등록된 마케터 API 계정으로 접근 권한을 확인한 뒤 광고주를 연동하고 데이터를 수집합니다. (소재 수에 따라 수 분 소요)</span></div>
+          <div style="margin-top:8px"><span id="connect-status" style="font-size:12px;color:#94a3b8">등록된 마케터 API 계정으로 접근 권한을 확인한 뒤 광고주를 연동하고 데이터를 수집합니다. (${UNIT} 수에 따라 수 분 소요)</span></div>
         </div></div>`;
 }
 
@@ -1546,7 +1547,7 @@ const API_SECTION_SCRIPT = `
       try{
         var j=await api('${BASE}/api/settings/connect-account',{name:name,customer_id:cid});
         if(j.ok){
-          s.textContent='완료: 캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 · 소재 '+j.synced+'개 동기화 · 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')';
+          s.textContent='완료: 캠페인 '+(j.campaigns==null?'-':j.campaigns)+'개 · ${UNIT} '+j.synced+'개 동기화 · 성과수집 '+j.statOk+'건 (실패 '+j.statFail+')';
           toast('광고주 연동 + 데이터 수집 완료');
           setTimeout(function(){location.reload()},1200);
         }else{s.textContent='오류: '+(j.error||'');toast(j.error||'연동 실패',true);}
@@ -1620,12 +1621,12 @@ router.get('/settings', requireLogin, async (req, res) => {
   const paramHelp = (tab) => SETTING_TAB_PARAMS[tab].map(p => `<b>${escHtml(p.label)}</b> — ${escHtml(p.tip)}`).join('<br><br>');
   const HELP = {
     blend: helpBtn('블렌딩·판정 설정', `<b>1주차 비중 N%</b> — 블렌딩ROAS = (N%×1주차 매출 + (100-N)%×2~4주차 매출) ÷ (N%×1주차 비용 + (100-N)%×2~4주차 비용). N을 키우면 최근 성과에 민감, 줄이면 장기 추세 중심.<br><br>${paramHelp('blend')}`),
-    volume: helpBtn('볼륨 보호 설정', `${paramHelp('volume')}<br><br><b>기준매출</b> — 주차 집계 월요일 기준 지난 4주 소재별 주간 매출 평균(100원 단위, 구매전환매출). 매주 월 08:00 자동 갱신.`),
+    volume: helpBtn('볼륨 보호 설정', `${paramHelp('volume')}<br><br><b>기준매출</b> — 주차 집계 월요일 기준 지난 4주 ${UNIT}별 주간 매출 평균(100원 단위, 구매전환매출). 매주 월 08:00 자동 갱신.`),
     limits: helpBtn('입찰 한도·데이터 설정', paramHelp('limits')),
-    rules: helpBtn('분류 규칙', `<b>목표ROAS 계수</b> — 소재 목표ROAS에 곱해 보정목표를 만듭니다. 1보다 작으면 관대(신제품 0.7 = 목표 550%→385%), 크면 엄격(비주력 1.2 = 660%).<br><br><b>증액률</b> — 증액 판정 시 입찰가 인상 폭. 0이면 증액 금지.<br><br><b>감액률</b> — 감액 판정 시 인하 폭. 0이면 감액 금지(신제품·유입확대).<br><br>분류는 소재별 설정에서 소재마다 지정하며, 판정 밴드(±10%)는 보정목표에 곱연산으로 적용됩니다.`),
-    auto: helpBtn('자동화·알림 설정', `<b>조정 모드</b> — 승인(approval): 모든 조정을 승인함에서 승인해야 반영 / 자동(auto): 소폭 조정은 자동 반영. 소재별 모드가 우선.<br><br>${paramHelp('auto')}<br><br><b>크론 시각(KST)</b> — 매주 월 08:00 동기화+수집+기준매출+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 월간 리포트.`),
+    rules: helpBtn('분류 규칙', `<b>목표ROAS 계수</b> — ${UNIT} 목표ROAS에 곱해 보정목표를 만듭니다. 1보다 작으면 관대(신제품 0.7 = 목표 550%→385%), 크면 엄격(비주력 1.2 = 660%).<br><br><b>증액률</b> — 증액 판정 시 입찰가 인상 폭. 0이면 증액 금지.<br><br><b>감액률</b> — 감액 판정 시 인하 폭. 0이면 감액 금지(신제품·유입확대).<br><br>분류는 ${UNIT}별 설정에서 ${UNIT}마다 지정하며, 판정 밴드(±10%)는 보정목표에 곱연산으로 적용됩니다.`),
+    auto: helpBtn('자동화·알림 설정', `<b>조정 모드</b> — 승인(approval): 모든 조정을 승인함에서 승인해야 반영 / 자동(auto): 소폭 조정은 자동 반영. ${UNIT}별 모드가 우선.<br><br>${paramHelp('auto')}<br><br><b>크론 시각(KST)</b> — 매주 월 08:00 동기화+수집+기준매출+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 월간 리포트.`),
     excl: helpBtn('제외 캠페인', `한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>(부분 일치)되면 수집·대시보드·주차별 데이터·조정 실행에서 모두 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.<br><br>예: "키워드" 한 줄이면 이름에 키워드가 들어간 모든 캠페인이 제외됩니다 — 정확한 캠페인명 사용을 권장합니다.`),
-    materials: helpBtn('소재별 설정', `<b>분류</b> — 분류 규칙 탭의 계수/증액률/감액률이 이 분류를 따라 적용.<br><br><b>목표ROAS</b> — 이 소재의 목표(배수, 5.5=550%). 미지정 시 기본 목표ROAS 사용.<br><br><b>모드</b> — 이 소재만 자동/승인을 다르게. 전역 따름=설정의 조정 모드.<br><br><b>상태</b> — 제외하면 판정·조정 대상에서 빠짐.<br><br><b>핵심</b> — 수동 지정만. 핵심소재는 감액 최대 ${Math.round(settings.core_down_cap * 100)}% + 핵심 전용 볼륨하락 임계 적용.<br><br><b>매출비중(4주)/기준매출</b> — 자동 계산 참고값. 핵심 지정할 소재 선정에 활용.`),
+    materials: helpBtn(`${UNIT}별 설정`, `<b>분류</b> — 분류 규칙 탭의 계수/증액률/감액률이 이 분류를 따라 적용.<br><br><b>목표ROAS</b> — 이 ${UNIT}의 목표(배수, 5.5=550%). 미지정 시 기본 목표ROAS 사용.<br><br><b>모드</b> — 이 ${UNIT}만 자동/승인을 다르게. 전역 따름=설정의 조정 모드.<br><br><b>상태</b> — 제외하면 판정·조정 대상에서 빠짐.<br><br><b>핵심</b> — 수동 지정만. 핵심${UNIT}는 감액 최대 ${Math.round(settings.core_down_cap * 100)}% + 핵심 전용 볼륨하락 임계 적용.<br><br><b>매출비중(4주)/기준매출</b> — 자동 계산 참고값. 핵심 지정할 ${UNIT} 선정에 활용.`),
   };
 
   const rulesRows = logic.CATEGORIES.map(c => {
@@ -1685,13 +1686,13 @@ router.get('/settings', requireLogin, async (req, res) => {
           <p style="font-size:12px;color:#94a3b8;margin-top:10px">비율 항목은 소수로 입력 (0.10 = 10%). 저장 즉시 다음 계산부터 반영되며 변경 이력이 기록됩니다.</p>
         </div></div>
 
-      ${secTitle('🛡️', '볼륨 보호', '매출볼륨이 이미 하락 중인 소재를 ROAS만 보고 추가 감액하는 상황 방지 (증액은 볼륨 조건 없음)')}
+      ${secTitle('🛡️', '볼륨 보호', `매출볼륨이 이미 하락 중인 ${UNIT}를 ROAS만 보고 추가 감액하는 상황 방지 (증액은 볼륨 조건 없음)`)}
       <div class="card" id="sec-volume"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span><div style="display:flex;gap:8px;align-items:center">${HELP.volume}${saveBtn('volume', '볼륨 보호 저장')}</div></div>
         <div class="card-body">
           <div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('volume')}</div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
             ${ro ? '' : `<button class="btn btn-outline btn-sm" id="btn-baseline" onclick="recalcBaseline()">🔁 기준매출 재계산 (지난 4주 평균, 수동 실행)</button>`}
-            <span style="font-size:12px;color:#94a3b8">기준매출 = 주차 집계 월요일 기준 <b>지난 4주 소재별 주간 매출 평균</b> (100원 단위 반올림, 구매전환매출). 매주 월 08:00 주간 실행 때 자동 갱신되며, 소재별 값은 <b>소재별 설정</b> 탭에서 확인할 수 있습니다.</span>
+            <span style="font-size:12px;color:#94a3b8">기준매출 = 주차 집계 월요일 기준 <b>지난 4주 ${UNIT}별 주간 매출 평균</b> (100원 단위 반올림, 구매전환매출). 매주 월 08:00 주간 실행 때 자동 갱신되며, ${UNIT}별 값은 <b>${UNIT}별 설정</b> 탭에서 확인할 수 있습니다.</span>
           </div>
         </div></div>
 
@@ -1702,7 +1703,7 @@ router.get('/settings', requireLogin, async (req, res) => {
 
     <!-- ② 분류 규칙 -->
     <div class="tab-pane" id="pane-rules">
-      <div class="tab-desc">소재 분류별 <b>[목표ROAS 계수 / 증액률 / 감액률]</b>. 계수는 목표ROAS에 곱해 보정목표를 만들고, 증액·감액률은 판정 시 입찰가 변경 폭이 됩니다.</div>
+      <div class="tab-desc">${UNIT} 분류별 <b>[목표ROAS 계수 / 증액률 / 감액률]</b>. 계수는 목표ROAS에 곱해 보정목표를 만들고, 증액·감액률은 판정 시 입찰가 변경 폭이 됩니다.</div>
       <div class="card"><div class="card-header"><span class="card-title">분류별 규칙</span><div style="display:flex;gap:8px;align-items:center">${HELP.rules}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button>'}</div></div>
         <div class="tbl-wrap" style="border:none;border-radius:0"><table>
           <tr><th>분류</th><th>목표ROAS 계수</th><th>증액률</th><th>감액률</th></tr>${rulesRows}</table></div></div>
@@ -1738,7 +1739,7 @@ router.get('/settings', requireLogin, async (req, res) => {
           <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
           <textarea name="excluded_campaigns" rows="5" style="font-family:inherit;resize:vertical" ${dis}>${escHtml(settings.excluded_campaigns || '')}</textarea>
         </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">${UNIT}별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div></div>
+      <div class="card"><div class="card-header"><span class="card-title">${UNIT}별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : `<button class="btn btn-primary btn-sm" onclick="saveMats()">${UNIT} 설정 저장</button>`}</div></div>
         ${ro ? '' : `
         <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
           <b style="font-size:12.5px;color:#334155;white-space:nowrap">✔ 선택 일괄 변경:</b>
@@ -1752,7 +1753,7 @@ router.get('/settings', requireLogin, async (req, res) => {
         </div>`}
         <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
           <tr>${ro ? '' : '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>'}<th>${UNIT}</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || `<tr><td colspan="${ro ? 9 : 10}" class="empty">소재 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
+          ${matRows || `<tr><td colspan="${ro ? 9 : 10}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
     </div>
 
     <script>
@@ -1812,7 +1813,7 @@ router.get('/settings', requireLogin, async (req, res) => {
       var mats={};
       document.querySelectorAll('.mat-in').forEach(function(i){var id=i.dataset.id;if(!mats[id])mats[id]={};mats[id][i.dataset.f]=i.value;});
       var j=await api('${BASE}/api/settings/materials',{materials:mats});
-      toast(j.ok?'소재 설정 저장 완료':'오류: '+(j.error||''),!j.ok);
+      toast(j.ok?'${UNIT} 설정 저장 완료':'오류: '+(j.error||''),!j.ok);
     }
     function bulkCount(){
       var n=document.querySelectorAll('.mat-chk:checked').length;
@@ -1821,11 +1822,11 @@ router.get('/settings', requireLogin, async (req, res) => {
     document.querySelectorAll('.mat-chk').forEach(function(c){c.onchange=bulkCount;});
     async function bulkApply(){
       var ids=Array.prototype.slice.call(document.querySelectorAll('.mat-chk:checked')).map(function(c){return c.value});
-      if(!ids.length){toast('일괄 변경할 소재를 선택해주세요',true);return;}
+      if(!ids.length){toast('일괄 변경할 ${UNIT}를 선택해주세요',true);return;}
       var cat=document.getElementById('bulk-cat').value,roas=document.getElementById('bulk-roas').value.trim();
       var mode=document.getElementById('bulk-mode').value,en=document.getElementById('bulk-enabled').value,core=document.getElementById('bulk-core').value;
       if(!cat&&!roas&&!mode&&!en&&!core){toast('변경할 값을 하나 이상 선택해주세요',true);return;}
-      if(!confirm(ids.length+'개 소재에 선택한 값을 일괄 적용하고 저장할까요?'))return;
+      if(!confirm(ids.length+'개 ${UNIT}에 선택한 값을 일괄 적용하고 저장할까요?'))return;
       var mats={};
       ids.forEach(function(id){
         var o={};
@@ -1842,7 +1843,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     }
     ${(!ro && PINNED_CUSTOMER_ID) ? API_SECTION_SCRIPT : ''}
     async function recalcBaseline(){
-      if(!confirm('지난 4주(주차 집계 기준) 주간 매출 평균으로 소재별 기준매출을 다시 계산합니다. 진행할까요?'))return;
+      if(!confirm('지난 4주(주차 집계 기준) 주간 매출 평균으로 ${UNIT}별 기준매출을 다시 계산합니다. 진행할까요?'))return;
       var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
       var j=await api('${BASE}/api/settings/recalc-baseline',{});
       b.disabled=false;b.textContent='🔁 기준매출 재계산 (지난 4주 평균, 수동 실행)';
@@ -1985,7 +1986,7 @@ router.post('/api/settings/materials', requireLogin, requireMaster, async (req, 
         core_override: ['', '1', '0'].includes(m.core_override) ? m.core_override : undefined,
       });
     }
-    await bidDb.audit(account.id, req.session.userName, '소재 설정 일괄 변경', { count: Object.keys(req.body.materials || {}).length });
+    await bidDb.audit(account.id, req.session.userName, `${UNIT} 설정 일괄 변경`, { count: Object.keys(req.body.materials || {}).length });
     res.json({ ok: true });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
