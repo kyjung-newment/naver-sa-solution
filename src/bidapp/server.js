@@ -261,6 +261,11 @@ const css = `
   .tab-pane{display:none}.tab-pane.active{display:block}
   .tab-desc{font-size:12.5px;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:9px;padding:10px 14px;margin-bottom:14px}
   label .tip{cursor:help;border-bottom:1px dotted #94a3b8;font-weight:400;color:#94a3b8}
+  .help-btn{position:relative;display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:99px;padding:4px 11px;cursor:help;font-weight:700;white-space:nowrap}
+  .help-pop{display:none;position:absolute;top:calc(100% + 8px);right:0;width:400px;max-width:82vw;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:15px 17px;font-size:12px;font-weight:400;line-height:1.7;z-index:400;box-shadow:0 14px 36px rgba(0,0,0,.32);text-align:left;white-space:normal;cursor:default}
+  .help-btn:hover .help-pop,.help-btn:focus-within .help-pop,.help-btn:focus .help-pop{display:block}
+  .help-pop b{color:#7dd3fc}
+  .help-pop .hp-title{font-size:13px;font-weight:800;color:#fff;display:block;margin-bottom:8px}
   .modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px}
   .modal{background:#fff;border-radius:16px;max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:24px}
   .form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -425,7 +430,7 @@ router.get('/', requireLogin, async (req, res) => {
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) {
     return res.send(appLayout(req, '대시보드', `
-      <div class="empty">🎯 ${PINNED_CUSTOMER_ID ? `${PINNED_LABEL}(${PINNED_CUSTOMER_ID}) 광고주가 아직 연동되지 않았습니다.` : '연동된 광고주가 없습니다.'}${isClient(req) ? ' 담당 마케터에게 문의해주세요.' : ` <a href="${BASE}/settings" style="color:#0ea5e9;font-weight:600">설정 &gt; API 연동</a>에서 ${PINNED_CUSTOMER_ID ? '연동' : '광고주를 추가'}해주세요.`}</div>
+      <div class="empty">🎯 ${PINNED_CUSTOMER_ID ? `${PINNED_LABEL}(${PINNED_CUSTOMER_ID}) 광고주가 아직 연동되지 않았습니다.` : '연동된 광고주가 없습니다.'}${isClient(req) ? ' 담당 마케터에게 문의해주세요.' : (PINNED_CUSTOMER_ID ? ` <a href="${BASE}/settings" style="color:#0ea5e9;font-weight:600">설정 &gt; API 연동</a>에서 연동해주세요.` : ` <a href="/smart-sa/accounts" style="color:#0ea5e9;font-weight:600">AUTO REPORT &gt; 광고주 관리</a>에서 등록하면 자동으로 연동됩니다.`)}</div>
     `, 'dashboard', { accounts, account, user }));
   }
 
@@ -1068,7 +1073,7 @@ router.post('/api/sync', requireLogin, requireMaster, async (req, res) => {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
     const creds = await getCreds(req, account.id);
-    if (!creds) return res.json({ ok: false, error: 'API 자격증명이 없습니다. 설정 > API 연동 탭에서 등록해주세요.' });
+    if (!creds) return res.json({ ok: false, error: PINNED_CUSTOMER_ID ? 'API 자격증명이 없습니다. 설정 > API 연동 탭에서 등록해주세요.' : 'API 자격증명이 없습니다. AUTO REPORT > API 설정에서 마케터 API를 등록해주세요.' });
     const sync = await collector.syncMaterials(account, creds);
     const stats = await collector.collectWeeklyStats(account, creds);
     await bidDb.audit(account.id, req.session.userName, '소재 동기화·성과 수집', { synced: sync.synced, statOk: stats.ok, statFail: stats.fail });
@@ -1505,16 +1510,22 @@ router.get('/settings', requireLogin, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
 
-  // 이고진 미연동 상태: 마스터에게 API 연동 화면만 제공 (연동 후 전체 설정 사용 가능)
+  // 미연동 상태 처리 — 전용 앱: API 연동 화면 제공 / 범용 앱: AUTO REPORT 광고주 관리 안내
   if (!account) {
     if (isClient(req)) return res.redirect(BASE);
+    if (!PINNED_CUSTOMER_ID) {
+      const content = `
+        <div class="alert alert-info">연동된 광고주가 없습니다. 광고주는 <b>AUTO REPORT &gt; 광고주 관리</b>에서 등록하면 이곳에 자동으로 나타납니다 (별도 연동 불필요).</div>
+        <a href="/smart-sa/accounts" class="btn btn-primary">📊 AUTO REPORT 광고주 관리로 이동</a>`;
+      return res.send(appLayout(req, '설정', content, 'settings', { accounts, account: null, user }));
+    }
     let credInfo = null;
     try {
       const myCred = await db.getApiCredentials(req.session.userId, null);
       if (myCred && myCred.api_key) credInfo = { masked: String(myCred.api_key).slice(0, 10) + '••••••', mgr: myCred.manager_customer_id || '' };
     } catch (e) { /* 미연동 표시 */ }
     const content = `
-      <div class="alert alert-info">🎯 ${PINNED_CUSTOMER_ID ? `<b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다.` : '연동된 광고주가 없습니다.'} 아래에서 마케터 API 계정을 등록한 뒤 광고주를 연동해주세요.</div>
+      <div class="alert alert-info">🎯 <b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다. 아래에서 마케터 API 계정을 등록한 뒤 광고주를 연동해주세요.</div>
       ${apiSectionHtml(credInfo)}
       <script>${API_SECTION_SCRIPT}</script>`;
     return res.send(appLayout(req, '설정', content, 'settings', { accounts, account: null, user }));
@@ -1538,9 +1549,9 @@ router.get('/settings', requireLogin, async (req, res) => {
   const dis = ro ? 'disabled' : '';
   const blendN = Math.max(0, Math.min(100, Math.round(parseFloat(settings.blend_recent_weight) || 0)));
 
-  // API 연동 상태 = 로그인한 마스터(마케터) 본인의 자격증명 (기존 솔루션 API 설정과 동일 모델, 계정당 1개)
+  // API 연동 상태 = 로그인한 마스터(마케터) 본인의 자격증명 (전용 앱에서만 표시 — 범용 앱은 AUTO REPORT 연동을 그대로 사용)
   let credInfo = null;
-  if (!ro) {
+  if (!ro && PINNED_CUSTOMER_ID) {
     try {
       const myCred = await db.getApiCredentials(req.session.userId, null);
       if (myCred && myCred.api_key) {
@@ -1554,6 +1565,20 @@ router.get('/settings', requireLogin, async (req, res) => {
     <input name="${k}" value="${settings[k]}" type="number" step="any" title="${escHtml(tip)}" ${dis}></div>`).join('');
 
   const saveBtn = (tab, label) => ro ? '' : `<button class="btn btn-primary btn-sm" onclick="saveTab('${tab}')">${label || '저장'}</button>`;
+
+  // 섹션 도움말 버튼 (마우스 오버 시 설정값 설명 팝오버)
+  const helpBtn = (title, bodyHtml) => `
+    <span class="help-btn" tabindex="0">❓ 도움말<span class="help-pop"><span class="hp-title">${escHtml(title)}</span>${bodyHtml}</span></span>`;
+  const paramHelp = (tab) => SETTING_TAB_PARAMS[tab].map(p => `<b>${escHtml(p.label)}</b> — ${escHtml(p.tip)}`).join('<br><br>');
+  const HELP = {
+    blend: helpBtn('블렌딩·판정 설정', `<b>1주차 비중 N%</b> — 블렌딩ROAS = (N%×1주차 매출 + (100-N)%×2~4주차 매출) ÷ (N%×1주차 비용 + (100-N)%×2~4주차 비용). N을 키우면 최근 성과에 민감, 줄이면 장기 추세 중심.<br><br>${paramHelp('blend')}`),
+    volume: helpBtn('볼륨 보호 설정', `${paramHelp('volume')}<br><br><b>기준매출</b> — 주차 집계 월요일 기준 지난 4주 소재별 주간 매출 평균(100원 단위, 구매전환매출). 매주 월 08:00 자동 갱신.`),
+    limits: helpBtn('입찰 한도·데이터 설정', paramHelp('limits')),
+    rules: helpBtn('분류 규칙', `<b>목표ROAS 계수</b> — 소재 목표ROAS에 곱해 보정목표를 만듭니다. 1보다 작으면 관대(신제품 0.7 = 목표 550%→385%), 크면 엄격(비주력 1.2 = 660%).<br><br><b>증액률</b> — 증액 판정 시 입찰가 인상 폭. 0이면 증액 금지.<br><br><b>감액률</b> — 감액 판정 시 인하 폭. 0이면 감액 금지(신제품·유입확대).<br><br>분류는 소재별 설정에서 소재마다 지정하며, 판정 밴드(±10%)는 보정목표에 곱연산으로 적용됩니다.`),
+    auto: helpBtn('자동화·알림 설정', `<b>조정 모드</b> — 승인(approval): 모든 조정을 승인함에서 승인해야 반영 / 자동(auto): 소폭 조정은 자동 반영. 소재별 모드가 우선.<br><br>${paramHelp('auto')}<br><br><b>크론 시각(KST)</b> — 매주 월 08:00 동기화+수집+기준매출+판정 · 매일 07:00 일간 모니터 · 매월 1일 06:00 월간 리포트.`),
+    excl: helpBtn('제외 캠페인', `한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>(부분 일치)되면 수집·대시보드·주차별 데이터·조정 실행에서 모두 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.<br><br>예: "키워드" 한 줄이면 이름에 키워드가 들어간 모든 캠페인이 제외됩니다 — 정확한 캠페인명 사용을 권장합니다.`),
+    materials: helpBtn('소재별 설정', `<b>분류</b> — 분류 규칙 탭의 계수/증액률/감액률이 이 분류를 따라 적용.<br><br><b>목표ROAS</b> — 이 소재의 목표(배수, 5.5=550%). 미지정 시 기본 목표ROAS 사용.<br><br><b>모드</b> — 이 소재만 자동/승인을 다르게. 전역 따름=설정의 조정 모드.<br><br><b>상태</b> — 제외하면 판정·조정 대상에서 빠짐.<br><br><b>핵심</b> — 수동 지정만. 핵심소재는 감액 최대 ${Math.round(settings.core_down_cap * 100)}% + 핵심 전용 볼륨하락 임계 적용.<br><br><b>매출비중(4주)/기준매출</b> — 자동 계산 참고값. 핵심 지정할 소재 선정에 활용.`),
+  };
 
   const rulesRows = logic.CATEGORIES.map(c => {
     const r = rules[c];
@@ -1589,7 +1614,7 @@ router.get('/settings', requireLogin, async (req, res) => {
   const TABS = [
     { id: 'params', title: '🧮 조정 기준' },
     { id: 'rules', title: '🗂️ 분류 규칙' },
-    { id: 'auto', title: ro ? '🤖 자동화·알림' : '🤖 자동화·API 연동' },
+    { id: 'auto', title: (!ro && PINNED_CUSTOMER_ID) ? '🤖 자동화·API 연동' : '🤖 자동화·알림' },
     { id: 'materials', title: '📦 소재별 설정' },
   ];
 
@@ -1600,7 +1625,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     <!-- ① 조정 기준: 블렌딩·판정 / 볼륨 보호 / 입찰 한도·데이터 (섹션 구분) -->
     <div class="tab-pane active" id="pane-params">
       ${secTitle('🧮', '블렌딩·판정', '주차 성과를 하나의 블렌딩 ROAS로 합산해 보정목표와 비교하고 증액/감액/유지를 판정하는 기준')}
-      <div class="card" id="sec-blend"><div class="card-header"><span class="card-title">블렌딩 구간 비율 (2구간)</span>${saveBtn('blend', '블렌딩·판정 저장')}</div>
+      <div class="card" id="sec-blend"><div class="card-header"><span class="card-title">블렌딩 구간 비율 (2구간)</span><div style="display:flex;gap:8px;align-items:center">${HELP.blend}${saveBtn('blend', '블렌딩·판정 저장')}</div></div>
         <div class="card-body">
           <label>1주차(최신 완료 주) 비중 N% <span class="tip" title="블렌딩ROAS = (N%×매출₁ + (100-N)%×매출₂₋₄) ÷ (N%×비용₁ + (100-N)%×비용₂₋₄). 2~4주차는 자동으로 100-N%가 됩니다.">ⓘ</span></label>
           <div style="display:flex;gap:14px;align-items:center;max-width:560px">
@@ -1613,7 +1638,7 @@ router.get('/settings', requireLogin, async (req, res) => {
         </div></div>
 
       ${secTitle('🛡️', '볼륨 보호', '매출볼륨이 이미 하락 중인 소재를 ROAS만 보고 추가 감액하는 상황 방지 (증액은 볼륨 조건 없음)')}
-      <div class="card" id="sec-volume"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span>${saveBtn('volume', '볼륨 보호 저장')}</div>
+      <div class="card" id="sec-volume"><div class="card-header"><span class="card-title">볼륨 보호 파라미터</span><div style="display:flex;gap:8px;align-items:center">${HELP.volume}${saveBtn('volume', '볼륨 보호 저장')}</div></div>
         <div class="card-body">
           <div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('volume')}</div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -1623,14 +1648,14 @@ router.get('/settings', requireLogin, async (req, res) => {
         </div></div>
 
       ${secTitle('📏', '입찰 한도·데이터', '입찰가 하한과 판정에 필요한 최소 데이터 기준, 노출순위 보호선')}
-      <div class="card" id="sec-limits"><div class="card-header"><span class="card-title">입찰 한도·데이터 기준</span>${saveBtn('limits', '입찰 한도 저장')}</div>
+      <div class="card" id="sec-limits"><div class="card-header"><span class="card-title">입찰 한도·데이터 기준</span><div style="display:flex;gap:8px;align-items:center">${HELP.limits}${saveBtn('limits', '입찰 한도 저장')}</div></div>
         <div class="card-body"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('limits')}</div></div></div>
     </div>
 
     <!-- ② 분류 규칙 -->
     <div class="tab-pane" id="pane-rules">
       <div class="tab-desc">소재 분류별 <b>[목표ROAS 계수 / 증액률 / 감액률]</b>. 계수는 목표ROAS에 곱해 보정목표를 만들고, 증액·감액률은 판정 시 입찰가 변경 폭이 됩니다.</div>
-      <div class="card"><div class="card-header"><span class="card-title">분류별 규칙</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button>'}</div>
+      <div class="card"><div class="card-header"><span class="card-title">분류별 규칙</span><div style="display:flex;gap:8px;align-items:center">${HELP.rules}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveRules()">규칙 저장</button>'}</div></div>
         <div class="tbl-wrap" style="border:none;border-radius:0"><table>
           <tr><th>분류</th><th>목표ROAS 계수</th><th>증액률</th><th>감액률</th></tr>${rulesRows}</table></div></div>
     </div>
@@ -1638,7 +1663,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     <!-- ③ 자동화·알림 + API 연동 (섹션 구분) -->
     <div class="tab-pane" id="pane-auto">
       ${secTitle('🤖', '자동화·알림', '조정 자동 적용 방식(auto/approval)·주기 실행(크론)·일간 알림 트리거 — 감액보류(볼륨하락) 건은 auto 모드여도 항상 승인 대기')}
-      <div class="card" id="sec-auto"><div class="card-header"><span class="card-title">조정 모드 · 크론 · 알림</span>${saveBtn('auto', '자동화·알림 저장')}</div>
+      <div class="card" id="sec-auto"><div class="card-header"><span class="card-title">조정 모드 · 크론 · 알림</span><div style="display:flex;gap:8px;align-items:center">${HELP.auto}${saveBtn('auto', '자동화·알림 저장')}</div></div>
         <div class="card-body">
           <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:13.5px;color:#334155;cursor:pointer">
@@ -1654,18 +1679,18 @@ router.get('/settings', requireLogin, async (req, res) => {
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid #f1f5f9"><div class="form-row" style="grid-template-columns:repeat(3,1fr)">${paramInputs('auto')}</div></div>
         </div></div>
 
-      ${ro ? '' : apiSectionHtml(credInfo)}
+      ${(!ro && PINNED_CUSTOMER_ID) ? apiSectionHtml(credInfo) : ''}
     </div>
 
     <!-- ④ 소재별 설정 -->
     <div class="tab-pane" id="pane-materials">
       <div class="tab-desc">소재 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
-      <div class="card" id="sec-excl"><div class="card-header"><span class="card-title">🚫 제외 캠페인 (수집·조정 제외)</span>${saveBtn('excl', '제외 목록 저장')}</div>
+      <div class="card" id="sec-excl"><div class="card-header"><span class="card-title">🚫 제외 캠페인 (수집·조정 제외)</span><div style="display:flex;gap:8px;align-items:center">${HELP.excl}${saveBtn('excl', '제외 목록 저장')}</div></div>
         <div class="card-body">
           <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
           <textarea name="excluded_campaigns" rows="5" style="font-family:inherit;resize:vertical" ${dis}>${escHtml(settings.excluded_campaigns || '')}</textarea>
         </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성·핵심)</span>${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div>
+      <div class="card"><div class="card-header"><span class="card-title">소재별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : '<button class="btn btn-primary btn-sm" onclick="saveMats()">소재 설정 저장</button>'}</div></div>
         ${ro ? '' : `
         <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
           <b style="font-size:12.5px;color:#334155;white-space:nowrap">✔ 선택 일괄 변경:</b>
@@ -1744,7 +1769,7 @@ router.get('/settings', requireLogin, async (req, res) => {
       toast(j.ok?('일괄 저장 완료 ('+ids.length+'개)'):'오류: '+(j.error||''),!j.ok);
       if(j.ok)setTimeout(function(){location.reload()},900);
     }
-    ${ro ? '' : API_SECTION_SCRIPT}
+    ${(!ro && PINNED_CUSTOMER_ID) ? API_SECTION_SCRIPT : ''}
     async function recalcBaseline(){
       if(!confirm('지난 4주(주차 집계 기준) 주간 매출 평균으로 소재별 기준매출을 다시 계산합니다. 진행할까요?'))return;
       var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
