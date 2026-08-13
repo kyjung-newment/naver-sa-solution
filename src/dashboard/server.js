@@ -373,6 +373,9 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
       `).join('')}
     </div>
     <div class="sidebar-footer">
+      <a href="/auto-bid" class="sidebar-link" style="margin-bottom:4px;background:#eef2ff;color:#4f46e5;font-weight:700" title="AUTO BID 입찰 자동 조정 솔루션으로 이동">
+        <span class="sidebar-icon">⚡</span><span>AUTO BID ↗</span>
+      </a>
       <a href="/smart-sa/profile" class="sidebar-link ${activeMenu === 'profile' ? 'active' : ''}" style="margin-bottom:4px">
         <span class="sidebar-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
         <span>${user?.name || user?.username}</span>

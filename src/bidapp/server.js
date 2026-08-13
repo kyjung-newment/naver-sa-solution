@@ -330,6 +330,7 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
       ${menu.map(m => `<a href="${m.href}" class="sb-link ${activeMenu === m.id ? 'active' : ''}">${m.label}</a>`).join('')}
     </div>
     <div class="sb-foot">
+      <a href="/smart-sa" class="sb-link" style="background:#1e293b;color:#93c5fd;font-weight:700;margin-bottom:6px" title="AUTO REPORT 리포트 솔루션으로 이동">📊 AUTO REPORT ↗</a>
       <div style="color:#94a3b8;font-size:12.5px;padding:4px 14px 8px">${escHtml(user?.name || '')} <span style="color:#475569">· ${client ? '광고주' : '마스터'}</span></div>
       <a href="${BASE}/logout" class="sb-link">🚪 로그아웃</a>
     </div>
