@@ -261,9 +261,8 @@ const css = `
   .tab-pane{display:none}.tab-pane.active{display:block}
   .tab-desc{font-size:12.5px;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:9px;padding:10px 14px;margin-bottom:14px}
   label .tip{cursor:help;border-bottom:1px dotted #94a3b8;font-weight:400;color:#94a3b8}
-  .help-btn{position:relative;display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:99px;padding:4px 11px;cursor:help;font-weight:700;white-space:nowrap}
-  .help-pop{display:none;position:absolute;top:calc(100% + 8px);right:0;width:400px;max-width:82vw;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:15px 17px;font-size:12px;font-weight:400;line-height:1.7;z-index:400;box-shadow:0 14px 36px rgba(0,0,0,.32);text-align:left;white-space:normal;cursor:default}
-  .help-btn:hover .help-pop,.help-btn:focus-within .help-pop,.help-btn:focus .help-pop{display:block}
+  .help-btn{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:99px;padding:4px 11px;cursor:help;font-weight:700;white-space:nowrap}
+  .help-pop{display:none;position:fixed;width:400px;max-width:calc(100vw - 24px);max-height:70vh;overflow:auto;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:15px 17px;font-size:12px;font-weight:400;line-height:1.7;z-index:900;box-shadow:0 14px 36px rgba(0,0,0,.32);text-align:left;white-space:normal;cursor:default}
   .help-pop b{color:#7dd3fc}
   .help-pop .hp-title{font-size:13px;font-weight:800;color:#fff;display:block;margin-bottom:8px}
   .modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -1714,6 +1713,29 @@ router.get('/settings', requireLogin, async (req, res) => {
       try{history.replaceState(null,'','#'+id);}catch(e){}
     }
     (function(){var h=location.hash.replace('#','');if(h&&document.getElementById('pane-'+h))showTab(h);})();
+    // 도움말 팝오버: 카드 overflow에 잘리지 않도록 화면 고정(fixed) 좌표로 표시
+    document.querySelectorAll('.help-btn').forEach(function(b){
+      var pop=b.querySelector('.help-pop');if(!pop)return;
+      var t;
+      function show(){
+        clearTimeout(t);
+        pop.style.display='block';
+        var r=b.getBoundingClientRect();
+        var w=Math.min(400,window.innerWidth-24);
+        pop.style.width=w+'px';
+        pop.style.left=Math.max(12,Math.min(r.right-w,window.innerWidth-w-12))+'px';
+        var h=pop.offsetHeight,top=r.bottom+8;
+        if(top+h>window.innerHeight-12)top=Math.max(12,r.top-h-8);
+        pop.style.top=top+'px';
+      }
+      function hideSoon(){t=setTimeout(function(){pop.style.display='none';},200);}
+      b.addEventListener('mouseenter',show);
+      b.addEventListener('mouseleave',hideSoon);
+      b.addEventListener('focus',show);
+      b.addEventListener('blur',hideSoon);
+      pop.addEventListener('mouseenter',function(){clearTimeout(t);});
+      pop.addEventListener('mouseleave',hideSoon);
+    });
     // N% 슬라이더 ↔ 직접입력 동기화 + 2~4주차 자동 표시
     (function(){
       var r=document.getElementById('bw-range'),n=document.getElementById('bw-num'),rest=document.getElementById('bw-rest');
