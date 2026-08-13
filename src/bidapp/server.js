@@ -365,10 +365,12 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
     </div>`;
 
   // 채널 전환 (SPO ↔ PPO) — BASE 가 /spo 또는 /ppo 로 끝나는 마운트에서만 표시
-  const chNav = /\/(spo|ppo)$/.test(BASE) ? `
-    <div class="sb-section">솔루션</div>
+  const chLinks = /\/(spo|ppo)$/.test(BASE) ? `
     <a href="${BASE.replace(/\/(spo|ppo)$/, '/spo')}" class="sb-link ${CHANNEL === 'shopping' ? 'active' : ''}">🛒 쇼핑검색 성과최적화</a>
     <a href="${BASE.replace(/\/(spo|ppo)$/, '/ppo')}" class="sb-link ${CHANNEL === 'powerlink' ? 'active' : ''}">🔗 파워링크 성과최적화</a>` : '';
+  // 범용 앱: 상단 '솔루션' 섹션 (전체 노출) / 전용(이고진) 앱: 좌측 메뉴 하단 · 마스터 전용
+  const chNavTop = (!PINNED_CUSTOMER_ID && chLinks) ? `<div class="sb-section">솔루션</div>${chLinks}` : '';
+  const chNavBottom = (PINNED_CUSTOMER_ID && !client && chLinks) ? `<div class="sb-section" style="padding-top:4px">솔루션 전환</div>${chLinks}` : '';
 
   return layout(title, `
   <div class="sidebar">
@@ -376,13 +378,14 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
       <div class="sb-logo">${escHtml(APP_NAME)}</div>
       <div class="sb-sub">${escHtml(APP_SUBTITLE)}</div>
     </div>
-    ${chNav}
+    ${chNavTop}
     ${acctSel}
     <div class="sb-section">메뉴</div>
     <div style="flex:1">
       ${menu.map(m => `<a href="${m.href}" class="sb-link ${activeMenu === m.id ? 'active' : ''}">${m.label}</a>`).join('')}
     </div>
     <div class="sb-foot">
+      ${chNavBottom}
       <a href="/smart-sa" class="sb-link" style="background:#1e293b;color:#93c5fd;font-weight:700;margin-bottom:6px" title="AUTO REPORT 리포트 솔루션으로 이동">📊 AUTO REPORT ↗</a>
       <div style="color:#94a3b8;font-size:12.5px;padding:4px 14px 8px">${escHtml(user?.name || '')} <span style="color:#475569">· ${client ? '광고주' : '마스터'}</span></div>
       <a href="${BASE}/logout" class="sb-link">🚪 로그아웃</a>
