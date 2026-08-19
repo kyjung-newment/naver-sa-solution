@@ -6,7 +6,7 @@ const db = require('../db/database');
 const { createApiClient } = require('../api/naverApi');
 const { generateAndSend } = require('../report/generator');
 const crypto = require('crypto');
-const { sendInviteEmail } = require('../email/sender');
+const { sendInviteEmail, verifySmtpAuth } = require('../email/sender');
 
 const router = express.Router();
 
@@ -6533,6 +6533,10 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
   const selId = req.session.selectedAccountId || (accounts[0]?.id || '');
   const selAccount = accounts.find(a => String(a.id) === String(selId)) || accounts[0] || {};
   const repCfg = db.parseReportConfig(selAccount); // { sheets:{}, customSheets:[] }
+  // 리포트 타입별 최근 발송 시도 (실패 사유 표시용)
+  const latestAttempts = selAccount.id ? await db.getLatestReportAttempts(selAccount.id) : [];
+  const attemptByType = {};
+  for (const r of latestAttempts) attemptByType[r.report_type] = r;
 
   const content = `
     ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
@@ -6695,7 +6699,14 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
               const featKey = 'feat_' + t + '_report';
               const isOn = !!selAccount[featKey];
               const col = 'last_' + t + '_report';
-              const lastDate = selAccount[col] ? (() => { const d = new Date(new Date(selAccount[col]).getTime() + 9*60*60*1000); return d.getUTCFullYear() + '. ' + (d.getUTCMonth()+1) + '. ' + d.getUTCDate() + '. ' + (d.getUTCHours() >= 12 ? '오후' : '오전') + ' ' + String(d.getUTCHours() > 12 ? d.getUTCHours()-12 : d.getUTCHours() || 12).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0'); })() : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              const fmtKst = ts => { const d = new Date(new Date(ts).getTime() + 9*60*60*1000); return d.getUTCFullYear() + '. ' + (d.getUTCMonth()+1) + '. ' + d.getUTCDate() + '. ' + (d.getUTCHours() >= 12 ? '오후' : '오전') + ' ' + String(d.getUTCHours() > 12 ? d.getUTCHours()-12 : d.getUTCHours() || 12).padStart(2,'0') + ':' + String(d.getUTCMinutes()).padStart(2,'0'); };
+              const lastDate = selAccount[col] ? fmtKst(selAccount[col]) : '<span style="color:#94a3b8">발송 내역 없음</span>';
+              // 최근 시도가 실패면 사유 표시 (자동/수동 공통 — report_send_log)
+              const att = attemptByType[t];
+              const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+              const failNote = (att && att.status === 'failed')
+                ? `<div style="font-size:11px;color:#dc2626;margin-top:4px;max-width:360px" title="${esc(att.error_msg)}">⚠ 최근 시도 실패 (${fmtKst(att.created_at)})<br>${esc(String(att.error_msg || '').slice(0, 90))}${(att.error_msg || '').length > 90 ? '…' : ''}</div>`
+                : '';
               return `<tr>
                 <td><strong>${label}</strong></td>
                 <td>${time}</td>
@@ -6705,7 +6716,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
                     <span style="font-size:13px;color:${isOn ? '#16a34a' : '#94a3b8'}" id="label-${featKey}">${isOn ? 'ON' : 'OFF'}</span>
                   </label>
                 </td>
-                <td style="font-size:12px">${lastDate}</td>
+                <td style="font-size:12px">${lastDate}${failNote}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -7600,7 +7611,9 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (단, 맞춤 기간은 비교 데이터 필수이므로 항상 prev 가져옴)
     // prev는 /stats만 조회(저비용) → 월간 수동 발송도 비교시트 포함
     const skipPrev = req.body.skipPrev === true;
+    const t0 = Date.now();
     const ok = await generateAndSend(enriched, type, customRange, { skipPrev, comparePeriod });
+    if (ok) db.logReportSend(account.id, type, { source: 'manual', status: 'sent', recipients: account.report_emails || '', durationMs: Date.now() - t0 });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
@@ -7611,6 +7624,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     }
   } catch (err) {
     console.error('리포트 발송 오류:', err);
+    db.logReportSend(accountId, type, { source: 'manual', status: 'failed', errorMsg: err.message });
     res.json({ ok: false, error: `발송 실패: ${err.message}` });
   }
 });
@@ -8015,10 +8029,42 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
 });
 
 // ─── Vercel Cron 엔드포인트 ────────────────────────────────────────
-// Vercel이 UTC 기준으로 호출 (한국시간 = UTC+9)
-// daily: UTC 23:00 = KST 08:00
-// weekly: UTC 00:00 MON = KST 09:00 MON
-// monthly: UTC 00:00 1st = KST 09:00 1st
+// 매시 호출 → '예정 시각이 지났는데 이번 주기 발송이 안 된 계정'을 전부 처리(catch-up 방식).
+// 정시(예: 09:00)에 시간 예산(700초) 안에 못 끝낸 계정은 다음 시간 크론이 자동으로 이어서 처리한다.
+// 발송 시도는 성공/실패 모두 report_send_log에 기록 → 자동리포트 화면에서 실패 사유 확인 가능.
+
+// 캐치업 창: 예정 시각 이후 이 기간까지만 따라잡기 (지나면 다음 주기 대기)
+// - daily는 날짜 산식상 '당일 자정까지'로 자연 제한됨 (다음날이면 리포트 대상일이 바뀜)
+const CATCHUP_WINDOW_MS = { daily: 24 * 3600 * 1000, weekly: 3 * 24 * 3600 * 1000, monthly: 5 * 24 * 3600 * 1000 };
+// 주기당 실패 재시도 상한 (자격증명 고장 계정이 매시 예산을 낭비하지 않도록; force=1은 무시)
+const MAX_ATTEMPTS_PER_PERIOD = 4;
+
+// 이번 주기의 예정 발송 시각(KST 가상 epoch ms). 도래 전이거나 캐치업 창을 지났으면 null.
+function latestScheduledFireKst(type, a, nowKstMs) {
+  const k = new Date(nowKstMs); // UTC 필드가 KST를 나타냄
+  const h = a[`sched_${type}_hour`] ?? 9;
+  let fire;
+  if (type === 'daily') {
+    fire = Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate(), h);
+  } else if (type === 'weekly') {
+    const dow = a.sched_weekly_dow ?? 1;
+    let diff = k.getUTCDay() - dow; if (diff < 0) diff += 7;
+    fire = Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate() - diff, h);
+    if (fire > nowKstMs) fire -= 7 * 24 * 3600 * 1000; // 오늘이 예정 요일인데 시각 도래 전 → 직전 주
+  } else {
+    const day = a.sched_monthly_day ?? 1;
+    const clampDay = (y, m) => Math.min(day, new Date(Date.UTC(y, m + 1, 0)).getUTCDate()); // 29~31일 스케줄의 짧은 달 보정
+    fire = Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), clampDay(k.getUTCFullYear(), k.getUTCMonth()), h);
+    if (fire > nowKstMs) {
+      const pm = k.getUTCMonth() - 1;
+      fire = Date.UTC(k.getUTCFullYear(), pm, clampDay(k.getUTCFullYear(), pm), h);
+    }
+  }
+  if (fire > nowKstMs) return null;
+  if (nowKstMs - fire > CATCHUP_WINDOW_MS[type]) return null;
+  return fire;
+}
+
 ['daily', 'weekly', 'monthly'].forEach(type => {
   router.get(`/api/cron/${type}`, async (req, res) => {
     // Vercel Cron 인증 헤더 확인
@@ -8029,62 +8075,117 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
 
     const startedAt = Date.now();
     const MAX_RUNTIME_MS = 700000;
-    // 현재 KST 시각/요일/일자 (UTC+9)
-    const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-    const curHour = nowKst.getUTCHours(); // 0~23
-    const curDow = nowKst.getUTCDay();    // 0=일, 1=월, ...
-    const curDay = nowKst.getUTCDate();   // 1~31
-    // ?force=1 → 시간 매칭 무시하고 모두 처리 (수동 재시도)
+    const nowMs = Date.now();
+    const nowKstMs = nowMs + 9 * 60 * 60 * 1000;
+    const curHour = new Date(nowKstMs).getUTCHours(); // KST 시각 (로그용)
+    // ?force=1 → 스케줄/재시도 상한 무시하고 미발송(6h 이내 발송 제외) 전부 처리 (수동 재시도)
     const force = req.query.force === '1';
     try {
-      const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`);
-      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+      const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`); // 가장 오래 미발송 순
+      // 주기 내 실패 횟수 (재시도 상한 판정)
+      const failRows = force ? [] : await db.getRecentReportFailures(type, 40);
+      const failsByAccount = new Map();
+      for (const r of failRows) {
+        if (!failsByAccount.has(r.account_id)) failsByAccount.set(r.account_id, []);
+        failsByAccount.get(r.account_id).push(new Date(r.created_at).getTime());
+      }
+
       const accounts = allAccounts.filter(a => {
         const last = a[`last_${type}_report`];
-        if (last && new Date(last).toISOString() >= sixHoursAgo) return false; // 최근 6h 발송 제외
+        const lastMs = last ? new Date(last).getTime() : 0;
+        if (lastMs && nowMs - lastMs < 6 * 3600 * 1000) return false; // 최근 6h 발송 제외 (중복 방지)
         if (force) return true;
-        // 계정별 스케줄 매칭 (NULL이면 기본 09:00 / Mon / 1일)
-        const h = a[`sched_${type}_hour`] ?? 9;
-        if (h !== curHour) return false;
-        if (type === 'weekly') {
-          const dow = a.sched_weekly_dow ?? 1;
-          if (dow !== curDow) return false;
-        } else if (type === 'monthly') {
-          const day = a.sched_monthly_day ?? 1;
-          if (day !== curDay) return false;
-        }
+        const fireKst = latestScheduledFireKst(type, a, nowKstMs);
+        if (fireKst == null) return false;             // 예정 시각 도래 전 또는 캐치업 창 경과
+        const fireMs = fireKst - 9 * 60 * 60 * 1000;   // KST 가상 시각 → 실제 epoch
+        if (lastMs >= fireMs) return false;            // 이번 주기 이미 발송됨
+        // 재시도 상한: 이번 주기 실패 중 '최근 24h 내' 횟수 기준 (하루 4회) — 원인을 고치면 다음 날 자동 재개
+        const fails = (failsByAccount.get(a.id) || []).filter(t => t >= fireMs && t >= nowMs - 24 * 3600 * 1000).length;
+        if (fails >= MAX_ATTEMPTS_PER_PERIOD) return false;
         return true;
       });
-      console.log(`🔄 Cron [${type}] KST ${curHour}시: 대상 ${accounts.length}/${allAccounts.length}개 (스케줄+6h 제외)`);
+      console.log(`🔄 Cron [${type}] KST ${curHour}시: 대상 ${accounts.length}/${allAccounts.length}개 (예정 경과·미발송${force ? '·force' : ''})`);
 
-      let sent = 0, failed = 0, skipped = 0;
-      const concurrency = 3;
-      for (let i = 0; i < accounts.length; i += concurrency) {
-        if (Date.now() - startedAt > MAX_RUNTIME_MS) {
-          skipped = accounts.length - sent - failed;
-          console.warn(`⏰ Cron [${type}]: 타임아웃 임박, ${skipped}개 미처리`);
-          break;
-        }
-        const batch = accounts.slice(i, i + concurrency);
-        await Promise.all(batch.map(async (account) => {
+      let sent = 0, failed = 0;
+      const PER_ACCOUNT_TIMEOUT_MS = type === 'monthly' ? 420000 : 240000;
+
+      const processOne = async (account) => {
+        const t0 = Date.now();
+        const recipients = account.report_emails || '';
+        try {
+          const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+          account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
+          account.email_port = 465;
+          account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+          account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+
+          // 사전 점검(실패 시 무거운 수집을 건너뛰어 시간 예산 보호 + 실패 사유를 명확히 기록)
+          if (!recipients.split(',').map(s => s.trim()).filter(Boolean).length) {
+            throw new Error('수신 이메일 미설정 — 광고주 관리에서 리포트 수신 이메일을 등록하세요');
+          }
+          const smtpCheck = await verifySmtpAuth(account);
+          if (!smtpCheck.ok) throw new Error(smtpCheck.error);
           try {
-            const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-            account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
-            account.email_port = 465;
-            account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
-            account.email_pass = smtp?.smtp_pass || account.email_pass || '';
-            // prev는 이제 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
-            const ok = await generateAndSend(account, type, null, {}).catch(err => { console.error(`❌ [${account.name}] ${type}:`, err.message); return false; });
-            if (ok) {
-              sent++;
-              await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
-            } else { failed++; }
-          } catch (e) { failed++; console.error(`❌ Cron 계정 처리 [${account.name}]:`, e.message); }
-        }));
-      }
+            const probe = createApiClient({ apiKey: account.api_key, secretKey: account.secret_key, customerId: account.customer_id });
+            await probe.getCampaigns();
+          } catch (e) {
+            // 인증류 오류면 명시적 실패 — 그냥 진행하면 모든 지표 0인 리포트가 '정상 발송'되어 장애가 은폐됨
+            if (/403|401|auth|invalid/i.test(String(e.message))) {
+              throw new Error(`네이버 API 인증 실패 — API 설정에서 자격증명을 확인하세요 (${String(e.message).slice(0, 160)})`);
+            }
+            // 일시적 오류는 본 수집의 재시도에 맡김
+          }
+
+          // prev는 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
+          const work = generateAndSend(account, type, null, {});
+          const ok = await Promise.race([
+            work,
+            new Promise(resolve => setTimeout(() => resolve('timeout'), PER_ACCOUNT_TIMEOUT_MS)),
+          ]);
+          if (ok === 'timeout') {
+            // 슬롯은 반납하되, 같은 invocation 안에서 늦게라도 성공하면 스탬프를 남겨 중복 발송을 방지
+            failed++;
+            db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
+            work.then(ok2 => {
+              if (ok2) {
+                db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+                db.logReportSend(account.id, type, { status: 'sent', errorMsg: '지연 완료(시간 초과 후 성공)', recipients, durationMs: Date.now() - t0 });
+              }
+            }).catch(() => {});
+            return;
+          }
+          if (ok) {
+            sent++;
+            await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
+            db.logReportSend(account.id, type, { status: 'sent', recipients, durationMs: Date.now() - t0 });
+          } else {
+            failed++;
+            db.logReportSend(account.id, type, { status: 'failed', errorMsg: '알 수 없는 실패', recipients, durationMs: Date.now() - t0 });
+          }
+        } catch (e) {
+          failed++;
+          console.error(`❌ [${account.name}] ${type}:`, e.message);
+          db.logReportSend(account.id, type, { status: 'failed', errorMsg: e.message, recipients, durationMs: Date.now() - t0 });
+        }
+      };
+
+      // 슬라이딩 동시성 3 — 고정 배치(Promise.all)의 head-of-line blocking 제거
+      let cursor = 0, cutoff = false;
+      const worker = async () => {
+        while (true) {
+          if (cutoff || Date.now() - startedAt > MAX_RUNTIME_MS) { cutoff = true; return; }
+          const i = cursor++;
+          if (i >= accounts.length) return;
+          await processOne(accounts[i]);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      const skipped = Math.max(0, accounts.length - sent - failed);
+      if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
+
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      console.log(`✅ Vercel Cron [${type}] KST ${curHour}시: 발송 ${sent}, 실패 ${failed}, 미처리 ${skipped}, ${elapsed}s`);
-      res.json({ ok: true, type, kstHour: curHour, sent, failed, skipped, total: allAccounts.length, elapsed });
+      console.log(`✅ Vercel Cron [${type}] KST ${curHour}시: 발송 ${sent}, 실패 ${failed}, 이월 ${skipped}, ${elapsed}s`);
+      res.json({ ok: true, type, kstHour: curHour, due: accounts.length, sent, failed, skipped, total: allAccounts.length, elapsed });
     } catch (err) {
       console.error(`❌ Vercel Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });

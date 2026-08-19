@@ -41,7 +41,7 @@
     },
     {
       "path": "/egojin-bid/api/cron/tick",
-      "schedule": "0 * * * *"
+      "schedule": "5 * * * *"
     }
   ]
 }

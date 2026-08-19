@@ -21,6 +21,11 @@ function createTransporter(host, port, user, pass) {
   });
 }
 
+// 인증(비밀번호) 오류는 서버를 바꿔도 동일하므로 폴백 순회가 무의미 — 즉시 중단해 크론 시간 예산 보호
+function isAuthError(e) {
+  return e && (e.code === 'EAUTH' || e.responseCode === 535 || e.responseCode === 553 || /auth/i.test(String(e.message || '')));
+}
+
 async function sendMailWithFallback(account, mailOptions) {
   const primaryHost = account.email_host || 'outbound.daouoffice.com';
   const primaryPort = parseInt(account.email_port) || 465;
@@ -35,6 +40,7 @@ async function sendMailWithFallback(account, mailOptions) {
     return;
   } catch (e) {
     console.warn(`⚠️ SMTP 실패 (${primaryHost}:${primaryPort}): ${e.message}`);
+    if (isAuthError(e)) throw new Error(`SMTP 인증 실패(${user}): ${e.message} — 다우오피스 비밀번호를 확인하세요`);
   }
 
   // 2차: 폴백 서버 순회
@@ -47,10 +53,29 @@ async function sendMailWithFallback(account, mailOptions) {
       return;
     } catch (e) {
       console.warn(`⚠️ SMTP 폴백 실패 (${fb.host}:${fb.port}): ${e.message}`);
+      if (isAuthError(e)) throw new Error(`SMTP 인증 실패(${user}): ${e.message} — 다우오피스 비밀번호를 확인하세요`);
     }
   }
 
   throw new Error(`모든 SMTP 서버 연결 실패. 마지막 시도: ${DAOU_SMTP_FALLBACKS.map(f => f.host+':'+f.port).join(', ')}`);
+}
+
+// 발송 전 SMTP 로그인 사전 검증 (메일 발송 없음) — 실패 시 무거운 리포트 생성을 건너뛰어 크론 예산 절약
+async function verifySmtpAuth(account) {
+  if (!account.email_user || !account.email_pass) {
+    return { ok: false, error: '발신 SMTP 미설정 — 내 정보에서 다우오피스 계정을 설정하세요' };
+  }
+  const t = createTransporter(account.email_host || 'outbound.daouoffice.com', parseInt(account.email_port) || 465, account.email_user, account.email_pass);
+  try {
+    await t.verify();
+    return { ok: true };
+  } catch (e) {
+    if (isAuthError(e)) return { ok: false, error: `SMTP 인증 실패(${account.email_user}): ${e.message} — 다우오피스 비밀번호를 확인하세요` };
+    // 접속 장애(일시적)는 발송 자체를 막지 않음 — sendMailWithFallback의 폴백에 맡김
+    return { ok: true, warning: e.message };
+  } finally {
+    try { t.close(); } catch (_) {}
+  }
 }
 
 // ─── 포맷 헬퍼 ────────────────────────────────────────────────────
@@ -633,4 +658,4 @@ async function sendInviteEmail(account, { to, accountName, inviteUrl, inviterNam
   console.log(`✅ [${account.name}] 열람 초대 메일 → ${to}`);
 }
 
-module.exports = { sendReport, buildHtmlReport, buildExcelReport, sendMailWithFallback, sendInviteEmail };
+module.exports = { sendReport, buildHtmlReport, buildExcelReport, sendMailWithFallback, sendInviteEmail, verifySmtpAuth };

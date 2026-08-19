@@ -187,12 +187,28 @@ async function initDb() {
     )
   `);
 
+  // ─── 리포트 발송 이력 (성공/실패 모두 기록 — 크론·수동 공통) ────────
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS report_send_log (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      report_type TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'cron',
+      status TEXT NOT NULL,
+      error_msg TEXT DEFAULT '',
+      recipients TEXT DEFAULT '',
+      duration_ms INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // 인덱스 생성 (이미 있으면 무시)
   try {
     await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_detail_acct_date ON stat_daily_detail (account_id, stat_date)`);
     await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_detail_campaign ON stat_daily_detail (account_id, stat_date, campaign_id)`);
     await safeQuery(`CREATE INDEX IF NOT EXISTS ix_stat_camp_daily ON stat_campaign_daily (account_id, stat_date)`);
     await safeQuery(`CREATE UNIQUE INDEX IF NOT EXISTS uix_sync_log ON sync_log (account_id, sync_type, stat_date)`);
+    await safeQuery(`CREATE INDEX IF NOT EXISTS ix_report_send_log ON report_send_log (account_id, report_type, created_at DESC)`);
   } catch (e) { /* 이미 존재 */ }
 
   // ad_accounts에 동기화 상태 컬럼 추가
@@ -547,7 +563,11 @@ async function getAccountByCustomerId(customerId, userId) {
 
 async function getAllAccountsWithFeature(feature) {
   const col = `feat_${feature}`;
+  // 리포트 계열은 '가장 오래 미발송된 계정 우선' 정렬 — 크론 시간 예산 초과 시 같은 꼬리 계정만 반복 누락되는 편향 방지
+  const lastCol = ['daily_report', 'weekly_report', 'monthly_report'].includes(feature) ? `last_${feature}` : null;
+  const orderBy = lastCol ? `ORDER BY ad_accounts.${lastCol} ASC NULLS FIRST, ad_accounts.id ASC` : '';
   // 광고주에 연결된 agency_credential 우선, 없으면 users 테이블 폴백
+  // (대행사 자격증명만 등록한 사용자도 대상에 포함되도록 COALESCE 기준으로 필터)
   return all(`
     SELECT ad_accounts.*,
            users.name AS user_name,
@@ -558,8 +578,37 @@ async function getAllAccountsWithFeature(feature) {
     JOIN users ON users.id = ad_accounts.user_id
     LEFT JOIN agency_credentials ac ON ac.id = ad_accounts.agency_credential_id
     WHERE ad_accounts.${col} = 1
-      AND users.api_key != ''
+      AND COALESCE(ac.api_key, users.api_key, '') != ''
+    ${orderBy}
   `);
+}
+
+// ─── 리포트 발송 이력 ─────────────────────────────────────────────
+async function logReportSend(accountId, reportType, { source = 'cron', status, errorMsg = '', recipients = '', durationMs = 0 } = {}) {
+  return query(
+    `INSERT INTO report_send_log (account_id, report_type, source, status, error_msg, recipients, duration_ms)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [accountId, reportType, source, status, String(errorMsg || '').slice(0, 2000), recipients || '', Math.round(durationMs) || 0]
+  ).catch(e => console.error('발송 이력 기록 실패:', e.message));
+}
+
+// 계정별 리포트 타입별 최근 시도 1건 (스케줄 카드 상태 표시용)
+async function getLatestReportAttempts(accountId) {
+  return all(
+    `SELECT DISTINCT ON (report_type) report_type, source, status, error_msg, created_at
+     FROM report_send_log WHERE account_id = $1
+     ORDER BY report_type, created_at DESC`,
+    [accountId]
+  ).catch(() => []);
+}
+
+// 최근 N일 실패 이력 (주기 내 재시도 상한 판정용 — created_at은 UTC 저장)
+async function getRecentReportFailures(reportType, sinceDays = 32) {
+  return all(
+    `SELECT account_id, created_at FROM report_send_log
+     WHERE report_type = $1 AND status = 'failed' AND created_at > NOW() - ($2 || ' days')::interval`,
+    [reportType, String(sinceDays)]
+  ).catch(() => []);
 }
 
 async function addSelectedAccount(userId, customerId, name) {
@@ -1220,6 +1269,7 @@ module.exports = Object.assign(module.exports, {
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
   listAgencyCredentials, addAgencyCredential, updateAgencyCredential, deleteAgencyCredential, getAgencyCredentialById,
   getAccountsByUser, getAccountById, getOwnedAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
+  logReportSend, getLatestReportAttempts, getRecentReportFailures,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
   resetAdminPassword, deleteAllUsers,

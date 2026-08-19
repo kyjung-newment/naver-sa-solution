@@ -87,6 +87,7 @@ function remapShoppingRow(cols) {
  */
 async function collectDetailData(client, dateRange, opts = {}) {
   const light = !!opts.light; // light=AD_QUERY_DETAIL 생략(전략 라이브 폴백용: 메모리/속도)
+  const skipShopping = opts.skipShopping === true; // 쇼핑 캠페인이 없는 계정: 쇼핑키워드 리포트 2종 생략 (API 호출 경량화, 결과는 어차피 빈 값)
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const rawAdDetail = [];
   const rawConvDetail = [];   // AD_CONVERSION (장기보존 ~8개월: 기기/키워드/광고그룹/일자 전환)
@@ -109,8 +110,8 @@ async function collectDetailData(client, dateRange, opts = {}) {
         const reqs = [
           client.createAndDownloadStatReport('AD_DETAIL', dt),
           client.createAndDownloadStatReport('AD_CONVERSION', dt),                  // 주 전환(장기보존 ~8개월)
-          client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
-          client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
+          skipShopping ? Promise.resolve([]) : client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
+          skipShopping ? Promise.resolve([]) : client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
           hourConvOk ? client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt) : Promise.resolve([]), // 시간대 전환(최근~45일)
         ];
         // AD_QUERY_DETAIL(검색어): 네이버 개편으로 폐기되어 400(11001) 전면 실패 → 호출 제거(byQuery는 빈 값 유지)
@@ -832,12 +833,19 @@ async function generateAndSend(account, type, customRange, opts) {
     }
 
     // 1-2. API 마스터 리포트로 보완 (타임아웃 3분 — 대용량 계정 5만+ 키워드 대응)
-    // 캠페인 매핑이 비어있거나, 키워드 매핑이 적게 채워진 경우 보완
-    // 대용량 계정에서는 DB 부분 sync로 인해 일부 keyword name이 ID로 표시되는 이슈 해결
+    // 재조회 조건: 맵이 비었거나(신규/미저장) DB 마스터가 7일 이상 오래된 경우(이름 변경 반영).
+    // 저장된 마스터가 있으면 재사용 — 매 발송마다 마스터 4종을 재수집하던 것을 경량화.
+    // 이름 미해석 ID가 발견되면 아래 resolveUnresolvedNames가 재조회하므로 신규 캠페인/키워드도 안전.
     const initialKwCount = Object.keys(kwNameMap).length;
+    let masterStale = false;
+    try {
+      const r = await db.pool.query('SELECT MAX(synced_at) AS ts FROM master_keywords WHERE account_id = $1', [account.id]);
+      const ts = r.rows[0]?.ts ? new Date(r.rows[0].ts).getTime() : 0;
+      masterStale = !ts || (Date.now() - ts > 7 * 24 * 3600 * 1000);
+    } catch (_) { masterStale = true; }
     const shouldFetchMaster = Object.keys(campNameMap).length === 0
       || initialKwCount === 0
-      || initialKwCount < 100; // 적게 sync된 경우도 fresh fetch (대용량 계정 보호)
+      || masterStale;
     if (shouldFetchMaster) {
       try {
         const masterTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('마스터 API 타임아웃')), 180000));
@@ -867,11 +875,12 @@ async function generateAndSend(account, type, customRange, opts) {
         }
         console.log(`  📋 API 마스터 폴백: 캠페인 ${campRows.length}, 그룹 ${agRows.length}, 키워드 ${kwRows.length}, Qi ${qiRows.length}`);
 
-        // DB에 저장 (다음번을 위해)
+        // DB에 저장 (다음번을 위해 — Qi도 저장해야 재사용 시 품질지수 열이 비지 않음)
         try {
           if (campRows.length > 0) await db.upsertMasterCampaigns(account.id, campRows);
           if (agRows.length > 0) await db.upsertMasterAdgroups(account.id, agRows);
           if (kwRows.length > 0) await db.upsertMasterKeywords(account.id, kwRows);
+          if (qiRows.length > 0) await db.upsertMasterQi(account.id, qiRows);
         } catch (_) {}
       } catch (e) {
         console.log('  ⚠️ API 마스터 리포트 매핑 실패:', e.message);
@@ -879,7 +888,11 @@ async function generateAndSend(account, type, customRange, opts) {
     }
 
     // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
-    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
+    // 쇼핑 캠페인(유형 2)이 하나도 없으면 쇼핑키워드 리포트 2종 생략 — 유형 맵이 비어있으면 안전하게 전체 수집
+    const campTps = Object.values(campTypeMap);
+    const skipShopping = campTps.length > 0 && !campTps.some(tp => parseInt(tp) === 2);
+    if (skipShopping) console.log('  ⚡ 쇼핑 캠페인 없음 → 쇼핑키워드 리포트 수집 생략');
+    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange, { skipShopping });
 
     // 3. 다차원 집계
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);

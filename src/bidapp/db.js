@@ -183,8 +183,22 @@ async function initBidDb() {
   // 파워링크는 ncc_ad_id 컬럼에 키워드ID를 저장한다 (엔티티 ID로서 /stats·입찰 API에 동일하게 사용)
   await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'shopping'`);
   await safe(`ALTER TABLE bid_category_rules ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'shopping'`);
-  await safe(`ALTER TABLE bid_category_rules DROP CONSTRAINT IF EXISTS bid_category_rules_pkey`);
-  await safe(`ALTER TABLE bid_category_rules ADD PRIMARY KEY (account_id, category, channel)`);
+  // PK 재구성은 이미 (account_id, category, channel)이면 스킵 — 콜드스타트마다 배타 잠금 DDL 반복 방지
+  try {
+    const pk = await pool.query(`
+      SELECT array_agg(a.attname ORDER BY x.n) AS cols
+      FROM pg_constraint c
+      JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS x(attnum, n) ON true
+      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = x.attnum
+      WHERE c.conrelid = 'bid_category_rules'::regclass AND c.contype = 'p'
+      GROUP BY c.oid
+    `);
+    const cols = (pk.rows[0] && pk.rows[0].cols) ? pk.rows[0].cols.join(',') : '';
+    if (cols !== 'account_id,category,channel') {
+      await safe(`ALTER TABLE bid_category_rules DROP CONSTRAINT IF EXISTS bid_category_rules_pkey`);
+      await safe(`ALTER TABLE bid_category_rules ADD PRIMARY KEY (account_id, category, channel)`);
+    }
+  } catch (e) { console.log('bid_category_rules PK 확인 실패:', e.message); }
   await safe(`CREATE INDEX IF NOT EXISTS ix_bid_materials_channel ON bid_materials (account_id, channel)`);
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
@@ -537,8 +551,9 @@ async function isInvitedMaster(viewerUserId) {
 // ─── 크론 중복 방지 ────────────────────────────────────────────────
 async function tryClaimCronRun(runKey, result = '') {
   try {
-    await pool.query('INSERT INTO bid_cron_runs (run_key, result) VALUES ($1, $2)', [runKey, result]);
-    return true;
+    // ON CONFLICT: 중복 클레임 시 DB 에러 로그(23505) 없이 조용히 실패 처리
+    const r = await pool.query('INSERT INTO bid_cron_runs (run_key, result) VALUES ($1, $2) ON CONFLICT (run_key) DO NOTHING', [runKey, result]);
+    return r.rowCount > 0;
   } catch (e) {
     return false; // 이미 실행됨
   }
