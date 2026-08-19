@@ -8081,6 +8081,12 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     // ?force=1 → 스케줄/재시도 상한 무시하고 미발송(6h 이내 발송 제외) 전부 처리 (수동 재시도)
     const force = req.query.force === '1';
     try {
+      // 긴급 일시정지 스위치: system_settings.report_cron_paused='1'이면 자동 발송 전면 중단 (force 포함)
+      const paused = await db.pool.query(`SELECT value FROM system_settings WHERE key = 'report_cron_paused'`).then(r => r.rows[0]?.value === '1').catch(() => false);
+      if (paused) {
+        console.log(`⏸ Cron [${type}]: report_cron_paused=1 — 자동 발송 일시정지 중`);
+        return res.json({ ok: true, type, paused: true, sent: 0, failed: 0, skipped: 0 });
+      }
       const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`); // 가장 오래 미발송 순
       // 주기 내 실패 횟수 (재시도 상한 판정)
       const failRows = force ? [] : await db.getRecentReportFailures(type, 40);
