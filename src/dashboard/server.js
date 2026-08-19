@@ -8080,12 +8080,23 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     const curHour = new Date(nowKstMs).getUTCHours(); // KST 시각 (로그용)
     // ?force=1 → 스케줄/재시도 상한 무시하고 미발송(6h 이내 발송 제외) 전부 처리 (수동 재시도)
     const force = req.query.force === '1';
+    // 동시 실행 방지: 타입별 advisory lock — 정각 크론·수동 호출·재시도가 겹치면 후발 호출은 즉시 종료
+    // (겹침 시 due 목록을 각자 계산해 같은 계정에 중복 발송되는 사고 방지. 커넥션 종료 시 잠금 자동 해제)
+    const LOCK_KEYS = { daily: 911001, weekly: 911002, monthly: 911003 };
+    let lockClient = null, locked = false;
     try {
       // 긴급 일시정지 스위치: system_settings.report_cron_paused='1'이면 자동 발송 전면 중단 (force 포함)
       const paused = await db.pool.query(`SELECT value FROM system_settings WHERE key = 'report_cron_paused'`).then(r => r.rows[0]?.value === '1').catch(() => false);
       if (paused) {
         console.log(`⏸ Cron [${type}]: report_cron_paused=1 — 자동 발송 일시정지 중`);
         return res.json({ ok: true, type, paused: true, sent: 0, failed: 0, skipped: 0 });
+      }
+      lockClient = await db.pool.connect();
+      const lr = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [LOCK_KEYS[type]]);
+      locked = lr.rows[0] && lr.rows[0].ok === true;
+      if (!locked) {
+        console.log(`⏭ Cron [${type}]: 다른 실행이 진행 중 — 이번 호출은 건너뜀`);
+        return res.json({ ok: true, type, alreadyRunning: true, sent: 0, failed: 0, skipped: 0 });
       }
       const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`); // 가장 오래 미발송 순
       // 주기 내 실패 횟수 (재시도 상한 판정)
@@ -8119,6 +8130,13 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         const t0 = Date.now();
         const recipients = account.report_emails || '';
         try {
+          // 발송 직전 최신 스탬프 재확인 (2차 중복 방지 — due 목록 계산 후 다른 경로가 발송했을 수 있음)
+          const fresh = await db.pool.query(`SELECT last_${type}_report AS l FROM ad_accounts WHERE id = $1`, [account.id]).catch(() => null);
+          const freshMs = fresh?.rows?.[0]?.l ? new Date(fresh.rows[0].l).getTime() : 0;
+          if (freshMs && Date.now() - freshMs < 6 * 3600 * 1000) {
+            console.log(`⏭ [${account.name}] ${type}: 직전 6h 내 발송 확인 — 건너뜀`);
+            return;
+          }
           const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
           account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
           account.email_port = 465;
@@ -8195,6 +8213,12 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     } catch (err) {
       console.error(`❌ Vercel Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });
+    } finally {
+      // advisory lock 해제 (커넥션 반납 — 프로세스 강제 종료 시에도 세션 종료로 자동 해제됨)
+      if (lockClient) {
+        try { if (locked) await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_KEYS[type]]); } catch (_) {}
+        try { lockClient.release(); } catch (_) {}
+      }
     }
   });
 });
