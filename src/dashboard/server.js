@@ -6,7 +6,7 @@ const db = require('../db/database');
 const { createApiClient } = require('../api/naverApi');
 const { generateAndSend } = require('../report/generator');
 const crypto = require('crypto');
-const { sendInviteEmail, verifySmtpAuth } = require('../email/sender');
+const { sendInviteEmail, verifySmtpAuth, sendMailWithFallback } = require('../email/sender');
 
 const router = express.Router();
 
@@ -282,6 +282,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     );
     if (user?.is_admin) {
       menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
+      menuItems.push({ id: 'report-health', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>', label: '리포트 발송 점검', href: '/smart-sa/admin/report-health' });
     }
   }
 
@@ -916,6 +917,161 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
     </div>
   `;
   res.send(appLayout('직원 관리', content, user, 'admin', await getLayoutOpts(req)));
+});
+
+// ─── 자동리포트 발송 점검 대시보드 (관리자) ────────────────────────
+// 전 계정(리포트 ON)의 유형별 발송 상태(정상/실패/지연) + 실패 사유 + 최근 발송 이력.
+// 상태 판정은 크론 디스패처와 동일한 latestScheduledFireKst/재개 기준을 공유한다.
+async function getSystemSettingsMap(keys) {
+  try {
+    const r = await db.pool.query(`SELECT key, value FROM system_settings WHERE key = ANY($1)`, [keys]);
+    return Object.fromEntries(r.rows.map(x => [x.key, x.value]));
+  } catch (_) { return {}; }
+}
+async function upsertSystemSetting(key, value) {
+  return db.pool.query(
+    `INSERT INTO system_settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP`, [key, value]);
+}
+
+router.get('/admin/report-health', requireLogin, requireAdmin, async (req, res) => {
+  const user = await getUser(req);
+  const escH = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const fmtKst = ts => {
+    if (!ts) return '-';
+    const d = new Date(new Date(ts).getTime() + 9 * 3600 * 1000);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  };
+
+  const settings = await getSystemSettingsMap(['report_cron_paused', 'report_resume_at', 'report_alert_email', 'report_alert_last_sent']);
+  const paused = settings.report_cron_paused === '1';
+  const resumeAtMs = settings.report_resume_at ? new Date(settings.report_resume_at).getTime() : 0;
+  const alertEmail = settings.report_alert_email || REPORT_ALERT_EMAIL_DEFAULT;
+
+  const accs = await db.pool.query(`
+    SELECT a.*, u.name AS mgr FROM ad_accounts a JOIN users u ON u.id = a.user_id
+    WHERE a.feat_daily_report = 1 OR a.feat_weekly_report = 1 OR a.feat_monthly_report = 1
+    ORDER BY u.name, a.name`).then(r => r.rows);
+  const atts = await db.pool.query(`
+    SELECT DISTINCT ON (account_id, report_type) account_id, report_type, source, status, error_msg, created_at
+    FROM report_send_log ORDER BY account_id, report_type, created_at DESC`).then(r => r.rows).catch(() => []);
+  const attMap = {};
+  for (const a of atts) attMap[a.account_id + ':' + a.report_type] = a;
+  const recent = await db.pool.query(`
+    SELECT l.report_type, l.source, l.status, l.error_msg, l.created_at, l.duration_ms, a.name AS account_name
+    FROM report_send_log l JOIN ad_accounts a ON a.id = l.account_id
+    ORDER BY l.id DESC LIMIT 50`).then(r => r.rows).catch(() => []);
+
+  const nowMs = Date.now();
+  const nowKstMs = nowMs + 9 * 3600 * 1000;
+  const GRACE_MS = 2 * 3600 * 1000; // 예정 경과 2시간까지는 캐치업 진행 중으로 간주
+
+  const typeLabels = { daily: '일간', weekly: '주간', monthly: '월간' };
+  function cellState(a, type) {
+    if (!a[`feat_${type}_report`]) return { cls: 'off', label: 'OFF', detail: '' };
+    const last = a[`last_${type}_report`];
+    const lastMs = last ? new Date(last).getTime() : 0;
+    const att = attMap[a.id + ':' + type];
+    const attMs = att ? new Date(att.created_at).getTime() : 0;
+    if (att && att.status === 'failed' && attMs > lastMs) {
+      return { cls: 'fail', label: '실패', detail: `${fmtKst(att.created_at)} · ${att.error_msg || '사유 미기록'}` };
+    }
+    const fireKst = latestScheduledFireKst(type, a, nowKstMs);
+    const fireMs = fireKst != null ? fireKst - 9 * 3600 * 1000 : null;
+    if (!paused && fireMs && (!resumeAtMs || fireMs >= resumeAtMs) && lastMs < fireMs && nowMs - fireMs > GRACE_MS) {
+      return { cls: 'late', label: '지연', detail: `예정 ${fmtKst(fireMs)} 이후 미발송` };
+    }
+    if (!lastMs) return { cls: 'wait', label: '발송 전', detail: '다음 예정 대기' };
+    return { cls: 'ok', label: '정상', detail: `최근 ${fmtKst(last)}` };
+  }
+
+  const rows = accs.map(a => {
+    const states = { daily: cellState(a, 'daily'), weekly: cellState(a, 'weekly'), monthly: cellState(a, 'monthly') };
+    const issue = ['daily', 'weekly', 'monthly'].filter(t => states[t].cls === 'fail' || states[t].cls === 'late').length;
+    return { a, states, issue };
+  }).sort((x, y) => y.issue - x.issue);
+
+  const failCnt = rows.filter(r => Object.values(r.states).some(s => s.cls === 'fail')).length;
+  const lateCnt = rows.filter(r => Object.values(r.states).some(s => s.cls === 'late') && !Object.values(r.states).some(s => s.cls === 'fail')).length;
+  const okCnt = rows.length - failCnt - lateCnt;
+
+  const chip = s => {
+    const map = {
+      ok:   'background:#e9f4ee;color:#2f7d51', fail: 'background:#fbedeb;color:#b3382f',
+      late: 'background:#faf2e0;color:#96660b', wait: 'background:#eef2ff;color:#4338ca',
+      off:  'background:#f1f5f9;color:#94a3b8',
+    };
+    return `<span style="display:inline-block;font-size:11px;font-weight:600;border-radius:99px;padding:1px 8px;white-space:nowrap;${map[s.cls]}">${s.label}</span>`;
+  };
+  const cellHtml = s => s.cls === 'off' ? `<td style="color:#cbd5e1">${chip(s)}</td>`
+    : `<td>${chip(s)}<div style="font-size:11px;color:${s.cls === 'fail' ? '#b3382f' : '#94a3b8'};margin-top:2px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(s.detail)}">${escH(s.detail)}</div></td>`;
+
+  const content = `
+    <h2 style="font-size:20px;font-weight:800;margin-bottom:6px">리포트 발송 점검</h2>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:14px">자동리포트가 설정된 전 계정의 발송 상태입니다. 실패·지연 계정이 위로 정렬되며, 이슈 발생 시 <b>${escH(alertEmail)}</b>로 알림 메일이 발송됩니다.</p>
+
+    ${paused ? `<div class="alert" style="background:#fbedeb;border:1px solid #e6b8b4;color:#b3382f;padding:12px 16px;border-radius:10px;margin-bottom:14px"><b>⏸ 자동 발송이 일시정지 상태입니다.</b> 재개 시 과거 누락분은 소급 발송되지 않고, 재개 시점 이후 예정된 발송부터 처리됩니다.</div>` : ''}
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div class="card" style="flex:1;min-width:130px"><div class="card-body" style="padding:14px 18px"><div style="font-size:24px;font-weight:800">${rows.length}</div><div style="font-size:12px;color:#6b7280">리포트 ON 계정</div></div></div>
+      <div class="card" style="flex:1;min-width:130px"><div class="card-body" style="padding:14px 18px"><div style="font-size:24px;font-weight:800;color:${failCnt ? '#b3382f' : '#2f7d51'}">${failCnt}</div><div style="font-size:12px;color:#6b7280">실패 (최근 시도 실패)</div></div></div>
+      <div class="card" style="flex:1;min-width:130px"><div class="card-body" style="padding:14px 18px"><div style="font-size:24px;font-weight:800;color:${lateCnt ? '#96660b' : '#2f7d51'}">${lateCnt}</div><div style="font-size:12px;color:#6b7280">지연 (예정 경과 미발송)</div></div></div>
+      <div class="card" style="flex:1;min-width:130px"><div class="card-body" style="padding:14px 18px"><div style="font-size:24px;font-weight:800;color:#2f7d51">${okCnt}</div><div style="font-size:12px;color:#6b7280">정상</div></div></div>
+      <form method="POST" action="/smart-sa/admin/report-health/toggle-pause" style="display:flex;align-items:center" onsubmit="return confirm('${paused ? '자동 발송을 재개합니다. 과거 누락분은 소급 발송되지 않습니다.' : '자동 발송을 전면 일시정지합니다.'} 진행할까요?')">
+        <button class="btn ${paused ? 'btn-primary' : 'btn-outline'}" style="white-space:nowrap">${paused ? '▶ 발송 재개' : '⏸ 발송 일시정지'}</button>
+      </form>
+    </div>
+
+    <div class="card"><div class="card-body" style="overflow-x:auto;padding:0">
+      <table style="min-width:900px">
+        <thead><tr><th>광고주</th><th>담당자</th><th>일간</th><th>주간</th><th>월간</th><th>수신 이메일</th></tr></thead>
+        <tbody>
+          ${rows.map(({ a, states }) => `
+            <tr>
+              <td><strong>${escH(a.name)}</strong><div style="font-size:11px;color:#94a3b8">${escH(a.customer_id)}</div></td>
+              <td style="white-space:nowrap">${escH(a.mgr)}</td>
+              ${cellHtml(states.daily)}${cellHtml(states.weekly)}${cellHtml(states.monthly)}
+              <td style="font-size:11px;color:${(a.report_emails || '').trim() ? '#6b7280' : '#b3382f'};max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(a.report_emails || '')}">${escH((a.report_emails || '').trim() || '⚠ 미설정')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div></div>
+
+    <h3 style="font-size:15px;font-weight:700;margin:22px 0 10px">최근 발송 시도 이력 (50건)</h3>
+    <div class="card"><div class="card-body" style="overflow-x:auto;padding:0">
+      <table style="min-width:800px">
+        <thead><tr><th>시각 (KST)</th><th>광고주</th><th>유형</th><th>경로</th><th>결과</th><th>사유</th><th>소요</th></tr></thead>
+        <tbody>
+          ${recent.length === 0 ? '<tr><td colspan="7" style="color:#94a3b8;text-align:center;padding:18px">이력이 없습니다</td></tr>' : recent.map(l => `
+            <tr>
+              <td style="white-space:nowrap;font-size:12px">${fmtKst(l.created_at)}</td>
+              <td>${escH(l.account_name)}</td>
+              <td>${typeLabels[l.report_type] || escH(l.report_type)}</td>
+              <td style="font-size:12px;color:#6b7280">${l.source === 'manual' ? '수동' : '자동'}</td>
+              <td>${l.status === 'sent' ? '<span style="color:#2f7d51;font-weight:600">발송</span>' : '<span style="color:#b3382f;font-weight:600">실패</span>'}</td>
+              <td style="font-size:12px;color:#6b7280;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escH(l.error_msg || '')}">${escH(l.error_msg || '-')}</td>
+              <td style="font-size:12px;color:#94a3b8;white-space:nowrap">${l.duration_ms ? Math.round(l.duration_ms / 1000) + 's' : '-'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div></div>
+  `;
+  res.send(appLayout('리포트 발송 점검', content, user, 'report-health', await getLayoutOpts(req)));
+});
+
+// 일시정지 ↔ 재개 토글. 재개 시 report_resume_at을 현재로 갱신해 과거 누락분 소급 발송을 차단한다.
+router.post('/admin/report-health/toggle-pause', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const s = await getSystemSettingsMap(['report_cron_paused']);
+    if (s.report_cron_paused === '1') {
+      await upsertSystemSetting('report_resume_at', new Date().toISOString());
+      await upsertSystemSetting('report_cron_paused', '0');
+    } else {
+      await upsertSystemSetting('report_cron_paused', '1');
+    }
+  } catch (e) { console.error('발송 토글 실패:', e.message); }
+  res.redirect(303, '/smart-sa/admin/report-health');
 });
 
 router.post('/admin/users/:id/approve', requireLogin, requireAdmin, async (req, res) => {
@@ -8039,6 +8195,44 @@ const CATCHUP_WINDOW_MS = { daily: 24 * 3600 * 1000, weekly: 3 * 24 * 3600 * 100
 // 주기당 실패 재시도 상한 (자격증명 고장 계정이 매시 예산을 낭비하지 않도록; force=1은 무시)
 const MAX_ATTEMPTS_PER_PERIOD = 4;
 
+// ─── 발송 이슈 알림 메일 ───────────────────────────────────────────
+// 크론 실행에서 실패가 발생하면 관리자에게 요약 메일 발송. 6시간 스로틀로 반복 알림 방지.
+const REPORT_ALERT_EMAIL_DEFAULT = 'kyjung@newment.co.kr';
+async function maybeSendReportIssueAlert(type, failures, stats) {
+  try {
+    if (!failures.length) return;
+    const s = await db.pool.query(`SELECT key, value FROM system_settings WHERE key IN ('report_alert_last_sent','report_alert_email')`)
+      .then(r => Object.fromEntries(r.rows.map(x => [x.key, x.value]))).catch(() => ({}));
+    if (s.report_alert_last_sent && Date.now() - new Date(s.report_alert_last_sent).getTime() < 6 * 3600 * 1000) return; // 스로틀
+    const to = s.report_alert_email || REPORT_ALERT_EMAIL_DEFAULT;
+    // 발신 계정: 알림 수신자 본인의 다우오피스 SMTP (담당자 개별 SMTP 장애와 무관하게 발송되도록)
+    const su = await db.pool.query(`SELECT daou_email, smtp_pass, smtp_host, username FROM users WHERE daou_email = $1 AND smtp_pass != '' LIMIT 1`, [REPORT_ALERT_EMAIL_DEFAULT]).then(r => r.rows[0]).catch(() => null);
+    if (!su) { console.warn('⚠ 발송 이슈 알림: 발신 SMTP 계정 없음'); return; }
+    const acct = { email_host: su.smtp_host || 'outbound.daouoffice.com', email_port: 465, email_user: su.daou_email || su.username, email_pass: su.smtp_pass };
+    const escH = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const label = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+    const rowsHtml = failures.map(f => `<tr><td style="padding:7px 12px;border:1px solid #e5e8ee;white-space:nowrap"><b>${escH(f.name)}</b></td><td style="padding:7px 12px;border:1px solid #e5e8ee;font-size:12.5px;color:#374151">${escH(f.reason)}</td></tr>`).join('');
+    const html = `
+      <div style="max-width:640px;margin:0 auto;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:14px;color:#111827;line-height:1.7">
+        <div style="background:#b3382f;border-radius:12px 12px 0 0;padding:18px 24px;color:#fff">
+          <div style="font-size:12px;opacity:.85">NEWMENT · 자동리포트 발송 알림</div>
+          <div style="font-size:18px;font-weight:800;margin-top:4px">⚠ ${label} 리포트 발송 실패 ${failures.length}건</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e5e8ee;border-top:none;border-radius:0 0 12px 12px;padding:20px 24px">
+          <p style="margin:0 0 12px">방금 실행된 ${label} 자동리포트 크론에서 아래 계정의 발송이 실패했습니다 (발송 ${stats.sent} · 실패 ${stats.failed} · 이월 ${stats.skipped}).</p>
+          <table style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 14px">
+            <tr style="background:#f8f9fb"><th style="text-align:left;padding:7px 12px;border:1px solid #e5e8ee">광고주</th><th style="text-align:left;padding:7px 12px;border:1px solid #e5e8ee">실패 사유</th></tr>
+            ${rowsHtml}
+          </table>
+          <p style="margin:0 0 4px;font-size:13px;color:#6b7280">전체 현황: 솔루션 → 관리자 → <b>리포트 발송 점검</b> 메뉴에서 확인할 수 있습니다.<br>자격증명(다우오피스 비밀번호·API 키) 문제는 해당 담당자가 재등록하면 자동으로 재시도됩니다. 동일 이슈 알림은 6시간에 1회만 발송됩니다.</p>
+        </div>
+      </div>`;
+    await sendMailWithFallback(acct, { from: `"뉴먼트 솔루션 알림" <${acct.email_user}>`, to, subject: `[자동리포트 알림] ${label} 발송 실패 ${failures.length}건 — 점검 필요`, html });
+    await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ('report_alert_last_sent', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP`, [new Date().toISOString()]).catch(() => {});
+    console.log(`📮 발송 이슈 알림 → ${to} (${label} ${failures.length}건)`);
+  } catch (e) { console.warn('발송 이슈 알림 실패:', e.message); }
+}
+
 // 이번 주기의 예정 발송 시각(KST 가상 epoch ms). 도래 전이거나 캐치업 창을 지났으면 null.
 function latestScheduledFireKst(type, a, nowKstMs) {
   const k = new Date(nowKstMs); // UTC 필드가 KST를 나타냄
@@ -8086,11 +8280,14 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     let lockClient = null, locked = false;
     try {
       // 긴급 일시정지 스위치: system_settings.report_cron_paused='1'이면 자동 발송 전면 중단 (force 포함)
-      const paused = await db.pool.query(`SELECT value FROM system_settings WHERE key = 'report_cron_paused'`).then(r => r.rows[0]?.value === '1').catch(() => false);
-      if (paused) {
+      // report_resume_at: 재개 기준 시각 — 이 시각 이전에 예정됐던 발송은 소급하지 않음 (누락분 소급 방지)
+      const cronSettings = await db.pool.query(`SELECT key, value FROM system_settings WHERE key IN ('report_cron_paused','report_resume_at')`)
+        .then(r => Object.fromEntries(r.rows.map(x => [x.key, x.value]))).catch(() => ({}));
+      if (cronSettings.report_cron_paused === '1') {
         console.log(`⏸ Cron [${type}]: report_cron_paused=1 — 자동 발송 일시정지 중`);
         return res.json({ ok: true, type, paused: true, sent: 0, failed: 0, skipped: 0 });
       }
+      const resumeAtMs = cronSettings.report_resume_at ? new Date(cronSettings.report_resume_at).getTime() : 0;
       lockClient = await db.pool.connect();
       const lr = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [LOCK_KEYS[type]]);
       locked = lr.rows[0] && lr.rows[0].ok === true;
@@ -8115,6 +8312,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         const fireKst = latestScheduledFireKst(type, a, nowKstMs);
         if (fireKst == null) return false;             // 예정 시각 도래 전 또는 캐치업 창 경과
         const fireMs = fireKst - 9 * 60 * 60 * 1000;   // KST 가상 시각 → 실제 epoch
+        if (resumeAtMs && fireMs < resumeAtMs) return false; // 재개 이전 예정분은 소급 발송하지 않음
         if (lastMs >= fireMs) return false;            // 이번 주기 이미 발송됨
         // 재시도 상한: 이번 주기 실패 중 '최근 24h 내' 횟수 기준 (하루 4회) — 원인을 고치면 다음 날 자동 재개
         const fails = (failsByAccount.get(a.id) || []).filter(t => t >= fireMs && t >= nowMs - 24 * 3600 * 1000).length;
@@ -8124,6 +8322,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       console.log(`🔄 Cron [${type}] KST ${curHour}시: 대상 ${accounts.length}/${allAccounts.length}개 (예정 경과·미발송${force ? '·force' : ''})`);
 
       let sent = 0, failed = 0;
+      const failures = []; // 알림 메일용 실패 상세 수집
       const PER_ACCOUNT_TIMEOUT_MS = type === 'monthly' ? 420000 : 240000;
 
       const processOne = async (account) => {
@@ -8169,6 +8368,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           if (ok === 'timeout') {
             // 슬롯은 반납하되, 같은 invocation 안에서 늦게라도 성공하면 스탬프를 남겨 중복 발송을 방지
             failed++;
+            failures.push({ name: account.name, reason: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s)` });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
             work.then(ok2 => {
               if (ok2) {
@@ -8184,10 +8384,12 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             db.logReportSend(account.id, type, { status: 'sent', recipients, durationMs: Date.now() - t0 });
           } else {
             failed++;
+            failures.push({ name: account.name, reason: '알 수 없는 실패' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: '알 수 없는 실패', recipients, durationMs: Date.now() - t0 });
           }
         } catch (e) {
           failed++;
+          failures.push({ name: account.name, reason: e.message });
           console.error(`❌ [${account.name}] ${type}:`, e.message);
           db.logReportSend(account.id, type, { status: 'failed', errorMsg: e.message, recipients, durationMs: Date.now() - t0 });
         }
@@ -8206,6 +8408,9 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       await Promise.all([worker(), worker(), worker()]);
       const skipped = Math.max(0, accounts.length - sent - failed);
       if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
+
+      // 실패 발생 시 관리자 알림 메일 (6h 스로틀)
+      if (failures.length > 0) await maybeSendReportIssueAlert(type, failures, { sent, failed, skipped });
 
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       console.log(`✅ Vercel Cron [${type}] KST ${curHour}시: 발송 ${sent}, 실패 ${failed}, 이월 ${skipped}, ${elapsed}s`);
