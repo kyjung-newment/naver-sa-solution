@@ -137,6 +137,9 @@ function createApiClient(creds) {
     let downloadUrl = report.downloadUrl;
     for (let i = 0; i < 30; i++) {
       if (status === 'BUILT' && downloadUrl) break;
+      // NONE = 해당 날짜에 데이터 없음 (전환 0건 계정 등) — 기다려도 BUILT가 되지 않으므로 즉시 빈 결과
+      // (기존에는 60초 폴링 후 가짜 '타임아웃' 오류 — 전환 없는 계정의 리포트 생성이 날짜당 60초씩 낭비되던 원인)
+      if (status === 'NONE') { delStatJob(); return []; }
       await new Promise(r => setTimeout(r, i < 5 ? 1000 : 2000));
       const check = await apiCall('GET', `/stat-reports/${reportId}`);
       status = check.status;

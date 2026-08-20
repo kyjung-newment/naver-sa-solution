@@ -52,6 +52,15 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     { key: 'clk', label: '클릭수', fmt: FMT.num },
     { key: 'cpc', label: 'CPC', fmt: FMT.won },
     { key: 'ctr', label: 'CTR', fmt: FMT.pct },
+    { key: 'convCnt', label: '총 전환수', fmt: FMT.num },
+    { key: 'convDirectCnt', label: '직접전환수', fmt: FMT.num },
+    { key: 'convIndirectCnt', label: '간접전환수', fmt: FMT.num },
+    { key: 'convRate', label: '총 전환율(%)', fmt: FMT.pct },
+    { key: 'convAmt', label: '총 전환매출액', fmt: FMT.won },
+    { key: 'convDirectAmt', label: '직접전환매출액', fmt: FMT.won },
+    { key: 'convIndirectAmt', label: '간접전환매출액', fmt: FMT.won },
+    { key: 'costPerConv', label: '총 전환당비용', fmt: FMT.won },
+    { key: 'roasTotal', label: '총 광고수익률(%)', fmt: FMT.roas },
     { key: 'purchaseCnt', label: '구매완료', fmt: FMT.num },
     { key: 'purchaseAmt', label: '구매매출', fmt: FMT.won },
     { key: 'roas', label: 'ROAS', fmt: FMT.roas },
@@ -822,10 +831,13 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     byDevice:       { label: 'PC/모바일', standalone: true },
     byDate:         { label: '일별', standalone: true },
     byHour:         { label: '시간대', standalone: true },
+    byConvType:     { label: '전환 유형', standalone: true },
   };
   const METRIC_MAP = {}; METRIC_DEFS.forEach(m => METRIC_MAP[m.key] = m);
   // 가장 granular한 차원을 base 집계로 선택 (상위 차원 라벨은 base row가 보유)
   function pickBaseAgg(dimKeys) {
+    // 전환 유형은 단독 차원 (다른 차원과 교차 집계 불가) — 선택 시 유형별 분해가 목적이므로 최우선
+    if (dimKeys.includes('byConvType')) return 'byConvType';
     if (dimKeys.includes('byKeyword')) return 'byKeyword';
     if (dimKeys.includes('byQuery')) return 'byQuery';
     if (dimKeys.includes('byAdgroup')) return 'byAdgroup';
@@ -846,6 +858,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
       case 'byDevice':       return baseAgg === 'byDevice' ? (key === 'PC' ? 'PC' : '모바일') : '-';
       case 'byDate':         return baseAgg === 'byDate' ? key : '-';
       case 'byHour':         return baseAgg === 'byHour' ? (parseInt(key) + '시') : '-';
+      case 'byConvType':     return baseAgg === 'byConvType' ? (d.name || key) : '-';
     }
     return '-';
   }
@@ -863,7 +876,9 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     const baseAgg = pickBaseAgg(dimKeys) || 'byCampaign';
     const src = data[baseAgg] || {};
     const sortKey = (def.sortBy && metricCols.some(c => c.key === def.sortBy)) ? def.sortBy : metricCols[0].key;
-    let entries = Object.entries(src).filter(([, d]) => ((d.imp || 0) + (d.clk || 0) + (d.cost || 0)) > 0);
+    // 전환 전용 버킷(byConvType)이나 전환만 있는 행이 걸러지지 않도록 전환 지표도 존재 조건에 포함
+    let entries = Object.entries(src).filter(([, d]) =>
+      ((d.imp || 0) + (d.clk || 0) + (d.cost || 0) + (d.convCnt || 0) + (d.convAmt || 0)) > 0);
     if (baseAgg === 'byDate' || baseAgg === 'byHour') entries.sort((a, b) => a[0].localeCompare(b[0]));
     else entries.sort((a, b) => (b[1][sortKey] || 0) - (a[1][sortKey] || 0));
     const limit = (def.limit && def.limit > 0) ? def.limit : 200;

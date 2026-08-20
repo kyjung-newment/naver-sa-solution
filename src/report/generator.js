@@ -298,23 +298,46 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     const l = (convType || '').toLowerCase(); const r = (convType || '').trim();
     return l === 'add_to_cart' || l === 'cart' || l === 'add_cart' || r === '장바구니 담기' || r === '장바구니';
   };
-  const addConv = (convMap, key, isPurchase, isCart, cnt, amt) => {
-    if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
-    if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
-    else if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
+  // 전환 유형 한글 라벨 (실데이터는 영문 슬러그: purchase/add_to_cart/sign_up 실측 —
+  //  네이버 문서상 숫자 코드(1~5)·한글 표기도 방어. 미지 유형은 원문 그대로 노출해 은폐 방지)
+  const convTypeLabel = (convType) => {
+    const l = (convType || '').toLowerCase().trim(); const r = (convType || '').trim();
+    if (isPurchaseType(convType)) return '구매완료';
+    if (isCartType(convType)) return '장바구니';
+    if (l === 'sign_up' || l === 'signup' || l === '2' || r === '회원가입') return '회원가입';
+    if (l === 'application' || l === 'reservation' || l === 'application_reservation' || l === '4' || r === '신청·예약' || r === '신청/예약') return '신청·예약';
+    if (l === 'others' || l === 'other' || l === 'etc' || l === '5' || r === '기타') return '기타';
+    return r || '기타';
+  };
+  // method(전환방법): AD_CONVERSION cols[9] / *_DETAIL cols[11] — 1=직접전환, 2=간접전환 (실측 검증)
+  // 총 전환 = 전 유형 × (직접+간접) — 네이버 다차원보고서 '총 전환수' 정의(/stats ccnt와 일치 실측 확인)
+  const addConv = (convMap, key, isPurchase, isCart, cnt, amt, method) => {
+    if (!convMap[key]) convMap[key] = {
+      purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0,
+      convCnt: 0, convAmt: 0, convDirectCnt: 0, convDirectAmt: 0, convIndirectCnt: 0, convIndirectAmt: 0,
+    };
+    const c = convMap[key];
+    if (isPurchase) { c.purchaseCnt += cnt; c.purchaseAmt += amt; }
+    else if (isCart) { c.cartCnt += cnt; c.cartAmt += amt; }
+    c.convCnt += cnt; c.convAmt += amt;
+    if (String(method) === '2') { c.convIndirectCnt += cnt; c.convIndirectAmt += amt; }
+    else { c.convDirectCnt += cnt; c.convDirectAmt += amt; } // 1=직접 (실측상 1/2만 존재, 미상 값은 직접 처리로 총합 보존)
   };
 
   // ── AD_CONVERSION (장기보존 ~8개월) 13컬럼: 0:date 2:camp 3:adgroup 4:keyword 8:device 10:convType 11:cnt 12:amt ──
   // AD_CONVERSION_DETAIL은 ~45일만 보존돼 과거기간 전환이 누락되므로 AD_CONVERSION으로 전환.
   // 시간대(hour) 컬럼이 없어 기기/키워드/광고그룹/캠페인/일자/전체 전환만 집계(시간대는 아래 별도 보강).
-  const convMap = {}; // key → { purchaseCnt, purchaseAmt, cartCnt, cartAmt }
+  const convMap = {}; // key → { purchaseCnt, purchaseAmt, cartCnt, cartAmt, convCnt, convAmt, convDirect*, convIndirect* }
   const convTypeSet = new Set();
+  // '전환 유형' 차원 — AD_CONVERSION 단독 구축 (전 캠페인·8개월 보존·무중복. 쇼핑 루프와 합치면 이중집계)
+  const byConvType = {};
   for (const { date: convDate, cols } of rawConvDetail) {
     if (cols.length < 13) continue;
     const campaignId = cols[2];
     const adgroupId = cols[3];
     const keywordId = cols[4];
     const device = cols[8] === 'P' ? 'PC' : 'MO';
+    const method = cols[9]; // 1=직접전환, 2=간접전환
     const convType = cols[10];
     const cnt = parseInt(cols[11]) || 0;
     const amt = parseInt(cols[12]) || 0;
@@ -323,8 +346,19 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     const isPurchase = isPurchaseType(convType);
     const isCart = isCartType(convType);
     const convKwKey = (keywordId && keywordId !== '-') ? `kw:${keywordId}` : `ag:${adgroupId}`;
-    const keys = [`camp:${campaignId}`, `ag:${adgroupId}`, `device:${device}`, convKwKey, `campType:${campType}`, `total`, `date:${convDate}`];
-    for (const key of keys) addConv(convMap, key, isPurchase, isCart, cnt, amt);
+    // Set으로 중복 제거 — keywordId 없는 행은 convKwKey가 ag: 와 겹쳐 광고그룹 전환이 이중 누적되던 버그 방지
+    const keys = [...new Set([`camp:${campaignId}`, `ag:${adgroupId}`, `device:${device}`, convKwKey, `campType:${campType}`, `total`, `date:${convDate}`])];
+    for (const key of keys) addConv(convMap, key, isPurchase, isCart, cnt, amt, method);
+    // 전환 유형별 버킷 (라벨로 정규화해 purchase/'1'/'구매완료' 표기 혼재를 한 행으로 합침)
+    const tLabel = convTypeLabel(convType);
+    if (!byConvType[tLabel]) byConvType[tLabel] = {
+      name: tLabel, imp: 0, clk: 0, cost: 0,
+      convCnt: 0, convAmt: 0, convDirectCnt: 0, convDirectAmt: 0, convIndirectCnt: 0, convIndirectAmt: 0,
+    };
+    const bt = byConvType[tLabel];
+    bt.convCnt += cnt; bt.convAmt += amt;
+    if (String(method) === '2') { bt.convIndirectCnt += cnt; bt.convIndirectAmt += amt; }
+    else { bt.convDirectCnt += cnt; bt.convDirectAmt += amt; }
   }
 
   // ── AD_CONVERSION_DETAIL (최근~45일) 15컬럼: 7:hour 12:convType 13:cnt 14:amt → 시간대(hour) 전환만 보강 ──
@@ -335,9 +369,10 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     const convType = cols[12];
     const cnt = parseInt(cols[13]) || 0;
     const amt = parseInt(cols[14]) || 0;
-    addConv(convMap, `hour:${hour}`, isPurchaseType(convType), isCartType(convType), cnt, amt);
+    addConv(convMap, `hour:${hour}`, isPurchaseType(convType), isCartType(convType), cnt, amt, cols[11]);
   }
   // SHOPPINGKEYWORD_CONVERSION_DETAIL → 쇼핑 키워드별 전환만 convMap에 추가 (kw: 키만)
+  // (캠페인/그룹/일자/total의 쇼핑 전환은 AD_CONVERSION이 이미 포함 — 다른 키에 넣으면 이중집계)
   for (const { cols } of (rawShopConvDetail || [])) {
     if (cols.length < 15) continue;
     const keywordId = cols[4];
@@ -345,17 +380,7 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     const convType = cols[12];
     const cnt = parseInt(cols[13]) || 0;
     const amt = parseInt(cols[14]) || 0;
-    const convTypeLower = (convType || '').toLowerCase();
-    const convTypeRaw2 = (convType || '').trim();
-    const isPurchase = convTypeLower === 'purchase' || convTypeLower === 'purchase_complete' || convTypeLower === 'complete_purchase'
-      || convTypeLower === 'conversion' || convTypeLower === 'conv' || convTypeLower === '1'
-      || convTypeRaw2 === '구매완료';
-    const isCart = convTypeLower === 'add_to_cart' || convTypeLower === 'cart' || convTypeLower === 'add_cart'
-      || convTypeRaw2 === '장바구니 담기' || convTypeRaw2 === '장바구니';
-    const key = `kw:${keywordId}`;
-    if (!convMap[key]) convMap[key] = { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
-    if (isPurchase) { convMap[key].purchaseCnt += cnt; convMap[key].purchaseAmt += amt; }
-    else if (isCart) { convMap[key].cartCnt += cnt; convMap[key].cartAmt += amt; }
+    addConv(convMap, `kw:${keywordId}`, isPurchaseType(convType), isCartType(convType), cnt, amt, cols[11]);
   }
 
   if (convTypeSet.size > 0) console.log(`  📊 전환 타입 목록: ${[...convTypeSet].join(', ')}`);
@@ -480,15 +505,25 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
 
   // 계산 필드 추가 헬퍼
   function enrich(obj, convKey) {
-    const conv = convMap[convKey] || { purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0 };
+    const conv = convMap[convKey] || {};
     obj.cpc = obj.clk > 0 ? Math.round(obj.cost / obj.clk) : 0;
     obj.ctr = obj.imp > 0 ? (obj.clk / obj.imp * 100) : 0;
     obj.avgRank = obj.rankCount > 0 ? (obj.rankSum / obj.rankCount) : 0;
-    obj.purchaseCnt = conv.purchaseCnt;
-    obj.purchaseAmt = conv.purchaseAmt;
-    obj.cartCnt = conv.cartCnt;
-    obj.cartAmt = conv.cartAmt;
+    obj.purchaseCnt = conv.purchaseCnt || 0;
+    obj.purchaseAmt = conv.purchaseAmt || 0;
+    obj.cartCnt = conv.cartCnt || 0;
+    obj.cartAmt = conv.cartAmt || 0;
     obj.roas = obj.cost > 0 ? Math.round(obj.purchaseAmt / obj.cost * 100) : 0;
+    // 총/직접/간접 전환 (전 유형 합 — 다차원보고서 '총 전환' 정의)
+    obj.convCnt = conv.convCnt || 0;
+    obj.convAmt = conv.convAmt || 0;
+    obj.convDirectCnt = conv.convDirectCnt || 0;
+    obj.convDirectAmt = conv.convDirectAmt || 0;
+    obj.convIndirectCnt = conv.convIndirectCnt || 0;
+    obj.convIndirectAmt = conv.convIndirectAmt || 0;
+    obj.convRate = obj.clk > 0 ? (obj.convCnt / obj.clk * 100) : 0;
+    obj.costPerConv = obj.convCnt > 0 ? Math.round(obj.cost / obj.convCnt) : 0;
+    obj.roasTotal = obj.cost > 0 ? Math.round(obj.convAmt / obj.cost * 100) : 0;
     return obj;
   }
 
@@ -507,7 +542,7 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
   for (const k of Object.keys(byKeyword)) {
     const d = byKeyword[k];
     if ((d.imp || 0) === 0 && (d.clk || 0) === 0 && (d.cost || 0) === 0
-        && (d.purchaseCnt || 0) === 0 && (d.cartCnt || 0) === 0) {
+        && (d.purchaseCnt || 0) === 0 && (d.cartCnt || 0) === 0 && (d.convCnt || 0) === 0) {
       delete byKeyword[k];
     }
   }
@@ -542,12 +577,14 @@ function aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campT
     d.ctr = d.imp > 0 ? (d.clk / d.imp * 100) : 0;
     d.avgRank = 0;
     d.roas = 0;
+    d.convCnt = 0; d.convAmt = 0; d.convDirectCnt = 0; d.convDirectAmt = 0; d.convIndirectCnt = 0; d.convIndirectAmt = 0;
+    d.convRate = 0; d.costPerConv = 0; d.roasTotal = 0;
   });
   if (Object.keys(byQuery).length > 0) {
     console.log(`  🔍 AD_QUERY_DETAIL 검색어별 ${Object.keys(byQuery).length}개 집계`);
   }
 
-  return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate, byQuery };
+  return { total, byCampaign, byCampaignType, byAdgroup, byKeyword, byDevice, byHour, byDate, byQuery, byConvType };
 }
 
 // ─── /stats 보정·비교기간 공통 헬퍼 ─────────────────────────────────
@@ -567,6 +604,16 @@ function enrichStatsObj(o) {
   o.purchaseCnt = o.purchaseCnt || 0;
   o.purchaseAmt = o.purchaseAmt || 0;
   o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+  // 총/직접/간접 전환 — 기존 값 보존(|| 0), 파생만 재계산
+  o.convCnt = o.convCnt || 0;
+  o.convAmt = o.convAmt || 0;
+  o.convDirectCnt = o.convDirectCnt || 0;
+  o.convDirectAmt = o.convDirectAmt || 0;
+  o.convIndirectCnt = o.convIndirectCnt || 0;
+  o.convIndirectAmt = o.convIndirectAmt || 0;
+  o.convRate = o.clk > 0 ? (o.convCnt / o.clk * 100) : 0;
+  o.costPerConv = o.convCnt > 0 ? Math.round(o.cost / o.convCnt) : 0;
+  o.roasTotal = o.cost > 0 ? Math.round(o.convAmt / o.cost * 100) : 0;
   return o;
 }
 
@@ -599,6 +646,10 @@ async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
     data.total.cpc = data.total.clk > 0 ? Math.round(data.total.cost / data.total.clk) : 0;
     data.total.ctr = data.total.imp > 0 ? (data.total.clk / data.total.imp * 100) : 0;
     data.total.roas = data.total.cost > 0 ? Math.round((data.total.purchaseAmt || 0) / data.total.cost * 100) : 0;
+    // 총전환 파생 재계산 (직접/간접은 /stats에 없어 TSV 값 유지 — 실측상 합계 일치)
+    data.total.convRate = data.total.clk > 0 ? (data.total.convCnt / data.total.clk * 100) : 0;
+    data.total.costPerConv = data.total.convCnt > 0 ? Math.round(data.total.cost / data.total.convCnt) : 0;
+    data.total.roasTotal = data.total.cost > 0 ? Math.round(data.total.convAmt / data.total.cost * 100) : 0;
 
     // 2) 캠페인별 교체 (유형은 기존 유지, 이름 미해결 시 /stats 이름으로 해석)
     //    AD_DETAIL에 행이 없던 캠페인(수집 실패·노출0 비용발생 등)도 /stats에 있으면 신규 추가 — 합계 불일치 방지
@@ -610,6 +661,7 @@ async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
           name: cs.name || cid,
           campaignType: TYPE_LABELS[String((campTypeMap || {})[cid] || '1')] || '기타',
           imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0, cartCnt: 0, cartAmt: 0,
+          convDirectCnt: 0, convDirectAmt: 0, convIndirectCnt: 0, convIndirectAmt: 0,
         };
       }
       camp.imp = cs.imp; camp.clk = cs.clk; camp.cost = cs.cost;
@@ -619,6 +671,9 @@ async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
       camp.cpc = camp.clk > 0 ? Math.round(camp.cost / camp.clk) : 0;
       camp.ctr = camp.imp > 0 ? (camp.clk / camp.imp * 100) : 0;
       camp.roas = camp.cost > 0 ? Math.round((camp.purchaseAmt || 0) / camp.cost * 100) : 0;
+      camp.convRate = camp.clk > 0 ? (camp.convCnt / camp.clk * 100) : 0;
+      camp.costPerConv = camp.convCnt > 0 ? Math.round(camp.cost / camp.convCnt) : 0;
+      camp.roasTotal = camp.cost > 0 ? Math.round(camp.convAmt / camp.cost * 100) : 0;
       if (camp.name === cid && cs.name) camp.name = cs.name; // ID 미해결 캠페인명 해석
     }
 
@@ -630,6 +685,7 @@ async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
       if (!newByCampType[ct]) newByCampType[ct] = {
         imp: 0, clk: 0, cost: 0, rankSum: 0, rankCount: 0,
         purchaseCnt: 0, purchaseAmt: 0, cartCnt: 0, cartAmt: 0,
+        convCnt: 0, convAmt: 0, convDirectCnt: 0, convDirectAmt: 0, convIndirectCnt: 0, convIndirectAmt: 0,
       };
       newByCampType[ct].imp += camp.imp;
       newByCampType[ct].clk += camp.clk;
@@ -642,24 +698,44 @@ async function calibrateAllWithStats(data, client, dateRange, campTypeMap) {
       newByCampType[ct].purchaseAmt += camp.purchaseAmt || 0;
       newByCampType[ct].cartCnt += camp.cartCnt || 0;
       newByCampType[ct].cartAmt += camp.cartAmt || 0;
+      newByCampType[ct].convCnt += camp.convCnt || 0;
+      newByCampType[ct].convAmt += camp.convAmt || 0;
+      newByCampType[ct].convDirectCnt += camp.convDirectCnt || 0;
+      newByCampType[ct].convDirectAmt += camp.convDirectAmt || 0;
+      newByCampType[ct].convIndirectCnt += camp.convIndirectCnt || 0;
+      newByCampType[ct].convIndirectAmt += camp.convIndirectAmt || 0;
     }
     Object.values(newByCampType).forEach(enrichStatsObj);
     data.byCampaignType = newByCampType;
 
-    // 4) 일자별 교체 (전환·비용 정확)
+    // 4) 일자별 교체 (전환·비용 정확) — 직접/간접 분리는 /stats에 없어 TSV(AD_CONVERSION) 값 병합
     if (dims.byDate && Object.keys(dims.byDate).length) {
-      for (const k of Object.keys(dims.byDate)) enrichStatsObj(dims.byDate[k]);
+      const oldByDate = data.byDate || {};
+      for (const k of Object.keys(dims.byDate)) {
+        const o = dims.byDate[k], old = oldByDate[k];
+        if (old) {
+          o.convDirectCnt = old.convDirectCnt || 0; o.convDirectAmt = old.convDirectAmt || 0;
+          o.convIndirectCnt = old.convIndirectCnt || 0; o.convIndirectAmt = old.convIndirectAmt || 0;
+        }
+        enrichStatsObj(o);
+      }
       data.byDate = dims.byDate;
     }
 
-    // 5) 광고그룹별 교체 (이름은 API 신선값, 캠페인유형은 보정된 byCampaign에서)
+    // 5) 광고그룹별 교체 (이름은 API 신선값, 캠페인유형은 보정된 byCampaign에서) — 직접/간접은 TSV 값 병합
     if (dims.byAdgroup && Object.keys(dims.byAdgroup).length) {
+      const oldByAdgroup = data.byAdgroup || {};
       const out = {};
       for (const [agId, o] of Object.entries(dims.byAdgroup)) {
         const camp = data.byCampaign && data.byCampaign[o.campaignId];
         o.name = o.adgroupName || agId;
         o.campaignName = o.campaignName || (camp && camp.name) || '';
         o.campaignType = (camp && camp.campaignType) || '파워링크';
+        const old = oldByAdgroup[agId];
+        if (old) {
+          o.convDirectCnt = old.convDirectCnt || 0; o.convDirectAmt = old.convDirectAmt || 0;
+          o.convIndirectCnt = old.convIndirectCnt || 0; o.convIndirectAmt = old.convIndirectAmt || 0;
+        }
         enrichStatsObj(o);
         out[agId] = o; // aggregateData와 동일하게 raw adgroupId 키 사용
       }
@@ -1199,15 +1275,19 @@ async function buildDataFromDb(accountId, since, until) {
 // AD_QUERY_DETAIL/Stats 보정을 생략해 메모리·시간을 크게 줄이고, 총합은 /stats 1콜로 정확화.
 // 집계 결과를 누적 병합 (원본 raw는 청크마다 버림 → 메모리 고정)
 function mergeAgg(acc, part) {
-  const DIMS = ['byCampaign', 'byCampaignType', 'byAdgroup', 'byKeyword', 'byDevice', 'byHour', 'byDate', 'byQuery'];
-  const RAW = ['imp', 'clk', 'cost', 'rankSum', 'rankCount', 'purchaseCnt', 'purchaseAmt', 'cartCnt', 'cartAmt'];
+  const DIMS = ['byCampaign', 'byCampaignType', 'byAdgroup', 'byKeyword', 'byDevice', 'byHour', 'byDate', 'byQuery', 'byConvType'];
+  const RAW = ['imp', 'clk', 'cost', 'rankSum', 'rankCount', 'purchaseCnt', 'purchaseAmt', 'cartCnt', 'cartAmt',
+    'convCnt', 'convAmt', 'convDirectCnt', 'convDirectAmt', 'convIndirectCnt', 'convIndirectAmt'];
   const reEnrich = (o) => {
     o.cpc = o.clk > 0 ? Math.round(o.cost / o.clk) : 0;
     o.ctr = o.imp > 0 ? (o.clk / o.imp * 100) : 0;
     o.avgRank = o.rankCount > 0 ? (o.rankSum / o.rankCount) : 0;
     o.roas = o.cost > 0 ? Math.round((o.purchaseAmt || 0) / o.cost * 100) : 0;
+    o.convRate = o.clk > 0 ? ((o.convCnt || 0) / o.clk * 100) : 0;
+    o.costPerConv = (o.convCnt || 0) > 0 ? Math.round(o.cost / o.convCnt) : 0;
+    o.roasTotal = o.cost > 0 ? Math.round((o.convAmt || 0) / o.cost * 100) : 0;
   };
-  if (!acc) acc = { total: {}, byCampaign: {}, byCampaignType: {}, byAdgroup: {}, byKeyword: {}, byDevice: {}, byHour: {}, byDate: {}, byQuery: {} };
+  if (!acc) acc = { total: {}, byCampaign: {}, byCampaignType: {}, byAdgroup: {}, byKeyword: {}, byDevice: {}, byHour: {}, byDate: {}, byQuery: {}, byConvType: {} };
   RAW.forEach(f => acc.total[f] = (acc.total[f] || 0) + (part.total[f] || 0));
   reEnrich(acc.total);
   for (const dim of DIMS) {
@@ -1393,4 +1473,4 @@ async function generateDownsellExcel(account, type, opts = {}) {
   return { buffer, period: r.period };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel };
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel, collectReportData };
