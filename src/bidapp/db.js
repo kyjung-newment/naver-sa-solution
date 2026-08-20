@@ -521,24 +521,49 @@ async function getMonthlyReports(accountId, limit = 12, channel = 'shopping') {
   return all(`SELECT * FROM bid_monthly_reports WHERE account_id = $1 ${cond} ORDER BY month DESC LIMIT $2`, [accountId, limit]);
 }
 
-// ─── 초대 역할/상태 (account_viewers 확장 — 소유자 검증 포함) ──────
-async function setViewerRole(viewerId, ownerUserId, role) {
+// ─── 초대 관리 (account_viewers 확장 — 마스터 공유 모델) ────────────
+// 소유자가 아니어도 접근 가능한 광고주의 마스터면 초대를 관리할 수 있다.
+// (권한 게이트는 라우트의 requireMaster + 접근 광고주 검증이 담당)
+async function listAccountViewers(accountId) {
+  return all(`
+    SELECT v.*, u.name AS viewer_name FROM account_viewers v
+    LEFT JOIN users u ON u.id = v.viewer_user_id
+    WHERE v.account_id = $1
+    ORDER BY v.created_at DESC
+  `, [accountId]);
+}
+
+// 초대 생성/재발송 (같은 account+email 재초대 시 토큰·초대일 갱신)
+async function createInvite(accountId, invitedBy, email, token) {
+  const r = await pool.query(`
+    INSERT INTO account_viewers (account_id, email, invite_token, status, invited_by)
+    VALUES ($1, $2, $3, 'pending', $4)
+    ON CONFLICT (account_id, email) DO UPDATE SET
+      invite_token = EXCLUDED.invite_token,
+      status = CASE WHEN account_viewers.status = 'accepted' THEN 'accepted' ELSE 'pending' END,
+      invited_by = EXCLUDED.invited_by, created_at = CURRENT_TIMESTAMP
+    RETURNING *
+  `, [accountId, String(email).toLowerCase().trim(), token, invitedBy]);
+  return r.rows[0];
+}
+
+async function setViewerRole(viewerId, accountId, role) {
   const r = await pool.query(`
     UPDATE account_viewers SET role = $3
-    WHERE id = $1 AND account_id IN (SELECT id FROM ad_accounts WHERE user_id = $2)
+    WHERE id = $1 AND account_id = $2
     RETURNING *
-  `, [viewerId, ownerUserId, role === 'master' ? 'master' : 'client']);
+  `, [viewerId, accountId, role === 'master' ? 'master' : 'client']);
   return r.rows[0] || null;
 }
 
 // 비활성화(disabled) ↔ 재활성화(accepted). accepted 상태였던 계정만 대상.
-async function setViewerActive(viewerId, ownerUserId, active) {
+async function setViewerActive(viewerId, accountId, active) {
   const r = await pool.query(`
     UPDATE account_viewers SET status = $3
-    WHERE id = $1 AND account_id IN (SELECT id FROM ad_accounts WHERE user_id = $2)
+    WHERE id = $1 AND account_id = $2
       AND status IN ('accepted','disabled')
     RETURNING *
-  `, [viewerId, ownerUserId, active ? 'accepted' : 'disabled']);
+  `, [viewerId, accountId, active ? 'accepted' : 'disabled']);
   return r.rows[0] || null;
 }
 
@@ -566,7 +591,7 @@ module.exports = {
   getMaterials, getMaterialById, upsertMaterial, updateMaterialMeta, setMaterialBid, setMaterialBaseline, setMaterialAutoDisabled,
   upsertWeeklyStat, getWeeklyStatsMap, setWeekBid,
   upsertAdjustment, getAdjustmentById, getAdjustments, setAdjustmentStatus,
-  setViewerRole, setViewerActive, isInvitedMaster,
+  listAccountViewers, createInvite, setViewerRole, setViewerActive, isInvitedMaster,
   audit, getAuditLog,
   upsertAlert, getAlerts, resolveAlert,
   saveMonthlyReport, getMonthlyReports,

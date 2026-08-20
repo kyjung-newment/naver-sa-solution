@@ -2009,12 +2009,9 @@ router.get('/viewers', requireLogin, requireMaster, async (req, res) => {
   const user = await getUser(req);
   const { accounts, account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
-  const owned = await db.getOwnedAccountById(account.id, user.id);
   const pend = await pendingCount(account.id);
-  if (!owned) {
-    return res.send(appLayout(req, '광고주 초대', '<div class="empty">본인 소유 광고주만 초대를 관리할 수 있습니다.</div>', 'viewers', { accounts, account, user, pendingCount: pend }));
-  }
-  const viewers = await db.getAccountViewers(account.id, user.id);
+  // 마스터 공유 모델: 접근 가능한 광고주면 소유자가 아니어도 초대 관리 가능
+  const viewers = await bidDb.listAccountViewers(account.id);
   const msg = req.query.msg || '';
 
   const statusBadgeOf = (v) => {
@@ -2080,17 +2077,15 @@ router.post('/viewers', requireLogin, requireMaster, async (req, res) => {
   const user = await getUser(req);
   const { account } = await getSelectedAccount(req);
   if (!account) return res.redirect(BASE);
-  const owned = await db.getOwnedAccountById(account.id, user.id);
-  if (!owned) return res.redirect(`${BASE}/viewers`);
   const email = String(req.body.email || '').trim().toLowerCase();
   const role = req.body.role === 'master' ? 'master' : 'client';
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.redirect(303, `${BASE}/viewers?msg=err`);
-  // 초대 메일은 마스터(마케터)의 다우오피스 SMTP로 발송 (기존 솔루션과 동일)
+  // 초대 메일은 로그인한 마스터 본인의 다우오피스 SMTP로 발송
   const smtp = await db.getSmtpCredentials(user.id);
   if (!smtp || !smtp.daou_email || !smtp.smtp_pass) return res.redirect(303, `${BASE}/viewers?msg=nodaou`);
   try {
     const token = crypto.randomBytes(24).toString('hex');
-    const inv = await db.createAccountInvite(account.id, user.id, email, token);
+    const inv = await bidDb.createInvite(account.id, user.id, email, token);
     if (inv) await bidDb.pool.query('UPDATE account_viewers SET role = $2 WHERE id = $1', [inv.id, role]);
     const base_url = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     const inviteUrl = `${base_url}${BASE}/invite/${token}`;
@@ -2111,16 +2106,20 @@ router.post('/viewers', requireLogin, requireMaster, async (req, res) => {
 
 // 역할 변경 (마스터/광고주) — 해당 계정의 다음 로그인(세션 재해석)부터 적용
 router.post('/viewers/:vid/role', requireLogin, requireMaster, async (req, res) => {
+  const { account } = await getSelectedAccount(req);
+  if (!account) return res.redirect(BASE);
   const role = req.body.role === 'master' ? 'master' : 'client';
-  const row = await bidDb.setViewerRole(req.params.vid, req.session.userId, role);
+  const row = await bidDb.setViewerRole(req.params.vid, account.id, role);
   if (row) await bidDb.audit(row.account_id, req.session.userName, '초대 역할 변경', { email: row.email, role: role === 'master' ? '마스터' : '광고주' });
   res.redirect(303, `${BASE}/viewers?msg=role`);
 });
 
 // 계정 비활성화/재활성화 — 비활성 시 해당 광고주 접근 즉시 차단
 router.post('/viewers/:vid/active', requireLogin, requireMaster, async (req, res) => {
+  const { account } = await getSelectedAccount(req);
+  if (!account) return res.redirect(BASE);
   const active = req.body.active === '1';
-  const row = await bidDb.setViewerActive(req.params.vid, req.session.userId, active);
+  const row = await bidDb.setViewerActive(req.params.vid, account.id, active);
   if (row) await bidDb.audit(row.account_id, req.session.userName, active ? '초대 계정 활성화' : '초대 계정 비활성화', { email: row.email });
   res.redirect(303, `${BASE}/viewers?msg=active`);
 });
