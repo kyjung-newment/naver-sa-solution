@@ -123,10 +123,11 @@ function requireLogin(req, res, next) {
 const forbidden = () => `<div style="font-family:Pretendard,system-ui,sans-serif;max-width:480px;margin:80px auto;text-align:center;padding:30px"><div style="font-size:40px;margin-bottom:8px">🔒</div><h2 style="color:#111827;margin-bottom:8px">접근 권한이 없습니다</h2><p style="color:#6b7280;margin:0 0 20px;font-size:14px">광고주 계정은 조회·승인 기능만 이용할 수 있습니다. (설정은 열람만 가능)</p><a href="${BASE}" style="color:#0ea5e9;font-weight:600">← 대시보드로 돌아가기</a></div>`;
 
 // 광고주(client) 허용 경로 — 그 외 전면 차단 (default deny)
-// 설정은 GET(열람)만 허용 — 저장 API(POST /api/settings/*)는 차단되어 403
+// 설정은 GET(열람)만 허용 — 단, 전용(이고진) 앱은 소재/키워드별 설정 저장을 광고주에게 허용
 function clientPathAllowed(p, method) {
   if (['/', '/login', '/logout', '/weekly', '/approvals', '/history'].includes(p)) return true;
   if (method === 'GET' && p === '/settings') return true;
+  if (PINNED_CUSTOMER_ID && method === 'POST' && p === '/api/settings/materials') return true; // 소재별 설정 직접 수정
   if (p.startsWith('/invite')) return true;
   if (p === '/api/select-account') return true;
   if (method === 'GET' && (p === '/api/weekly' || p === '/api/history' || p === '/api/material-trend')) return true;
@@ -1599,6 +1600,9 @@ router.get('/settings', requireLogin, async (req, res) => {
   }
   const ro = isClient(req); // 광고주 = 열람 전용 (입력 disabled, 저장 버튼 미노출)
   const dis = ro ? 'disabled' : '';
+  // 전용(이고진) 앱은 광고주도 소재/키워드별 설정 탭을 직접 수정 가능
+  const canEditMats = !ro || !!PINNED_CUSTOMER_ID;
+  const matDis = canEditMats ? '' : 'disabled';
   const blendN = Math.max(0, Math.min(100, Math.round(parseFloat(settings.blend_recent_weight) || 0)));
 
   // API 연동 상태 = 로그인한 마스터(마케터) 본인의 자격증명 (전용 앱에서만 표시 — 범용 앱은 AUTO REPORT 연동을 그대로 사용)
@@ -1644,17 +1648,17 @@ router.get('/settings', requireLogin, async (req, res) => {
     const isCoreNow = m.core_override === '1'; // 핵심 = 수동 지정만
     const share = totalRev4 > 0 ? (revMap[m.id] / totalRev4 * 100) : 0;
     return `<tr>
-    ${ro ? '' : `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>`}
+    ${canEditMats ? `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>` : ''}
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${dis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
-    <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${dis}></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px" ${dis}>
+    <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${matDis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
+    <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${matDis}></td>
+    <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px" ${matDis}>
       <option value="" ${!m.mode_override ? 'selected' : ''}>전역 따름</option>
       <option value="auto" ${m.mode_override === 'auto' ? 'selected' : ''}>자동</option>
       <option value="approval" ${m.mode_override === 'approval' ? 'selected' : ''}>승인</option></select></td>
-    <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px" ${dis}>
+    <td><select class="mat-in" data-id="${m.id}" data-f="enabled" style="width:90px" ${matDis}>
       <option value="1" ${m.enabled ? 'selected' : ''}>활성</option><option value="0" ${!m.enabled ? 'selected' : ''}>제외</option></select></td>
-    <td style="white-space:nowrap"><select class="mat-in" data-id="${m.id}" data-f="core_override" style="width:100px" ${dis}>
+    <td style="white-space:nowrap"><select class="mat-in" data-id="${m.id}" data-f="core_override" style="width:100px" ${matDis}>
       <option value="" ${m.core_override !== '1' ? 'selected' : ''}>일반</option>
       <option value="1" ${m.core_override === '1' ? 'selected' : ''}>핵심</option></select>
       ${isCoreNow ? '<span class="badge b-core" style="margin-left:4px">핵심</span>' : ''}</td>
@@ -1671,7 +1675,7 @@ router.get('/settings', requireLogin, async (req, res) => {
   ];
 
   const content = `
-    ${ro ? '<div class="alert alert-info">광고주 계정은 설정을 <b>열람만</b> 할 수 있습니다. 변경이 필요하면 담당 마케터에게 요청해주세요.</div>' : ''}
+    ${ro ? `<div class="alert alert-info">광고주 계정은 설정을 <b>열람만</b> 할 수 있습니다.${canEditMats ? ` 단, <b>${UNIT}별 설정</b> 탭은 직접 수정할 수 있습니다.` : ''} 그 외 변경이 필요하면 담당 마케터에게 요청해주세요.</div>` : ''}
     <div class="tabs">${TABS.map((t, i) => `<button class="tab-btn ${i === 0 ? 'active' : ''}" data-tab="${t.id}" onclick="showTab('${t.id}')">${t.title}</button>`).join('')}</div>
 
     <!-- ① 조정 기준: 블렌딩·판정 / 볼륨 보호 / 입찰 한도·데이터 (섹션 구분) -->
@@ -1742,8 +1746,8 @@ router.get('/settings', requireLogin, async (req, res) => {
           <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
           <textarea name="excluded_campaigns" rows="5" style="font-family:inherit;resize:vertical" ${dis}>${escHtml(settings.excluded_campaigns || '')}</textarea>
         </div></div>
-      <div class="card"><div class="card-header"><span class="card-title">${UNIT}별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${ro ? '' : `<button class="btn btn-primary btn-sm" onclick="saveMats()">${UNIT} 설정 저장</button>`}</div></div>
-        ${ro ? '' : `
+      <div class="card"><div class="card-header"><span class="card-title">${UNIT}별 설정 (분류·목표ROAS·모드·활성·핵심)</span><div style="display:flex;gap:8px;align-items:center">${HELP.materials}${canEditMats ? `<button class="btn btn-primary btn-sm" onclick="saveMats()">${UNIT} 설정 저장</button>` : ''}</div></div>
+        ${canEditMats ? `
         <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#f8fafc">
           <b style="font-size:12.5px;color:#334155;white-space:nowrap">✔ 선택 일괄 변경:</b>
           <select id="bulk-cat" style="width:110px"><option value="">분류 유지</option>${logic.CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
@@ -1753,10 +1757,10 @@ router.get('/settings', requireLogin, async (req, res) => {
           <select id="bulk-core" style="width:100px"><option value="">핵심 유지</option><option value="__none">일반</option><option value="1">핵심</option></select>
           <button class="btn btn-primary btn-sm" onclick="bulkApply()">선택 적용 + 저장</button>
           <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
-        </div>`}
+        </div>` : ''}
         <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr>${ro ? '' : '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>'}<th>${UNIT}</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || `<tr><td colspan="${ro ? 9 : 10}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
+          <tr>${canEditMats ? '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>' : ''}<th>${UNIT}</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          ${matRows || `<tr><td colspan="${canEditMats ? 10 : 9}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
     </div>
 
     <script>
@@ -1976,7 +1980,12 @@ router.post('/api/settings/rules', requireLogin, requireMaster, async (req, res)
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-router.post('/api/settings/materials', requireLogin, requireMaster, async (req, res) => {
+// 소재/키워드별 설정 저장 — 마스터 + (전용 앱에 한해) 광고주도 직접 수정 가능
+const requireMaterialEdit = (req, res, next) => {
+  if (!isClient(req) || PINNED_CUSTOMER_ID) return next();
+  return res.status(403).json({ ok: false, error: '권한 없음 (광고주 계정)' });
+};
+router.post('/api/settings/materials', requireLogin, requireMaterialEdit, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);
     if (!account) return res.json({ ok: false, error: '광고주 없음' });
@@ -1989,7 +1998,7 @@ router.post('/api/settings/materials', requireLogin, requireMaster, async (req, 
         core_override: ['', '1', '0'].includes(m.core_override) ? m.core_override : undefined,
       });
     }
-    await bidDb.audit(account.id, req.session.userName, `${UNIT} 설정 일괄 변경`, { count: Object.keys(req.body.materials || {}).length });
+    await bidDb.audit(account.id, (req.session.userName || '') + (isClient(req) ? ' (광고주)' : ''), `${UNIT} 설정 일괄 변경`, { count: Object.keys(req.body.materials || {}).length });
     res.json({ ok: true });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
@@ -2031,7 +2040,7 @@ router.get('/viewers', requireLogin, requireMaster, async (req, res) => {
       <div class="card-body">
         <p style="font-size:13px;color:#64748b;margin-bottom:14px">
           <b>마스터</b>: 모든 탭 접근 + 설정 수정 + 조정 실행 + 승인 ·
-          <b>광고주</b>: 대시보드·주차별 데이터·승인함·히스토리 + 승인/반려, 설정은 열람만</p>
+          <b>광고주</b>: 대시보드·주차별 데이터·승인함·히스토리 + 승인/반려, 설정은 열람만${PINNED_CUSTOMER_ID ? ` (${UNIT}별 설정 탭은 직접 수정 가능)` : ''}</p>
         <form method="POST" action="${BASE}/viewers" style="display:flex;gap:10px;max-width:640px">
           <input name="email" type="email" required placeholder="이메일 (예: client@egojin.com)">
           <select name="role" style="width:130px">
@@ -2154,7 +2163,7 @@ router.get('/invite/:token', async (req, res) => {
       </form>
       <p style="font-size:12px;color:#9ca3af;text-align:center;margin-top:14px">${isMaster
         ? '이 계정은 <b>마스터</b> 권한(설정 수정·조정 실행·승인)을 가집니다.'
-        : '이 계정은 <b>조회 + 조정 승인</b> 권한을 가지며, 설정은 열람만 할 수 있습니다.'}</p>
+        : `이 계정은 <b>조회 + 조정 승인</b> 권한을 가지며, 설정은 열람만 할 수 있습니다.${PINNED_CUSTOMER_ID ? ` (${UNIT}별 설정은 직접 수정 가능)` : ''}`}</p>
     </div></div>`));
 });
 
