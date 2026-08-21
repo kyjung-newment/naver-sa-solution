@@ -187,6 +187,22 @@ async function initDb() {
     )
   `);
 
+  // ─── 광고주 이관/삭제 관리 로그 (관리자 일괄 처리 감사용) ──────────
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS account_admin_log (
+      id SERIAL PRIMARY KEY,
+      action TEXT NOT NULL,
+      account_id INTEGER,
+      account_name TEXT DEFAULT '',
+      customer_id TEXT DEFAULT '',
+      from_username TEXT DEFAULT '',
+      to_username TEXT DEFAULT '',
+      actor TEXT DEFAULT '',
+      detail TEXT DEFAULT '',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // ─── 리포트 발송 이력 (성공/실패 모두 기록 — 크론·수동 공통) ────────
   await safeQuery(`
     CREATE TABLE IF NOT EXISTS report_send_log (

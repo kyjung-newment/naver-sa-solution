@@ -283,6 +283,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     if (user?.is_admin) {
       menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
       menuItems.push({ id: 'report-health', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>', label: '리포트 발송 점검', href: '/smart-sa/admin/report-health' });
+      menuItems.push({ id: 'admin-accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>', label: '광고주 일괄 관리', href: '/smart-sa/admin/accounts' });
     }
   }
 
@@ -1072,6 +1073,226 @@ router.post('/admin/report-health/toggle-pause', requireLogin, requireAdmin, asy
     }
   } catch (e) { console.error('발송 토글 실패:', e.message); }
   res.redirect(303, '/smart-sa/admin/report-health');
+});
+
+// ─── 광고주 일괄 관리 (관리자): 전체 목록 + 개별 삭제 + 엑셀 일괄 이관/삭제 ──
+const accountBulk = require('./accountBulk');
+
+router.get('/admin/accounts', requireLogin, requireAdmin, async (req, res) => {
+  const user = await getUser(req);
+  const escH = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const accs = await db.pool.query(`
+    SELECT a.id, a.name, a.customer_id, u.username, u.name AS user_name,
+           a.feat_daily_report AS fd, a.feat_weekly_report AS fw, a.feat_monthly_report AS fm
+    FROM ad_accounts a JOIN users u ON u.id = a.user_id
+    ORDER BY u.name, a.name`).then(r => r.rows);
+  const logs = await db.pool.query(`SELECT * FROM account_admin_log ORDER BY id DESC LIMIT 20`).then(r => r.rows).catch(() => []);
+  const fmtKst = ts => { if (!ts) return '-'; const d = new Date(new Date(ts).getTime() + 9 * 3600 * 1000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`; };
+
+  const content = `
+    <h2 style="font-size:20px;font-weight:800;margin-bottom:6px">광고주 일괄 관리</h2>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">퇴사·계정 이탈 시 광고주를 다른 담당자에게 <b>이관</b>하거나 <b>삭제</b>합니다. 삭제 시 리포트 이력·통계·입찰 데이터가 모두 영구 삭제됩니다.</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span class="card-title">📥 엑셀 일괄 이관/삭제</span>
+        <a class="btn btn-outline btn-sm" href="/smart-sa/admin/accounts/template" style="font-size:12px">📄 양식 다운로드</a>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;color:#64748b;margin-bottom:10px;line-height:1.7">
+          양식의 <b>[계정명 / 아이디 / 기존담당자아이디 / 변경담당자아이디]</b> 열을 채워 업로드하세요.
+          <b>변경담당자아이디를 비우면 삭제</b>, 채우면 해당 담당자에게 이관됩니다. 매칭은 아이디(Customer ID)+기존담당자아이디 기준이며,
+          업로드 후 <b>미리보기에서 확인한 뒤 적용</b>됩니다. 양식의 "현재 계정 목록" 시트에서 복사해 쓰면 편합니다.
+        </div>
+        <input type="file" id="ab-file" accept=".xlsx" onchange="abUpload(this)" style="font-size:13px">
+        <div id="ab-preview" style="margin-top:14px"></div>
+        <div id="ab-result" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="card-title">전체 광고주 (${accs.length})</span>
+        <input id="ab-search" oninput="abFilter(this.value)" placeholder="광고주명·아이디·담당자 검색" style="padding:7px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;min-width:240px">
+      </div>
+      <div class="card-body" style="overflow-x:auto;padding:0">
+        <table style="min-width:820px" id="ab-table">
+          <thead><tr><th>광고주</th><th>Customer ID</th><th>담당자</th><th>담당자 아이디</th><th>자동리포트</th><th></th></tr></thead>
+          <tbody>
+            ${accs.map(a => `
+              <tr data-search="${escH((a.name + ' ' + a.customer_id + ' ' + a.user_name + ' ' + a.username).toLowerCase())}">
+                <td><strong>${escH(a.name)}</strong></td>
+                <td style="font-size:12px;color:#64748b">${escH(a.customer_id)}</td>
+                <td style="white-space:nowrap">${escH(a.user_name)}</td>
+                <td style="font-size:12px;color:#64748b">${escH(a.username)}</td>
+                <td style="font-size:11px;color:#64748b">${[a.fd && '일간', a.fw && '주간', a.fm && '월간'].filter(Boolean).join(' · ') || '<span style="color:#cbd5e1">OFF</span>'}</td>
+                <td><button class="btn btn-outline btn-sm" style="font-size:11px;color:#dc2626;border-color:#fecaca" onclick="abDelete(${a.id}, '${escH(a.name).replace(/'/g, '&#39;')}')">삭제</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3 style="font-size:14px;font-weight:700;margin:18px 0 8px">최근 처리 이력</h3>
+    <div class="card"><div class="card-body" style="overflow-x:auto;padding:0">
+      <table style="min-width:700px">
+        <thead><tr><th>시각(KST)</th><th>작업</th><th>광고주</th><th>Customer ID</th><th>기존 담당자</th><th>변경 담당자</th><th>처리자</th></tr></thead>
+        <tbody>
+          ${logs.length === 0 ? '<tr><td colspan="7" style="color:#94a3b8;text-align:center;padding:16px">이력이 없습니다</td></tr>' : logs.map(l => `
+            <tr>
+              <td style="font-size:12px;white-space:nowrap">${fmtKst(l.created_at)}</td>
+              <td>${l.action === 'transfer' ? '<span class="badge badge-blue">이관</span>' : '<span class="badge" style="background:#fee2e2;color:#b91c1c">삭제</span>'}</td>
+              <td>${escH(l.account_name)}</td>
+              <td style="font-size:12px;color:#64748b">${escH(l.customer_id)}</td>
+              <td style="font-size:12px">${escH(l.from_username)}</td>
+              <td style="font-size:12px">${escH(l.to_username) || '-'}</td>
+              <td style="font-size:12px;color:#64748b">${escH(l.actor)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div></div>
+
+    <script>
+    function abEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+    function abFilter(q){
+      q=(q||'').toLowerCase().trim();
+      document.querySelectorAll('#ab-table tbody tr').forEach(function(tr){
+        tr.style.display = !q || (tr.dataset.search||'').indexOf(q)>=0 ? '' : 'none';
+      });
+    }
+    async function abDelete(id, name){
+      var typed = prompt('⚠ "'+name+'" 광고주와 모든 데이터(리포트 이력·통계·입찰 데이터)가 영구 삭제됩니다.\\n삭제하려면 광고주명을 그대로 입력하세요:');
+      if (typed === null) return;
+      if (typed.trim() !== name) { alert('광고주명이 일치하지 않아 취소했습니다.'); return; }
+      var r = await fetch('/smart-sa/api/admin/accounts/'+id+'/delete', { method:'POST' });
+      var j = await r.json();
+      if (j.ok) { alert('삭제 완료'); location.reload(); } else alert('실패: '+(j.error||''));
+    }
+    var abRows = null;
+    function abUpload(input){
+      var f = input.files[0]; if (!f) return;
+      var rd = new FileReader();
+      rd.onload = async function(){
+        var b64 = String(rd.result).split(',')[1];
+        document.getElementById('ab-preview').innerHTML = '<span style="font-size:13px;color:#64748b">검증 중...</span>';
+        try {
+          var r = await fetch('/smart-sa/api/admin/accounts/bulk-preview', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file: b64 }) });
+          var j = await r.json();
+          if (!j.ok) { document.getElementById('ab-preview').innerHTML = '<span style="color:#dc2626;font-size:13px">'+abEsc(j.error)+'</span>'; return; }
+          abRows = j.rows;
+          abRenderPreview(j.rows);
+        } catch(e) { document.getElementById('ab-preview').innerHTML = '<span style="color:#dc2626;font-size:13px">업로드 실패: '+abEsc(e.message)+'</span>'; }
+      };
+      rd.readAsDataURL(f);
+      input.value = '';
+    }
+    function abRenderPreview(rows){
+      var nT = rows.filter(function(r){return r.action==='transfer'}).length;
+      var nD = rows.filter(function(r){return r.action==='delete'}).length;
+      var nE = rows.filter(function(r){return r.action==='error'}).length;
+      var html = '<div style="font-size:13px;margin-bottom:8px"><b>미리보기</b> — 이관 <b style="color:#2563eb">'+nT+'</b>건 · 삭제 <b style="color:#dc2626">'+nD+'</b>건 · 오류 <b style="color:#96660b">'+nE+'</b>건</div>';
+      html += '<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px"><table style="min-width:760px;font-size:12.5px"><thead><tr><th>행</th><th>작업</th><th>계정명</th><th>아이디</th><th>기존담당자</th><th>변경담당자</th><th>비고</th></tr></thead><tbody>';
+      rows.forEach(function(r){
+        var badge = r.action==='transfer' ? '<span style="color:#2563eb;font-weight:700">이관</span>'
+          : r.action==='delete' ? '<span style="color:#dc2626;font-weight:700">삭제</span>'
+          : '<span style="color:#96660b;font-weight:700">오류</span>';
+        var note = r.action==='error' ? abEsc(r.error||'') : abEsc(r.warning||'');
+        html += '<tr><td>'+r.rowNo+'</td><td>'+badge+'</td><td>'+abEsc(r.accountName||r.name)+'</td><td>'+abEsc(r.customerId)+'</td><td>'+abEsc(r.fromUsername)+'</td><td>'+abEsc(r.toUsername||'-')+'</td><td style="color:'+(r.action==='error'?'#b45309':'#94a3b8')+'">'+note+'</td></tr>';
+      });
+      html += '</tbody></table></div>';
+      if (nT+nD > 0) html += '<button class="btn btn-primary" style="margin-top:12px" onclick="abApply()">✅ 이관 '+nT+'건 · 삭제 '+nD+'건 적용</button>';
+      document.getElementById('ab-preview').innerHTML = html;
+      document.getElementById('ab-result').innerHTML = '';
+    }
+    async function abApply(){
+      if (!abRows) return;
+      var nD = abRows.filter(function(r){return r.action==='delete'}).length;
+      if (!confirm('일괄 처리를 실행합니다. 계속할까요?')) return;
+      if (nD > 0) {
+        var typed = prompt('⚠ 삭제 '+nD+'건은 되돌릴 수 없습니다. 진행하려면 "삭제"를 입력하세요:');
+        if (typed === null || typed.trim() !== '삭제') { alert('취소했습니다.'); return; }
+      }
+      var payload = abRows.filter(function(r){return r.action!=='error'}).map(function(r){ return { rowNo:r.rowNo, name:r.name, customerId:r.customerId, fromUsername:r.fromUsername, toUsername:r.toUsername }; });
+      document.getElementById('ab-result').innerHTML = '<span style="font-size:13px;color:#64748b">처리 중...</span>';
+      var r = await fetch('/smart-sa/api/admin/accounts/bulk-apply', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ rows: payload }) });
+      var j = await r.json();
+      if (!j.ok) { document.getElementById('ab-result').innerHTML = '<span style="color:#dc2626;font-size:13px">'+abEsc(j.error)+'</span>'; return; }
+      var okN = j.results.filter(function(x){return x.ok}).length;
+      var failN = j.results.filter(function(x){return !x.ok}).length + (j.errors||[]).length;
+      var html = '<div style="font-size:13px;margin-bottom:8px"><b>처리 완료</b> — 성공 <b style="color:#16a34a">'+okN+'</b>건 · 실패 <b style="color:#dc2626">'+failN+'</b>건</div>';
+      var bad = j.results.filter(function(x){return !x.ok}).concat(j.errors||[]);
+      if (bad.length) {
+        html += '<div style="font-size:12px;color:#b45309">'+bad.map(function(x){return '행 '+x.rowNo+': '+abEsc(x.error||'실패')}).join('<br>')+'</div>';
+      }
+      html += '<div style="margin-top:10px"><a class="btn btn-outline btn-sm" href="/smart-sa/admin/accounts">🔄 새로고침</a></div>';
+      document.getElementById('ab-result').innerHTML = html;
+      document.getElementById('ab-preview').innerHTML = '';
+      abRows = null;
+    }
+    </script>
+  `;
+  res.send(appLayout('광고주 일괄 관리', content, user, 'admin-accounts', await getLayoutOpts(req)));
+});
+
+// 엑셀 양식 다운로드 (시트1=입력 양식, 시트2=현재 계정 목록)
+router.get('/admin/accounts/template', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const buf = await accountBulk.buildTemplateXlsx();
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent('광고주_이관삭제_양식.xlsx')}`,
+    });
+    res.send(Buffer.from(buf));
+  } catch (e) { res.status(500).send(e.message); }
+});
+
+// 업로드 미리보기 (검증만 — 변경 없음)
+router.post('/api/admin/accounts/bulk-preview', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const { file } = req.body || {};
+    if (!file) return res.json({ ok: false, error: '파일이 없습니다' });
+    const rows = await accountBulk.parseBulkXlsx(file);
+    if (!rows.length) return res.json({ ok: false, error: '처리할 행이 없습니다 (2행부터 데이터를 입력하세요)' });
+    if (rows.length > 500) return res.json({ ok: false, error: '한 번에 500행까지 처리할 수 있습니다' });
+    const validated = await accountBulk.validateRows(rows);
+    res.json({ ok: true, rows: validated });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 일괄 적용 (서버에서 재검증 후 유효 행만 실행)
+router.post('/api/admin/accounts/bulk-apply', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const user = await getUser(req);
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) return res.json({ ok: false, error: '처리할 행이 없습니다' });
+    if (rows.length > 500) return res.json({ ok: false, error: '한 번에 500행까지 처리할 수 있습니다' });
+    const validated = await accountBulk.validateRows(rows);
+    const valid = validated.filter(r => r.action !== 'error');
+    const errors = validated.filter(r => r.action === 'error');
+    const results = await accountBulk.applyRows(valid, user?.username || 'admin');
+    const nT = results.filter(r => r.ok && r.action === 'transfer').length;
+    const nD = results.filter(r => r.ok && r.action === 'delete').length;
+    console.log(`👥 광고주 일괄 처리 [${user?.username}]: 이관 ${nT}건, 삭제 ${nD}건, 오류 ${errors.length}건`);
+    res.json({ ok: true, results, errors });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 관리자 개별 삭제 (소유자 무관)
+router.post('/api/admin/accounts/:id/delete', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const user = await getUser(req);
+    const acc = await db.pool.query(`
+      SELECT a.id, a.name, a.customer_id, u.username FROM ad_accounts a JOIN users u ON u.id = a.user_id WHERE a.id = $1`,
+      [req.params.id]).then(r => r.rows[0]);
+    if (!acc) return res.json({ ok: false, error: '광고주 없음' });
+    await db.pool.query(`DELETE FROM ad_accounts WHERE id = $1`, [acc.id]);
+    db.pool.query(
+      `INSERT INTO account_admin_log (action, account_id, account_name, customer_id, from_username, actor) VALUES ('delete', $1, $2, $3, $4, $5)`,
+      [acc.id, acc.name, acc.customer_id, acc.username, user?.username || 'admin']
+    ).catch(() => {});
+    console.log(`🗑 광고주 삭제 [${user?.username}]: ${acc.name} (${acc.customer_id}, 담당 ${acc.username})`);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 router.post('/admin/users/:id/approve', requireLogin, requireAdmin, async (req, res) => {
@@ -8198,6 +8419,12 @@ const MAX_ATTEMPTS_PER_PERIOD = 4;
 // ─── 발송 이슈 알림 메일 ───────────────────────────────────────────
 // 크론 실행에서 실패가 발생하면 관리자에게 요약 메일 발송. 6시간 스로틀로 반복 알림 방지.
 const REPORT_ALERT_EMAIL_DEFAULT = 'kyjung@newment.co.kr';
+// 알림 발신 계정: 관리자(kyjung)의 다우오피스 SMTP — 담당자 개별 SMTP 장애와 무관하게 발송되도록
+async function getAlertSenderAccount() {
+  const su = await db.pool.query(`SELECT daou_email, smtp_pass, smtp_host, username FROM users WHERE daou_email = $1 AND smtp_pass != '' LIMIT 1`, [REPORT_ALERT_EMAIL_DEFAULT]).then(r => r.rows[0]).catch(() => null);
+  if (!su) return null;
+  return { email_host: su.smtp_host || 'outbound.daouoffice.com', email_port: 465, email_user: su.daou_email || su.username, email_pass: su.smtp_pass };
+}
 async function maybeSendReportIssueAlert(type, failures, stats) {
   try {
     if (!failures.length) return;
@@ -8205,10 +8432,8 @@ async function maybeSendReportIssueAlert(type, failures, stats) {
       .then(r => Object.fromEntries(r.rows.map(x => [x.key, x.value]))).catch(() => ({}));
     if (s.report_alert_last_sent && Date.now() - new Date(s.report_alert_last_sent).getTime() < 6 * 3600 * 1000) return; // 스로틀
     const to = s.report_alert_email || REPORT_ALERT_EMAIL_DEFAULT;
-    // 발신 계정: 알림 수신자 본인의 다우오피스 SMTP (담당자 개별 SMTP 장애와 무관하게 발송되도록)
-    const su = await db.pool.query(`SELECT daou_email, smtp_pass, smtp_host, username FROM users WHERE daou_email = $1 AND smtp_pass != '' LIMIT 1`, [REPORT_ALERT_EMAIL_DEFAULT]).then(r => r.rows[0]).catch(() => null);
-    if (!su) { console.warn('⚠ 발송 이슈 알림: 발신 SMTP 계정 없음'); return; }
-    const acct = { email_host: su.smtp_host || 'outbound.daouoffice.com', email_port: 465, email_user: su.daou_email || su.username, email_pass: su.smtp_pass };
+    const acct = await getAlertSenderAccount();
+    if (!acct) { console.warn('⚠ 발송 이슈 알림: 발신 SMTP 계정 없음'); return; }
     const escH = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const label = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
     const rowsHtml = failures.map(f => `<tr><td style="padding:7px 12px;border:1px solid #e5e8ee;white-space:nowrap"><b>${escH(f.name)}</b></td><td style="padding:7px 12px;border:1px solid #e5e8ee;font-size:12.5px;color:#374151">${escH(f.reason)}</td></tr>`).join('');
@@ -8231,6 +8456,64 @@ async function maybeSendReportIssueAlert(type, failures, stats) {
     await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ('report_alert_last_sent', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP`, [new Date().toISOString()]).catch(() => {});
     console.log(`📮 발송 이슈 알림 → ${to} (${label} ${failures.length}건)`);
   } catch (e) { console.warn('발송 이슈 알림 실패:', e.message); }
+}
+
+// 담당자 본인 알림 (담당자당 24h 스로틀) — 이탈 광고주 정리·다우오피스/API 자격증명 재등록 리마인드
+async function sendOwnerReportAlerts(type, failures) {
+  try {
+    const byUser = new Map();
+    for (const f of failures) {
+      if (!f.userId) continue;
+      if (!byUser.has(f.userId)) byUser.set(f.userId, []);
+      byUser.get(f.userId).push(f);
+    }
+    if (!byUser.size) return;
+    const sender = await getAlertSenderAccount();
+    if (!sender) return;
+    const escH = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const label = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+    for (const [userId, list] of byUser) {
+      try {
+        const throttleKey = `report_alert_owner_last:${userId}`;
+        const last = await db.pool.query(`SELECT value FROM system_settings WHERE key = $1`, [throttleKey]).then(r => r.rows[0]?.value).catch(() => null);
+        if (last && Date.now() - new Date(last).getTime() < 24 * 3600 * 1000) continue;
+        const owner = await db.pool.query(`SELECT name, username, daou_email FROM users WHERE id = $1`, [userId]).then(r => r.rows[0]).catch(() => null);
+        const to = owner && (owner.daou_email || (String(owner.username || '').includes('@') ? owner.username : ''));
+        if (!to) continue;
+        if (to === sender.email_user) continue; // 관리자 본인은 관리자 알림으로 이미 수신
+        const rowsHtml = list.map(f => `<tr><td style="padding:7px 12px;border:1px solid #e5e8ee;white-space:nowrap"><b>${escH(f.name)}</b></td><td style="padding:7px 12px;border:1px solid #e5e8ee;font-size:12.5px;color:#374151">${escH(f.reason)}</td></tr>`).join('');
+        const html = `
+          <div style="max-width:640px;margin:0 auto;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:14px;color:#111827;line-height:1.7">
+            <div style="background:#6366f1;border-radius:12px 12px 0 0;padding:18px 24px;color:#fff">
+              <div style="font-size:12px;opacity:.85">NEWMENT · 자동리포트 알림</div>
+              <div style="font-size:18px;font-weight:800;margin-top:4px">담당 광고주 ${label} 리포트 발송 실패 ${list.length}건</div>
+            </div>
+            <div style="background:#fff;border:1px solid #e5e8ee;border-top:none;border-radius:0 0 12px 12px;padding:20px 24px">
+              <p style="margin:0 0 12px">${escH(owner.name || '')}님, 담당하고 계신 아래 광고주의 ${label} 자동리포트 발송이 실패했습니다.</p>
+              <table style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 14px">
+                <tr style="background:#f8f9fb"><th style="text-align:left;padding:7px 12px;border:1px solid #e5e8ee">광고주</th><th style="text-align:left;padding:7px 12px;border:1px solid #e5e8ee">실패 사유</th></tr>
+                ${rowsHtml}
+              </table>
+              <div style="background:#eef2ff;border-radius:10px;padding:12px 16px;margin:0 0 12px;font-size:13px;line-height:1.8">
+                <b style="color:#4338ca">조치 방법</b><br>
+                · <b>SMTP 인증 실패</b> → 솔루션 <b>내 정보</b>에서 다우오피스 비밀번호 재등록<br>
+                · <b>네이버 API 인증 실패</b> → <b>API 설정</b>에서 자격증명(API 키) 갱신<br>
+                · <b>이탈(계약 종료) 광고주</b> → <b>광고주 관리</b>에서 삭제하거나 자동 발송을 OFF<br>
+                자격증명을 고치면 별도 요청 없이 자동으로 재시도됩니다.
+              </div>
+              <p style="margin:0;font-size:12.5px;color:#6b7280">이 리마인드는 하루 1회만 발송됩니다. 문의는 운영 담당(관리자)에게 부탁드립니다.</p>
+            </div>
+          </div>`;
+        await sendMailWithFallback(sender, {
+          from: `"뉴먼트 솔루션 알림" <${sender.email_user}>`, to,
+          subject: `[자동리포트] 담당 광고주 ${list.length}건 ${label} 발송 실패 — 확인 필요`,
+          html,
+        });
+        await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP`, [throttleKey, new Date().toISOString()]).catch(() => {});
+        console.log(`📮 담당자 알림 → ${owner.name}(${to}) ${list.length}건`);
+      } catch (e) { console.warn('담당자 알림 실패:', e.message); }
+    }
+  } catch (e) { console.warn('담당자 알림 오류:', e.message); }
 }
 
 // 이번 주기의 예정 발송 시각(KST 가상 epoch ms). 도래 전이거나 캐치업 창을 지났으면 null.
@@ -8368,7 +8651,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           if (ok === 'timeout') {
             // 슬롯은 반납하되, 같은 invocation 안에서 늦게라도 성공하면 스탬프를 남겨 중복 발송을 방지
             failed++;
-            failures.push({ name: account.name, reason: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s)` });
+            failures.push({ name: account.name, reason: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s)`, userId: account.user_id, userName: account.user_name || '' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
             work.then(ok2 => {
               if (ok2) {
@@ -8384,12 +8667,12 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             db.logReportSend(account.id, type, { status: 'sent', recipients, durationMs: Date.now() - t0 });
           } else {
             failed++;
-            failures.push({ name: account.name, reason: '알 수 없는 실패' });
+            failures.push({ name: account.name, reason: '알 수 없는 실패', userId: account.user_id, userName: account.user_name || '' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: '알 수 없는 실패', recipients, durationMs: Date.now() - t0 });
           }
         } catch (e) {
           failed++;
-          failures.push({ name: account.name, reason: e.message });
+          failures.push({ name: account.name, reason: e.message, userId: account.user_id, userName: account.user_name || '' });
           console.error(`❌ [${account.name}] ${type}:`, e.message);
           db.logReportSend(account.id, type, { status: 'failed', errorMsg: e.message, recipients, durationMs: Date.now() - t0 });
         }
@@ -8409,8 +8692,11 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       const skipped = Math.max(0, accounts.length - sent - failed);
       if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
 
-      // 실패 발생 시 관리자 알림 메일 (6h 스로틀)
-      if (failures.length > 0) await maybeSendReportIssueAlert(type, failures, { sent, failed, skipped });
+      // 실패 발생 시 알림 메일: 관리자(6h 스로틀) + 해당 담당자 본인(담당자당 24h 스로틀)
+      if (failures.length > 0) {
+        await maybeSendReportIssueAlert(type, failures, { sent, failed, skipped });
+        await sendOwnerReportAlerts(type, failures);
+      }
 
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       console.log(`✅ Vercel Cron [${type}] KST ${curHour}시: 발송 ${sent}, 실패 ${failed}, 이월 ${skipped}, ${elapsed}s`);
