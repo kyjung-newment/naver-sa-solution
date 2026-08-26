@@ -878,7 +878,8 @@ router.post('/api/reset-password/send-code', async (req, res) => {
 
     const code = String(crypto.randomInt(100000, 1000000)); // 6자리
     const token = JSON.stringify({ h: rpCodeHash(user.username, code), exp: Date.now() + 10 * 60 * 1000, t: 0 });
-    await db.pool.query(`UPDATE users SET recovery_token = $1, recovery_sent_at = CURRENT_TIMESTAMP WHERE id = $2`, [token, user.id]);
+    // 주의: sent_at(재발송 스로틀)은 발송 '성공 후'에만 기록 — 발송 실패가 스로틀로 은폐되지 않도록
+    await db.pool.query(`UPDATE users SET recovery_token = $1 WHERE id = $2`, [token, user.id]);
 
     await sendMailWithFallback(sender, {
       from: `"뉴먼트 솔루션" <${sender.email_user}>`,
@@ -899,11 +900,13 @@ router.post('/api/reset-password/send-code', async (req, res) => {
           </div>
         </div>`,
     });
+    await db.pool.query(`UPDATE users SET recovery_sent_at = CURRENT_TIMESTAMP WHERE id = $1`, [user.id]).catch(() => {});
     console.log(`🔐 비밀번호 재설정 코드 발송: ${user.username} → ${rpMaskEmail(email)}`);
     res.json({ ok: true, maskedEmail: rpMaskEmail(email) });
   } catch (e) {
     console.error('재설정 코드 발송 실패:', e.message);
-    res.json({ ok: false, error: '인증코드 발송에 실패했습니다. 잠시 후 다시 시도하세요.' });
+    // 실제 원인을 노출해야 관리자/사용자가 조치 가능 (SMTP 인증·연결 오류 등)
+    res.json({ ok: false, error: `인증코드 발송 실패: ${String(e.message || '').slice(0, 160)}` });
   }
 });
 
