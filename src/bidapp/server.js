@@ -327,6 +327,80 @@ if(/[?&](msg|err)=/.test(location.search)){try{history.replaceState(null,'',loca
 async function api(url,body){var r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});return r.json();}
 function csvExport(rows,filename){var csv=rows.map(function(r){return r.map(function(c){c=String(c==null?'':c);return /[",\\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(',');}).join('\\n');
 var blob=new Blob(['\\uFEFF'+csv],{type:'text/csv;charset=utf-8'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();}
+// ─── 범용 테이블 도구: 열 정렬(▲▼) + 엑셀식 값 필터(⏷) ───
+// 사용: 헤더 th에 data-tk="정렬키" (+정렬 화살표용 <span class="tt-arrow">),
+//       필터 아이콘 <span class="tt-filt" data-fk="필터키">⏷</span>, 행 값은 opts.getVal(tr,key)로 해석
+function tblTools(o){
+  var tbl=document.getElementById(o.tableId);if(!tbl||!tbl.tBodies.length)return;
+  var tbody=tbl.tBodies[0];
+  var st={k:null,dir:-1,filt:{}};
+  var pop=document.createElement('div');
+  pop.className='tt-pop';
+  pop.style.cssText='display:none;position:fixed;background:#fff;border:1px solid #e5e7eb;border-radius:11px;box-shadow:0 12px 32px rgba(0,0,0,.2);z-index:800;min-width:190px;max-width:300px';
+  document.body.appendChild(pop);
+  document.addEventListener('click',function(e){if(pop.style.display!=='none'&&!(e.target.closest&&e.target.closest('.tt-pop')))pop.style.display='none';});
+  function rows(){return Array.prototype.slice.call(tbody.rows);}
+  function refresh(){
+    rows().forEach(function(r){
+      var show=true;
+      for(var k in st.filt){var s=st.filt[k];if(s&&s.size&&!s.has(String(o.getVal(r,k)||'(없음)')))show=false;}
+      r.style.display=show?'':'none';
+    });
+    if(st.k){
+      var num=o.numeric&&o.numeric[st.k],dir=st.dir;
+      rows().sort(function(a,b){
+        var x=o.getVal(a,st.k),y=o.getVal(b,st.k);
+        if(num){x=parseFloat(x)||0;y=parseFloat(y)||0;return (y-x)*(dir<0?1:-1);}
+        return String(x||'').localeCompare(String(y||''),'ko')*(-dir);
+      }).forEach(function(r){tbody.appendChild(r);});
+    }
+    tbl.querySelectorAll('th[data-tk] .tt-arrow').forEach(function(sp){
+      var k=sp.parentNode.getAttribute('data-tk');
+      sp.textContent=(st.k===k)?(st.dir<0?' ▼':' ▲'):'';
+    });
+    tbl.querySelectorAll('.tt-filt').forEach(function(ic){
+      var k=ic.getAttribute('data-fk');
+      var on=st.filt[k]&&st.filt[k].size;
+      ic.style.color=on?'#0ea5e9':'#b7c3d0';ic.textContent=on?'▼':'⏷';
+    });
+  }
+  tbl.querySelectorAll('th[data-tk]').forEach(function(th){
+    th.style.cursor='pointer';
+    th.addEventListener('click',function(){
+      var k=th.getAttribute('data-tk');
+      if(st.k===k)st.dir=-st.dir;else{st.k=k;st.dir=-1;}
+      refresh();
+    });
+  });
+  tbl.querySelectorAll('.tt-filt').forEach(function(ic){
+    ic.addEventListener('click',function(ev){
+      ev.stopPropagation();
+      var k=ic.getAttribute('data-fk');
+      var vals={};rows().forEach(function(r){vals[String(o.getVal(r,k)||'(없음)')]=1;});
+      var list=Object.keys(vals).sort(function(a,b){return a.localeCompare(b,'ko')});
+      var cur=(st.filt[k]&&st.filt[k].size)?st.filt[k]:null;
+      pop.innerHTML='<div style="padding:9px 12px;border-bottom:1px solid #f1f5f9;font-weight:700;font-size:12.5px;text-align:left">필터</div>'
+        +'<div style="max-height:250px;overflow:auto;padding:5px 0;text-align:left">'
+        +list.map(function(v){var chk=(!cur||cur.has(v))?'checked':'';
+          return '<label style="display:flex;align-items:center;gap:8px;padding:5px 13px;margin:0;font-size:12.5px;color:#334155;cursor:pointer;font-weight:400"><input type="checkbox" class="tt-chk" value="'+v.replace(/"/g,'&quot;')+'" '+chk+' style="width:auto">'+v+'</label>';}).join('')
+        +'</div><div style="display:flex;gap:6px;padding:9px 12px;border-top:1px solid #f1f5f9">'
+        +'<button class="btn btn-primary btn-sm tt-apply">적용</button>'
+        +'<button class="btn btn-outline btn-sm tt-all">전체</button>'
+        +'<button class="btn btn-outline btn-sm tt-none">해제</button></div>';
+      pop.querySelector('.tt-apply').onclick=function(){
+        var sel=[],tot=0;
+        pop.querySelectorAll('.tt-chk').forEach(function(c){tot++;if(c.checked)sel.push(c.value);});
+        st.filt[k]=(sel.length===tot)?null:new Set(sel);
+        pop.style.display='none';refresh();
+      };
+      pop.querySelector('.tt-all').onclick=function(){pop.querySelectorAll('.tt-chk').forEach(function(c){c.checked=true});};
+      pop.querySelector('.tt-none').onclick=function(){pop.querySelectorAll('.tt-chk').forEach(function(c){c.checked=false});};
+      pop.style.display='block';
+      var x=Math.min(ev.clientX,window.innerWidth-320),y=Math.min(ev.clientY+10,window.innerHeight-340);
+      pop.style.left=Math.max(8,x)+'px';pop.style.top=Math.max(8,y)+'px';
+    });
+  });
+}
 </script></body></html>`;
 }
 
@@ -411,6 +485,9 @@ function gradeBadge(g) {
   if (!c) return `<span class="badge b-keep">${escHtml(v)}</span>`;
   return `<span class="badge" style="background:#${c[0]};color:#${c[1]}">${escHtml(v)}</span>`;
 }
+
+// 정렬/필터 지원 헤더 셀 (공통 tblTools 연동 — data-tk=정렬키, fk=필터키)
+const tth = (k, label, o = {}) => `<th${o.cls ? ` class="${o.cls}"` : ''} data-tk="${k}"${o.style ? ` style="${o.style}"` : ''}>${label}<span class="tt-arrow"></span>${o.fk ? ` <span class="tt-filt" data-fk="${o.fk}" style="cursor:pointer;color:#b7c3d0;font-size:11px">⏷</span>` : ''}</th>`;
 
 function verdictBadge(v) {
   const cls = v === logic.VERDICT.UP ? 'b-up' : v === logic.VERDICT.DOWN ? 'b-down'
@@ -538,9 +615,9 @@ router.get('/', requireLogin, async (req, res) => {
   const alertsHtml = alerts.length ? `
     <div class="card">
       <div class="card-header"><span class="card-title">🚨 일간 트리거 알림 (자동 조정 없음 — 수동 대응)</span></div>
-      <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-        <tr><th>일자</th><th>${UNIT}</th><th>등급</th><th>분류</th><th class="num">당일 비용</th><th class="num">4주 일평균</th><th class="num">당일 ROAS</th><th class="num">보정목표</th>${isClient(req) ? '' : '<th>조치</th>'}</tr>
-        ${alerts.map(a => `<tr>
+      <div class="tbl-wrap" style="border:none;border-radius:0"><table id="alerts-table">
+        <thead><tr>${tth('date', '일자')}${tth('name', UNIT, { fk: 'campaign' })}${tth('grade', '등급', { fk: 'grade' })}${tth('category', '분류', { fk: 'category' })}${tth('cost', '당일 비용', { cls: 'num' })}${tth('avg', '4주 일평균', { cls: 'num' })}${tth('roas', '당일 ROAS', { cls: 'num' })}${tth('target', '보정목표', { cls: 'num' })}${isClient(req) ? '' : '<th>조치</th>'}</tr></thead>
+        <tbody>${alerts.map(a => `<tr data-date="${wkKey(a.alert_date)}" data-name="${escHtml(a.material_name)}" data-campaign="${escHtml(a.campaign_name)}" data-grade="${escHtml(a.grade || '')}" data-category="${escHtml(a.category)}" data-cost="${a.day_cost || 0}" data-avg="${a.avg_cost || 0}" data-roas="${a.day_roas || 0}" data-target="${a.target_roas || 0}">
           <td>${wkKey(a.alert_date)}</td>
           <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
           <td style="text-align:center">${gradeBadge(a.grade)}</td>
@@ -554,7 +631,7 @@ router.get('/', requireLogin, async (req, res) => {
             <button class="btn btn-outline btn-sm" onclick="alertAdjust(${a.id},${a.material_id},0.03)">+3%</button>
             <button class="btn btn-outline btn-sm" onclick="alertResolve(${a.id})">확인</button>
           </td>`}
-        </tr>`).join('')}
+        </tr>`).join('')}</tbody>
       </table></div>
     </div>
     <script>
@@ -564,6 +641,7 @@ router.get('/', requireLogin, async (req, res) => {
       if(j.ok){toast('조정 적용 완료 ('+j.appliedBid.toLocaleString()+'원)');setTimeout(function(){location.reload()},800);}else toast(j.error||'실패',true);
     }
     async function alertResolve(id){var j=await api('${BASE}/api/alerts/resolve',{id:id});if(j.ok)location.reload();}
+    tblTools({tableId:'alerts-table',numeric:{cost:1,avg:1,roas:1,target:1},getVal:function(tr,k){return tr.dataset[k]||'';}});
     </script>` : '';
 
   const content = `
@@ -1672,7 +1750,7 @@ router.get('/settings', requireLogin, async (req, res) => {
   const matRows = materials.map(m => {
     const isCoreNow = m.core_override === '1'; // 핵심 = 수동 지정만
     const share = totalRev4 > 0 ? (revMap[m.id] / totalRev4 * 100) : 0;
-    return `<tr>
+    return `<tr data-name="${escHtml(m.name)}" data-campaign="${escHtml(m.campaign_name)}" data-grade="${escHtml(m.grade || '')}" data-share="${share.toFixed(2)}" data-baseline="${m.baseline_weekly_revenue == null ? '' : m.baseline_weekly_revenue}" data-bid="${m.current_bid || 0}">
     ${canEditMats ? `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>` : ''}
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
     <td style="text-align:center">${gradeBadge(m.grade)}</td>
@@ -1793,9 +1871,9 @@ router.get('/settings', requireLogin, async (req, res) => {
           <button class="btn btn-primary btn-sm" onclick="bulkApply()">선택 적용 + 저장</button>
           <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
         </div>` : ''}
-        <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr>${canEditMats ? '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>' : ''}<th>${UNIT}</th><th>등급</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || `<tr><td colspan="${canEditMats ? 11 : 10}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
+        <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table id="mat-table">
+          <thead><tr>${canEditMats ? '<th><input type="checkbox" style="width:auto" onclick="event.stopPropagation();document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>' : ''}${tth('name', UNIT, { fk: 'campaign' })}${tth('grade', '등급', { fk: 'grade' })}${tth('category', '분류', { fk: 'category' })}${tth('troas', '목표ROAS')}${tth('mode', '모드', { fk: 'mode' })}${tth('enabled', '상태', { fk: 'enabled' })}${tth('core', '핵심', { fk: 'core' })}${tth('share', '매출비중(4주)', { cls: 'num' })}${tth('baseline', '기준매출(주간)', { cls: 'num' })}${tth('bid', '현재입찰가', { cls: 'num' })}</tr></thead>
+          <tbody>${matRows || `<tr><td colspan="${canEditMats ? 11 : 10}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</tbody></table></div></div>
     </div>
 
     <script>
@@ -1861,6 +1939,20 @@ router.get('/settings', requireLogin, async (req, res) => {
       var n=document.querySelectorAll('.mat-chk:checked').length;
       var el=document.getElementById('bulk-count');if(el)el.textContent=n?n+'개 선택됨':'';
     }
+    // 소재/키워드별 설정 표: 열 정렬 + 엑셀식 필터 (편집 중인 셀렉트 값을 실시간 반영)
+    function matVal(tr,k){
+      if(k==='category'||k==='mode'||k==='enabled'||k==='core'){
+        var f={category:'category',mode:'mode_override',enabled:'enabled',core:'core_override'}[k];
+        var el=tr.querySelector('[data-f="'+f+'"]');
+        if(!el)return '';
+        if(k==='core')return el.value==='1'?'핵심':'일반';
+        if(k==='category')return el.value;
+        return el.options[el.selectedIndex]?el.options[el.selectedIndex].text:'';
+      }
+      if(k==='troas'){var t=tr.querySelector('[data-f="target_roas"]');return t?t.value:'';}
+      return tr.dataset[k]||'';
+    }
+    tblTools({tableId:'mat-table',numeric:{troas:1,share:1,baseline:1,bid:1},getVal:matVal});
     document.querySelectorAll('.mat-chk').forEach(function(c){c.onchange=bulkCount;});
     async function bulkApply(){
       var ids=Array.prototype.slice.call(document.querySelectorAll('.mat-chk:checked')).map(function(c){return c.value});
