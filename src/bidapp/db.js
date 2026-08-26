@@ -200,6 +200,22 @@ async function initBidDb() {
     }
   } catch (e) { console.log('bid_category_rules PK 확인 실패:', e.message); }
   await safe(`CREATE INDEX IF NOT EXISTS ix_bid_materials_channel ON bid_materials (account_id, channel)`);
+  // v3.1: 운영등급 (광고주 구글 시트 '운영등급' 열에서 연동)
+  await safe(`ALTER TABLE bid_materials ADD COLUMN IF NOT EXISTS grade TEXT NOT NULL DEFAULT ''`);
+
+  // v3.1 일회성: 이고진 SPO 계정에 손익분기 ROAS 시트 주소 시드
+  try {
+    if (await tryClaimCronRun('migrate:egojin-sheet-url-v3.1')) {
+      const url = 'https://docs.google.com/spreadsheets/d/1IKIzZD_tiUgB6uYmKzxrj6XrMmeV5XVSoLVcQ5YE344/edit?gid=1523020966#gid=1523020966';
+      const r = await pool.query(`
+        INSERT INTO bid_settings (account_id, key, value)
+        SELECT a.id, 'sheet_sync_url', $1 FROM ad_accounts a
+        WHERE a.customer_id = '242566'
+          AND NOT EXISTS (SELECT 1 FROM bid_settings s WHERE s.account_id = a.id AND s.key = 'sheet_sync_url')
+      `, [url]);
+      console.log(`✅ 이고진 시트 연동 주소 시드: ${r.rowCount}건`);
+    }
+  } catch (e) { console.log('시트 주소 시드 마이그레이션 실패:', e.message); }
   // v2: 초대 역할 (master=마스터 / client=광고주) — 기존 열람자는 광고주로 유지
   await safe(`ALTER TABLE account_viewers ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'client'`);
   // v2: 블렌딩 3구간(w1/w2/w3) → 2구간(blend_recent_weight, N=40 이관). 멱등.
@@ -496,7 +512,7 @@ async function upsertAlert(accountId, materialId, alertDate, data) {
 
 async function getAlerts(accountId, { unresolvedOnly = true, limit = 100, channel = 'shopping' } = {}) {
   return all(`
-    SELECT al.*, m.name AS material_name, m.campaign_name, m.adgroup_name, m.current_bid, m.category
+    SELECT al.*, m.name AS material_name, m.campaign_name, m.adgroup_name, m.current_bid, m.category, m.grade
     FROM bid_alerts al JOIN bid_materials m ON m.id = al.material_id
     WHERE al.account_id = $1 AND m.channel = $3 ${unresolvedOnly ? 'AND al.resolved = 0' : ''}
     ORDER BY al.alert_date DESC, al.day_cost DESC LIMIT $2

@@ -128,6 +128,7 @@ function clientPathAllowed(p, method) {
   if (['/', '/login', '/logout', '/weekly', '/approvals', '/history'].includes(p)) return true;
   if (method === 'GET' && p === '/settings') return true;
   if (PINNED_CUSTOMER_ID && method === 'POST' && p === '/api/settings/materials') return true; // 소재별 설정 직접 수정
+  if (PINNED_CUSTOMER_ID && method === 'POST' && p === '/api/settings/sheet-sync') return true; // 시트 연동 실행
   if (p.startsWith('/invite')) return true;
   if (p === '/api/select-account') return true;
   if (method === 'GET' && (p === '/api/weekly' || p === '/api/history' || p === '/api/material-trend')) return true;
@@ -528,10 +529,11 @@ router.get('/', requireLogin, async (req, res) => {
     <div class="card">
       <div class="card-header"><span class="card-title">🚨 일간 트리거 알림 (자동 조정 없음 — 수동 대응)</span></div>
       <div class="tbl-wrap" style="border:none;border-radius:0"><table>
-        <tr><th>일자</th><th>${UNIT}</th><th>분류</th><th class="num">당일 비용</th><th class="num">4주 일평균</th><th class="num">당일 ROAS</th><th class="num">보정목표</th>${isClient(req) ? '' : '<th>조치</th>'}</tr>
+        <tr><th>일자</th><th>${UNIT}</th><th>등급</th><th>분류</th><th class="num">당일 비용</th><th class="num">4주 일평균</th><th class="num">당일 ROAS</th><th class="num">보정목표</th>${isClient(req) ? '' : '<th>조치</th>'}</tr>
         ${alerts.map(a => `<tr>
           <td>${wkKey(a.alert_date)}</td>
           <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
+          <td style="text-align:center">${a.grade ? `<span class="badge b-blue">${escHtml(a.grade)}</span>` : '-'}</td>
           <td>${escHtml(a.category)}</td>
           <td class="num" style="color:#dc2626;font-weight:700">${fmtNum(a.day_cost)}원</td>
           <td class="num">${fmtNum(a.avg_cost)}원</td>
@@ -652,8 +654,8 @@ router.get('/weekly', requireLogin, async (req, res) => {
     var DATA=[],WEEKS=[],SORT_K='',SORT_DIR=-1,MASTER=${master ? 'true' : 'false'},UNIT='${UNIT}';
     var CATS=${JSON.stringify(logic.CATEGORIES)};
     var LATEST='${weekOpts[0].start}';
-    var FILT={campaignName:null,category:null,verdict:null,coreLabel:null}; // null=전체, Set=선택값만
-    var FILT_LABEL={campaignName:'캠페인',category:'분류',verdict:'판정',coreLabel:'핵심'};
+    var FILT={campaignName:null,grade:null,category:null,verdict:null,coreLabel:null}; // null=전체, Set=선택값만
+    var FILT_LABEL={campaignName:'캠페인',grade:'등급',category:'분류',verdict:'판정',coreLabel:'핵심'};
     function addDays(iso,d){var t=new Date(iso+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+d);return t.toISOString().slice(0,10);}
     document.getElementById('wk-preset').onchange=function(){
       var custom=this.value==='custom';
@@ -742,7 +744,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         if(q&&(r.name+' '+r.campaignName+' '+r.adgroupName+' '+r.adId).toLowerCase().indexOf(q)===-1)return false;
         return true;});
       if(SORT_K){
-        var strKeys={name:1,adId:1,category:1,verdict:1};
+        var strKeys={name:1,adId:1,grade:1,category:1,verdict:1};
         rows=rows.slice().sort(function(a,b){
           var x=getVal(a,SORT_K),y=getVal(b,SORT_K);
           if(strKeys[SORT_K])return String(x||'').localeCompare(String(y||''),'ko')*(-SORT_DIR);
@@ -764,12 +766,13 @@ router.get('/weekly', requireLogin, async (req, res) => {
       if(j.ok){toast('분류 저장 완료 — 판정은 새로고침 시 반영');var r=DATA.find(function(x){return x.id===id});if(r)r.category=v;}
       else toast(j.error||'저장 실패',true);
     }
-    // 고정(좌측 sticky) 열: 소재 / 소재ID / 분류 / 목표 / 보정목표
+    // 고정(좌측 sticky) 열: 소재/키워드 / ID / 등급 / 분류 / 목표 / 보정목표
     var S1='position:sticky;left:0;min-width:220px;max-width:220px;background:#fff;z-index:2;';
     var S1b='position:sticky;left:220px;min-width:128px;max-width:128px;background:#fff;z-index:2;';
-    var S2='position:sticky;left:348px;min-width:104px;max-width:104px;background:#fff;z-index:2;';
-    var S3='position:sticky;left:452px;min-width:62px;max-width:62px;background:#fff;z-index:2;';
-    var S4='position:sticky;left:514px;min-width:78px;max-width:78px;background:#fff;z-index:2;';
+    var S1c='position:sticky;left:348px;min-width:64px;max-width:64px;background:#fff;z-index:2;';
+    var S2='position:sticky;left:412px;min-width:104px;max-width:104px;background:#fff;z-index:2;';
+    var S3='position:sticky;left:516px;min-width:62px;max-width:62px;background:#fff;z-index:2;';
+    var S4='position:sticky;left:578px;min-width:78px;max-width:78px;background:#fff;z-index:2;';
     var HS='background:#f8fafc;z-index:6;';
     function sortTh(k,label,extra,cls,fkey){
       var arrow=SORT_K===k?(SORT_DIR<0?' ▼':' ▲'):'';
@@ -784,6 +787,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
       var h='<table style="border-collapse:separate;border-spacing:0"><thead><tr>'
         +sortTh('name','${UNIT}',S1+HS,'','campaignName')
         +sortTh('adId','${UNIT}ID',S1b+HS)
+        +sortTh('grade','등급',S1c+HS,'','grade')
         +sortTh('category','분류',S2+HS,'','category')
         +sortTh('targetRoas','목표',S3+HS,'num')
         +sortTh('adjustedTarget','보정목표',S4+HS,'num');
@@ -804,6 +808,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         var row='<tr style="cursor:pointer" onclick="showTrend('+r.id+')">'
         +'<td style="'+S1+'"><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+' · '+r.adgroupName+'</span></td>'
         +'<td style="'+S1b+'font-size:11px;color:#64748b;word-break:break-all">'+r.adId+'</td>'
+        +'<td style="'+S1c+'text-align:center">'+(r.grade?'<span class="badge b-blue">'+r.grade+'</span>':'-')+'</td>'
         +'<td style="'+S2+'">'+catCell(r)+'</td>'
         +'<td class="num" style="'+S3+'">'+froas(r.targetRoas)+'</td>'
         +'<td class="num" style="'+S4+'">'+froas(r.adjustedTarget)+'</td>';
@@ -836,11 +841,11 @@ router.get('/weekly', requireLogin, async (req, res) => {
       document.getElementById('wk-wrap').innerHTML=h;
     }
     function exportCsv(){
-      var head=[UNIT,UNIT+'ID','캠페인','광고그룹','분류','목표ROAS','보정목표'];
+      var head=[UNIT,UNIT+'ID','등급','캠페인','광고그룹','분류','목표ROAS','보정목표'];
       WEEKS.forEach(function(w){head.push(w+' 비용',w+' 매출',w+' ROAS',w+' 입찰가',w+' 변경입찰가');});
       head=head.concat(['블렌딩ROAS','노출순위','매출비중','핵심','판정','현재입찰가','권장입찰가']);
       var rows=filtered().map(function(r){
-        var line=[r.name,r.adId,r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget];
+        var line=[r.name,r.adId,r.grade||'',r.campaignName,r.adgroupName,r.category,r.targetRoas,r.adjustedTarget];
         WEEKS.forEach(function(w){var d=r.wk[w]||{};line.push(d.c||0,d.r||0,(d.c>0)?((d.r||0)/d.c).toFixed(3):'',d.b==null?'':d.b,d.a==null?'':d.a);});
         return line.concat([r.blended==null?'':r.blended.toFixed(3),r.rank1||'',(r.share*100).toFixed(1)+'%',r.isCore?'Y':'',r.verdict,r.currentBid,r.calcBid]);
       });
@@ -948,6 +953,7 @@ router.get('/api/weekly', requireLogin, async (req, res) => {
         return {
           id: r.materialId, name: r.material.name, adId: r.material.ncc_ad_id,
           campaignName: r.material.campaign_name, adgroupName: r.material.adgroup_name,
+          grade: r.material.grade || '',
           category: r.material.category, targetRoas: r.material.target_roas,
           adjustedTarget: r.adjustedTarget, blended: r.blendedRoas,
           rank1: r.weekData[0].rank,
@@ -1650,6 +1656,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     return `<tr>
     ${canEditMats ? `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>` : ''}
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
+    <td style="text-align:center">${m.grade ? `<span class="badge b-blue">${escHtml(m.grade)}</span>` : '<span style="color:#cbd5e1">-</span>'}</td>
     <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${matDis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
     <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${matDis}></td>
     <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px" ${matDis}>
@@ -1741,6 +1748,15 @@ router.get('/settings', requireLogin, async (req, res) => {
     <!-- ④ 소재별 설정 -->
     <div class="tab-pane" id="pane-materials">
       <div class="tab-desc">${UNIT} 단위로 분류·목표ROAS·모드·활성 여부를 관리합니다. 기준매출은 매월 1일(또는 수동 재계산) 자동 산출됩니다.</div>
+      <div class="card" id="sec-sheet"><div class="card-header"><span class="card-title">📥 구글 시트 연동 (목표ROAS·운영등급)</span><div style="display:flex;gap:8px;align-items:center">${helpBtn('구글 시트 연동', `광고주가 관리하는 스프레드시트에서 <b>${UNIT}ID 기준</b>으로 값을 불러와 반영합니다.<br><br><b>매칭 규칙</b> — 시트 1행 제목으로 열을 찾습니다: <b>소재ID</b>(${UNIT}ID), <b>손익분기 ROAS</b>(→ 목표ROAS), <b>운영등급</b>(→ 등급). 이 제목들은 수정하면 안 됩니다.<br><br><b>값 형식</b> — 손익분기 ROAS는 550% / 550 / 5.5 어느 형식이든 자동 인식(50 초과 값은 %로 간주).<br><br><b>공유 설정</b> — 시트가 '링크가 있는 모든 사용자 - 뷰어'로 공유되어 있어야 합니다.<br><br><b>자동 반영</b> — 주소가 설정돼 있으면 매주 월 08:00 주간 실행 때도 자동 반영됩니다.`)}${saveBtn('sheet', '시트 주소 저장')}</div></div>
+        <div class="card-body">
+          <label>스프레드시트 주소 <span class="tip" title="docs.google.com/spreadsheets/... 주소. 주소가 바뀌면 여기서 수정 후 저장하세요. (주소 저장은 마스터만 가능)">ⓘ</span></label>
+          <input name="sheet_sync_url" value="${escHtml(settings.sheet_sync_url || '')}" placeholder="https://docs.google.com/spreadsheets/d/..." ${dis}>
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            ${canEditMats ? `<button class="btn btn-green" id="btn-sheet" onclick="sheetSync()">🔄 시트에서 불러와 반영</button>` : ''}
+            <span id="sheet-status" style="font-size:12px;color:#94a3b8">최근 반영: <b>${escHtml(settings.sheet_sync_at || '없음')}</b> · 시트 1행의 '소재ID' / '손익분기 ROAS' / '운영등급' 제목 기준으로 매칭됩니다.</span>
+          </div>
+        </div></div>
       <div class="card" id="sec-excl"><div class="card-header"><span class="card-title">🚫 제외 캠페인 (수집·조정 제외)</span><div style="display:flex;gap:8px;align-items:center">${HELP.excl}${saveBtn('excl', '제외 목록 저장')}</div></div>
         <div class="card-body">
           <p style="font-size:12.5px;color:#64748b;margin-bottom:10px">한 줄에 하나씩 입력합니다. 캠페인명에 <b>포함</b>되면 대시보드 누적 데이터·주차별 데이터·조정 실행에서 제외되고, 다음 동기화부터 수집 자체가 중단됩니다.</p>
@@ -1759,8 +1775,8 @@ router.get('/settings', requireLogin, async (req, res) => {
           <span id="bulk-count" style="font-size:12px;color:#94a3b8"></span>
         </div>` : ''}
         <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px"><table>
-          <tr>${canEditMats ? '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>' : ''}<th>${UNIT}</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
-          ${matRows || `<tr><td colspan="${canEditMats ? 10 : 9}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
+          <tr>${canEditMats ? '<th><input type="checkbox" style="width:auto" onclick="document.querySelectorAll(\'.mat-chk\').forEach(c=>c.checked=this.checked);bulkCount()"></th>' : ''}<th>${UNIT}</th><th>등급</th><th>분류</th><th>목표ROAS</th><th>모드</th><th>상태</th><th>핵심</th><th class="num">매출비중(4주)</th><th class="num">기준매출(주간)</th><th class="num">현재입찰가</th></tr>
+          ${matRows || `<tr><td colspan="${canEditMats ? 11 : 10}" class="empty">${UNIT} 없음 — 조정 실행에서 동기화를 먼저 해주세요.</td></tr>`}</table></div></div>
     </div>
 
     <script>
@@ -1849,6 +1865,23 @@ router.get('/settings', requireLogin, async (req, res) => {
       if(j.ok)setTimeout(function(){location.reload()},900);
     }
     ${(!ro && PINNED_CUSTOMER_ID) ? API_SECTION_SCRIPT : ''}
+    async function sheetSync(){
+      if(!confirm('구글 시트에서 손익분기 ROAS(→목표ROAS)와 운영등급을 불러와 ${UNIT}별 설정에 반영합니다. 진행할까요?'))return;
+      var b=document.getElementById('btn-sheet'),s=document.getElementById('sheet-status');
+      b.disabled=true;b.textContent='불러오는 중...';
+      try{
+        var j=await api('${BASE}/api/settings/sheet-sync',{});
+        if(j.ok){
+          s.innerHTML='최근 반영: <b>'+j.at+'</b> · 일치 '+j.matched+'건 (목표ROAS 변경 '+j.updatedRoas+' · 등급 변경 '+j.updatedGrade+' · 시트에만 있는 ID '+j.notFound+' · 값 인식 불가 '+j.invalid+')';
+          toast('시트 반영 완료 — 목표ROAS '+j.updatedRoas+'건 · 등급 '+j.updatedGrade+'건 변경');
+          setTimeout(function(){location.reload()},1400);
+        }else{
+          s.innerHTML='<span style="color:#dc2626;font-weight:600">반영 실패: '+(j.error||'알 수 없는 오류')+'</span>';
+          toast(j.error||'시트 연동 실패',true);
+        }
+      }catch(e){toast('시트 연동 실패: '+e.message,true);}
+      b.disabled=false;b.textContent='🔄 시트에서 불러와 반영';
+    }
     async function recalcBaseline(){
       if(!confirm('지난 4주(주차 집계 기준) 주간 매출 평균으로 ${UNIT}별 기준매출을 다시 계산합니다. 진행할까요?'))return;
       var b=document.getElementById('btn-baseline');b.disabled=true;b.textContent='계산 중...';
@@ -1985,6 +2018,17 @@ const requireMaterialEdit = (req, res, next) => {
   if (!isClient(req) || PINNED_CUSTOMER_ID) return next();
   return res.status(403).json({ ok: false, error: '권한 없음 (광고주 계정)' });
 };
+
+// 구글 시트 연동 실행 (목표ROAS·운영등급) — 마스터 + (전용 앱) 광고주
+router.post('/api/settings/sheet-sync', requireLogin, requireMaterialEdit, async (req, res) => {
+  try {
+    const { account } = await getSelectedAccount(req);
+    if (!account) return res.json({ ok: false, error: '광고주 없음' });
+    const actor = (req.session.userName || '') + (isClient(req) ? ' (광고주)' : '');
+    const r = await require('./sheetSync').syncFromSheet(account, CHANNEL, { actor });
+    res.json(r);
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
 router.post('/api/settings/materials', requireLogin, requireMaterialEdit, async (req, res) => {
   try {
     const { account } = await getSelectedAccount(req);

@@ -146,6 +146,16 @@ async function applyAdjustment(account, creds, adjId, { auto = false, actor = 's
  */
 async function runWeekly(account, creds, { actor = 'cron', channel = 'shopping' } = {}) {
   await collector.syncMaterials(account, creds, channel);
+  // 광고주 시트(목표ROAS·운영등급) 자동 반영 — 주소가 설정된 계정만, 실패해도 주간 실행은 계속
+  try {
+    const s = await bidDb.getSettings(account.id, channel);
+    if (String(s.sheet_sync_url || '').trim()) {
+      const r = await require('./sheetSync').syncFromSheet(account, channel, { actor });
+      if (!r.ok) await bidDb.audit(account.id, actor, '시트 연동 실패 (주간 자동)', { channel, error: r.error });
+    }
+  } catch (e) {
+    await bidDb.audit(account.id, actor, '시트 연동 실패 (주간 자동)', { channel, error: e.message });
+  }
   const stats = await collector.collectWeeklyStats(account, creds, { channel });
   await computeBaselines(account, { actor, channel }); // 기준매출 = 지난 4주 평균 (판정 전에 갱신)
   const { weekStart, rows, settings } = await computeWeekly(account, { save: true, channel });

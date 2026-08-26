@@ -180,6 +180,36 @@ t('빈 설정 → 아무것도 제외 안 함', () => {
   assert.strictEqual(isExcludedCampaign('아무 캠페인', parseExcludedCampaigns('')), false);
 });
 
+console.log('── 구글 시트 연동 파서 ──');
+const sheetSync = require('../src/bidapp/sheetSync');
+t('시트 주소 파싱 (id + gid)', () => {
+  const p = sheetSync.parseSheetUrl('https://docs.google.com/spreadsheets/d/1IKIzZD_tiUgB6uYmKzxrj6XrMmeV5XVSoLVcQ5YE344/edit?gid=1523020966#gid=1523020966');
+  assert.strictEqual(p.id, '1IKIzZD_tiUgB6uYmKzxrj6XrMmeV5XVSoLVcQ5YE344');
+  assert.strictEqual(p.gid, '1523020966');
+  assert.strictEqual(sheetSync.parseSheetUrl('https://example.com/x'), null);
+});
+t('CSV 파싱 (따옴표·쉼표·개행)', () => {
+  const rows = sheetSync.parseCsv('소재ID,이름,"손익분기 ROAS"\nnad-1,"상품,A",550%\nnad-2,B,4.2');
+  assert.strictEqual(rows.length, 3);
+  assert.strictEqual(rows[1][1], '상품,A');
+  assert.strictEqual(rows[2][2], '4.2');
+});
+t('손익분기 ROAS 값 인식: 550% / 550 / 5.5 → 5.5', () => {
+  assert.strictEqual(sheetSync.parseRoas('550%'), 5.5);
+  assert.strictEqual(sheetSync.parseRoas('550'), 5.5);
+  assert.strictEqual(sheetSync.parseRoas('5.5'), 5.5);
+  assert.strictEqual(sheetSync.parseRoas('3,000%'), 30);
+  assert.strictEqual(sheetSync.parseRoas(''), null);
+  assert.strictEqual(sheetSync.parseRoas('abc'), null);
+});
+t('헤더 열 탐색 (공백 무시 포함 일치)', () => {
+  const h = ['소재 ID', '소재명', '캠페인', '월 매출', '운영 등급', '손익분기ROAS'];
+  assert.strictEqual(sheetSync.findCol(h, '소재ID'), 0);
+  assert.strictEqual(sheetSync.findCol(h, '손익분기ROAS'), 5);
+  assert.strictEqual(sheetSync.findCol(h, '운영등급'), 4);
+  assert.strictEqual(sheetSync.findCol(h, '없는열'), -1);
+});
+
 console.log('── 주차 유틸 ──');
 t('mondayOf: 수요일 → 해당 주 월요일', () => {
   assert.strictEqual(mondayOf('2026-08-05'), '2026-08-03'); // 수 → 월
