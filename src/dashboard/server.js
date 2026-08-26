@@ -932,13 +932,13 @@ router.post('/api/reset-password/verify', async (req, res) => {
       await db.pool.query(`UPDATE users SET recovery_token = $1 WHERE id = $2`, [JSON.stringify(tok), user.id]).catch(() => {});
       return res.json({ ok: false, error: `인증코드가 올바르지 않습니다 (남은 시도 ${5 - tok.t}회)` });
     }
-    const { hashPassword } = require('../db/database');
-    await db.pool.query(`UPDATE users SET password_hash = $1, recovery_token = NULL WHERE id = $2`, [hashPassword(newPw), user.id]);
+    await db.pool.query(`UPDATE users SET password_hash = $1, recovery_token = NULL WHERE id = $2`, [db.hashPassword(newPw), user.id]);
     console.log(`🔐 비밀번호 재설정 완료: ${user.username}`);
     res.json({ ok: true });
   } catch (e) {
     console.error('비밀번호 재설정 실패:', e.message);
-    res.json({ ok: false, error: '변경에 실패했습니다. 잠시 후 다시 시도하세요.' });
+    // 실제 사유를 노출해야 사용자가 바로 조치 가능
+    res.json({ ok: false, error: `변경 실패: ${String(e.message || '').slice(0, 160)}` });
   }
 });
 

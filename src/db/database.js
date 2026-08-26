@@ -1294,7 +1294,7 @@ module.exports = Object.assign(module.exports, {
   logReportSend, getLatestReportAttempts, getRecentReportFailures,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
-  resetAdminPassword, deleteAllUsers,
+  resetAdminPassword, deleteAllUsers, hashPassword, verifyPassword,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords, upsertMasterQi,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,
