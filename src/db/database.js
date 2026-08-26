@@ -241,6 +241,12 @@ async function initDb() {
     await safeQuery(`ALTER TABLE auto_bid_keywords ADD COLUMN IF NOT EXISTS bid_interval INTEGER NOT NULL DEFAULT 10`);
   } catch (e) { /* 이미 존재하면 무시 */ }
 
+  // 비밀번호 재설정 이메일 인증 (인증코드 해시 JSON + 발송 시각)
+  try {
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_token TEXT`);
+    await safeQuery(`ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_sent_at TIMESTAMP`);
+  } catch (e) { /* 이미 존재하면 무시 */ }
+
   // ad_accounts에 site_url 추가 (비즈채널 URL - 실시간 순위 매칭용)
   try {
     await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS site_url TEXT DEFAULT ''`);
