@@ -402,6 +402,16 @@ function appLayout(req, title, content, activeMenu, opts = {}) {
   </div>`);
 }
 
+// 운영등급 배지 — 시트 색상 체계 (S 남색 / A 파랑 / B 초록 / C 노랑 / D 주황 / F 빨강)
+const GRADE_COLORS = { S: ['0f172a', 'ffffff'], A: ['2563eb', 'ffffff'], B: ['10b981', 'ffffff'], C: ['fbbf24', '78350f'], D: ['f97316', 'ffffff'], F: ['dc2626', 'ffffff'] };
+function gradeBadge(g) {
+  const v = String(g || '').trim();
+  if (!v || v === '-') return '<span style="color:#cbd5e1">-</span>';
+  const c = GRADE_COLORS[v.charAt(0).toUpperCase()];
+  if (!c) return `<span class="badge b-keep">${escHtml(v)}</span>`;
+  return `<span class="badge" style="background:#${c[0]};color:#${c[1]}">${escHtml(v)}</span>`;
+}
+
 function verdictBadge(v) {
   const cls = v === logic.VERDICT.UP ? 'b-up' : v === logic.VERDICT.DOWN ? 'b-down'
     : v === logic.VERDICT.DOWN_HOLD || v === logic.VERDICT.NO_DATA ? 'b-warn'
@@ -533,7 +543,7 @@ router.get('/', requireLogin, async (req, res) => {
         ${alerts.map(a => `<tr>
           <td>${wkKey(a.alert_date)}</td>
           <td><b>${escHtml(a.material_name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(a.campaign_name)} · ${escHtml(a.adgroup_name)}</span></td>
-          <td style="text-align:center">${a.grade ? `<span class="badge b-blue">${escHtml(a.grade)}</span>` : '-'}</td>
+          <td style="text-align:center">${gradeBadge(a.grade)}</td>
           <td>${escHtml(a.category)}</td>
           <td class="num" style="color:#dc2626;font-weight:700">${fmtNum(a.day_cost)}원</td>
           <td class="num">${fmtNum(a.avg_cost)}원</td>
@@ -754,6 +764,15 @@ router.get('/weekly', requireLogin, async (req, res) => {
       return rows;
     }
     function vbadge(v){var cls=v==='증액'?'b-up':v==='감액'?'b-down':(v==='데이터부족'||v.indexOf('감액보류')===0)?'b-warn':(v.indexOf('유지-')===0?'b-blue':'b-keep');return '<span class="badge '+cls+'">'+v+'</span>';}
+    // 운영등급 배지 (S 남색 / A 파랑 / B 초록 / C 노랑 / D 주황 / F 빨강)
+    var GRADE_COLORS={S:['0f172a','ffffff'],A:['2563eb','ffffff'],B:['10b981','ffffff'],C:['fbbf24','78350f'],D:['f97316','ffffff'],F:['dc2626','ffffff']};
+    function gradeBadge(g){
+      var v=String(g||'').trim();
+      if(!v||v==='-')return '<span style="color:#cbd5e1">-</span>';
+      var c=GRADE_COLORS[v.charAt(0).toUpperCase()];
+      if(!c)return '<span class="badge b-keep">'+v+'</span>';
+      return '<span class="badge" style="background:#'+c[0]+';color:#'+c[1]+'">'+v+'</span>';
+    }
     function catCell(r){
       if(!MASTER)return r.category;
       return '<select onclick="event.stopPropagation()" onchange="catChange('+r.id+',this)" style="width:96px;padding:4px 6px;font-size:12px">'
@@ -808,7 +827,7 @@ router.get('/weekly', requireLogin, async (req, res) => {
         var row='<tr style="cursor:pointer" onclick="showTrend('+r.id+')">'
         +'<td style="'+S1+'"><b>'+r.name+'</b><br><span style="color:#94a3b8;font-size:11px">'+r.campaignName+' · '+r.adgroupName+'</span></td>'
         +'<td style="'+S1b+'font-size:11px;color:#64748b;word-break:break-all">'+r.adId+'</td>'
-        +'<td style="'+S1c+'text-align:center">'+(r.grade?'<span class="badge b-blue">'+r.grade+'</span>':'-')+'</td>'
+        +'<td style="'+S1c+'text-align:center">'+gradeBadge(r.grade)+'</td>'
         +'<td style="'+S2+'">'+catCell(r)+'</td>'
         +'<td class="num" style="'+S3+'">'+froas(r.targetRoas)+'</td>'
         +'<td class="num" style="'+S4+'">'+froas(r.adjustedTarget)+'</td>';
@@ -1656,7 +1675,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     return `<tr>
     ${canEditMats ? `<td><input type="checkbox" class="mat-chk" value="${m.id}" style="width:auto"></td>` : ''}
     <td><b>${escHtml(m.name)}</b><br><span style="color:#94a3b8;font-size:11px">${escHtml(m.campaign_name)} · ${escHtml(m.adgroup_name)}</span></td>
-    <td style="text-align:center">${m.grade ? `<span class="badge b-blue">${escHtml(m.grade)}</span>` : '<span style="color:#cbd5e1">-</span>'}</td>
+    <td style="text-align:center">${gradeBadge(m.grade)}</td>
     <td><select class="mat-in" data-id="${m.id}" data-f="category" style="width:110px" ${matDis}>${logic.CATEGORIES.map(c => `<option ${m.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
     <td><input class="mat-in" data-id="${m.id}" data-f="target_roas" value="${m.target_roas}" type="number" step="0.1" style="width:80px" ${matDis}></td>
     <td><select class="mat-in" data-id="${m.id}" data-f="mode_override" style="width:110px" ${matDis}>
