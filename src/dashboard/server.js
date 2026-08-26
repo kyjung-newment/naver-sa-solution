@@ -807,7 +807,7 @@ router.get('/reset-password', (req, res) => {
         if (!j.ok) { rpMsg(j.error || '발송 실패', true); return; }
         document.getElementById('rp-step1').style.display = 'none';
         document.getElementById('rp-step2').style.display = 'block';
-        document.getElementById('rp-sent-info').textContent = '📧 ' + j.maskedEmail + ' 으로 인증코드를 발송했습니다 (10분간 유효)';
+        document.getElementById('rp-sent-info').textContent = '📧 ' + j.maskedEmail + ' 으로 인증코드를 발송했습니다 (10분간 유효). 도착까지 1~2분 걸릴 수 있고, 안 보이면 스팸함을 확인하세요. 재발송하면 이전 코드는 무효화됩니다.';
         rpMsg('');
       } catch(e) { rpMsg('발송 실패: ' + e.message, true); }
       finally { btn.disabled = false; btn.textContent = '📧 인증코드 발송'; }
