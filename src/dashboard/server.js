@@ -713,50 +713,129 @@ router.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/smart-sa/login'));
 });
 
-// ─── 관리자 비밀번호 초기화 (CRON_SECRET 필요) ───────────────────────
+// ─── 비밀번호 재설정 ─────────────────────────────────────────────────
+// 기본: 본인 다우오피스 이메일 인증코드로 재설정 (모든 직원)
+// 보조: 보안 코드(CRON_SECRET)로 관리자(admin) 계정 초기화 — 코드는 직원 관리 화면에서 확인 가능
 router.get('/reset-password', (req, res) => {
-  const secret = req.query.secret || '';
   const msg = req.query.msg || '';
-  const validSecret = secret === process.env.CRON_SECRET;
 
-  res.send(layout('비밀번호 초기화', `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fff7ed,#fef2f2)">
-      <div style="width:100%;max-width:420px;padding:16px">
-        <div style="text-align:center;margin-bottom:24px">
+  res.send(layout('비밀번호 재설정', `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#eef2ff,#f0f9ff)">
+      <div style="width:100%;max-width:440px;padding:16px">
+        <div style="text-align:center;margin-bottom:20px">
           <div style="font-size:40px">🔑</div>
-          <h1 style="font-size:20px;font-weight:700;color:#111827;margin-top:8px">관리자 비밀번호 초기화</h1>
-          <p style="color:#64748b;font-size:13px;margin-top:4px">보안 코드가 있어야 사용 가능합니다</p>
+          <h1 style="font-size:20px;font-weight:700;color:#111827;margin-top:8px">비밀번호 재설정</h1>
+          <p style="color:#64748b;font-size:13px;margin-top:4px">가입 시 등록한 다우오피스 이메일로 인증코드를 받아 재설정합니다</p>
         </div>
         <div class="card">
           <div class="card-body">
-            ${msg === 'done' ? '<div class="alert alert-ok">✅ 비밀번호가 초기화되었습니다. 새 비밀번호로 로그인하세요.</div>' : ''}
+            ${msg === 'done' ? '<div class="alert alert-ok">✅ 관리자 비밀번호가 초기화되었습니다. 새 비밀번호로 로그인하세요.</div>' : ''}
             ${msg === 'fail' ? '<div class="alert alert-err">❌ 보안 코드가 올바르지 않습니다.</div>' : ''}
             ${msg === 'err' ? '<div class="alert alert-err">❌ 초기화 중 오류가 발생했습니다.</div>' : ''}
-            <form method="POST" action="/smart-sa/reset-password">
+
+            <!-- 1단계: 아이디 → 인증코드 발송 -->
+            <div id="rp-step1">
               <div class="form-group">
-                <label>보안 코드 (CRON_SECRET)</label>
-                <input name="secret" type="password" required placeholder="보안 코드 입력" value="${validSecret ? secret : ''}">
+                <label>아이디</label>
+                <input id="rp-username" placeholder="로그인 아이디 입력" autocomplete="username">
+              </div>
+              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="rpSendCode()" id="rp-send-btn">📧 인증코드 발송</button>
+            </div>
+
+            <!-- 2단계: 인증코드 + 새 비밀번호 -->
+            <div id="rp-step2" style="display:none">
+              <div class="alert alert-ok" id="rp-sent-info" style="font-size:13px"></div>
+              <div class="form-group">
+                <label>인증코드 (6자리)</label>
+                <input id="rp-code" placeholder="메일로 받은 6자리 숫자" maxlength="6" inputmode="numeric" style="letter-spacing:4px;font-weight:700">
               </div>
               <div class="form-group">
                 <label>새 비밀번호</label>
-                <input name="new_password" type="password" required placeholder="새 비밀번호 (8자 이상)" minlength="8">
+                <input id="rp-pw1" type="password" placeholder="새 비밀번호 (8자 이상)" autocomplete="new-password">
               </div>
               <div class="form-group">
                 <label>새 비밀번호 확인</label>
-                <input name="confirm_password" type="password" required placeholder="비밀번호 재입력">
+                <input id="rp-pw2" type="password" placeholder="비밀번호 재입력" autocomplete="new-password">
               </div>
-              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px;background:#ef4444;border-color:#ef4444">비밀번호 초기화</button>
-            </form>
-            <div style="text-align:center;margin-top:16px">
+              <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="rpVerify()" id="rp-verify-btn">✅ 비밀번호 변경</button>
+              <div style="text-align:center;margin-top:10px">
+                <a href="javascript:rpBack()" style="font-size:12px;color:#94a3b8">← 아이디 다시 입력 / 코드 재발송</a>
+              </div>
+            </div>
+
+            <div id="rp-msg" style="margin-top:12px;font-size:13px"></div>
+
+            <div style="text-align:center;margin-top:16px;padding-top:14px;border-top:1px solid #f1f5f9">
               <a href="/smart-sa/login" style="font-size:13px;color:#64748b">← 로그인으로 돌아가기</a>
+              <span style="color:#e2e8f0;margin:0 8px">|</span>
+              <a href="javascript:void(0)" onclick="document.getElementById('rp-admin').style.display='block';this.style.display='none'" style="font-size:12px;color:#94a3b8">관리자 보안 코드로 초기화</a>
+            </div>
+
+            <!-- 보조: 보안 코드로 관리자 계정 초기화 -->
+            <div id="rp-admin" style="display:none;margin-top:14px;padding-top:14px;border-top:1px dashed #e2e8f0">
+              <div style="font-size:12px;color:#94a3b8;margin-bottom:10px">보안 코드는 <b>admin 계정 비밀번호</b>를 초기화합니다. 코드는 관리자 화면 → 직원 관리에서 확인할 수 있습니다.</div>
+              <form method="POST" action="/smart-sa/reset-password">
+                <div class="form-group">
+                  <label>보안 코드</label>
+                  <input name="secret" type="password" required placeholder="보안 코드 입력">
+                </div>
+                <div class="form-group">
+                  <label>새 비밀번호</label>
+                  <input name="new_password" type="password" required placeholder="새 비밀번호 (8자 이상)" minlength="8">
+                </div>
+                <div class="form-group">
+                  <label>새 비밀번호 확인</label>
+                  <input name="confirm_password" type="password" required placeholder="비밀번호 재입력">
+                </div>
+                <button class="btn" style="width:100%;justify-content:center;margin-top:4px;background:#ef4444;border-color:#ef4444;color:#fff">관리자 비밀번호 초기화</button>
+              </form>
             </div>
           </div>
         </div>
       </div>
     </div>
+    <script>
+    function rpMsg(t, err){ var el=document.getElementById('rp-msg'); el.style.color=err?'#dc2626':'#16a34a'; el.textContent=t||''; }
+    function rpBack(){ document.getElementById('rp-step1').style.display='block'; document.getElementById('rp-step2').style.display='none'; rpMsg(''); }
+    async function rpSendCode(){
+      var u = document.getElementById('rp-username').value.trim();
+      if (!u) { rpMsg('아이디를 입력하세요', true); return; }
+      var btn = document.getElementById('rp-send-btn'); btn.disabled = true; btn.textContent = '발송 중...';
+      try {
+        var r = await fetch('/smart-sa/api/reset-password/send-code', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username: u }) });
+        var j = await r.json();
+        if (!j.ok) { rpMsg(j.error || '발송 실패', true); return; }
+        document.getElementById('rp-step1').style.display = 'none';
+        document.getElementById('rp-step2').style.display = 'block';
+        document.getElementById('rp-sent-info').textContent = '📧 ' + j.maskedEmail + ' 으로 인증코드를 발송했습니다 (10분간 유효)';
+        rpMsg('');
+      } catch(e) { rpMsg('발송 실패: ' + e.message, true); }
+      finally { btn.disabled = false; btn.textContent = '📧 인증코드 발송'; }
+    }
+    async function rpVerify(){
+      var u = document.getElementById('rp-username').value.trim();
+      var code = document.getElementById('rp-code').value.trim();
+      var p1 = document.getElementById('rp-pw1').value, p2 = document.getElementById('rp-pw2').value;
+      if (!code || code.length !== 6) { rpMsg('인증코드 6자리를 입력하세요', true); return; }
+      if (p1.length < 8) { rpMsg('비밀번호는 8자 이상이어야 합니다', true); return; }
+      if (p1 !== p2) { rpMsg('비밀번호가 서로 다릅니다', true); return; }
+      var btn = document.getElementById('rp-verify-btn'); btn.disabled = true; btn.textContent = '변경 중...';
+      try {
+        var r = await fetch('/smart-sa/api/reset-password/verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username: u, code: code, new_password: p1 }) });
+        var j = await r.json();
+        if (!j.ok) { rpMsg(j.error || '변경 실패', true); return; }
+        document.getElementById('rp-step2').style.display = 'none';
+        rpMsg('✅ 비밀번호가 변경되었습니다. 새 비밀번호로 로그인하세요.');
+        setTimeout(function(){ location.href = '/smart-sa/login'; }, 1800);
+      } catch(e) { rpMsg('변경 실패: ' + e.message, true); }
+      finally { btn.disabled = false; btn.textContent = '✅ 비밀번호 변경'; }
+    }
+    document.getElementById('rp-username').addEventListener('keydown', function(e){ if (e.key === 'Enter') rpSendCode(); });
+    </script>
   `));
 });
 
+// 보안 코드(CRON_SECRET) → admin 계정 초기화 (보조 수단)
 router.post('/reset-password', async (req, res) => {
   const { secret, new_password, confirm_password } = req.body;
   if (secret !== process.env.CRON_SECRET) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
@@ -767,6 +846,96 @@ router.post('/reset-password', async (req, res) => {
   } catch (e) {
     console.error('비밀번호 초기화 오류:', e);
     res.redirect(303, '/smart-sa/reset-password?msg=err');
+  }
+});
+
+// ─── 이메일 인증 비밀번호 재설정 API ─────────────────────────────────
+const rpCodeHash = (username, code) => crypto.createHash('sha256')
+  .update(`${String(username).trim().toLowerCase()}|${code}|${process.env.SESSION_SECRET || 'rp-salt'}`).digest('hex');
+const rpMaskEmail = (email) => {
+  const [local, domain] = String(email).split('@');
+  if (!domain) return email;
+  const vis = local.slice(0, Math.min(2, local.length));
+  return `${vis}${'*'.repeat(Math.max(2, local.length - vis.length))}@${domain}`;
+};
+
+// 인증코드 발송 (재발송 60초 제한, 유효 10분)
+router.post('/api/reset-password/send-code', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    if (!username) return res.json({ ok: false, error: '아이디를 입력하세요' });
+    const user = await db.pool.query(
+      `SELECT id, name, username, daou_email, recovery_sent_at FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
+      [username]).then(r => r.rows[0]);
+    if (!user) return res.json({ ok: false, error: '등록되지 않은 아이디입니다' });
+    const email = user.daou_email || (String(user.username).includes('@') ? user.username : '');
+    if (!email) return res.json({ ok: false, error: '가입 시 등록된 다우오피스 이메일이 없습니다. 관리자에게 문의하세요.' });
+    if (user.recovery_sent_at && Date.now() - new Date(user.recovery_sent_at).getTime() < 60 * 1000) {
+      return res.json({ ok: false, error: '잠시 후 다시 시도하세요 (재발송은 1분에 1회)' });
+    }
+    const sender = await getAlertSenderAccount();
+    if (!sender) return res.json({ ok: false, error: '발송 서버가 설정되지 않았습니다. 관리자에게 문의하세요.' });
+
+    const code = String(crypto.randomInt(100000, 1000000)); // 6자리
+    const token = JSON.stringify({ h: rpCodeHash(user.username, code), exp: Date.now() + 10 * 60 * 1000, t: 0 });
+    await db.pool.query(`UPDATE users SET recovery_token = $1, recovery_sent_at = CURRENT_TIMESTAMP WHERE id = $2`, [token, user.id]);
+
+    await sendMailWithFallback(sender, {
+      from: `"뉴먼트 솔루션" <${sender.email_user}>`,
+      to: email,
+      subject: `[뉴먼트 솔루션] 비밀번호 재설정 인증코드: ${code}`,
+      html: `
+        <div style="max-width:480px;margin:0 auto;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:14px;color:#111827;line-height:1.7">
+          <div style="background:#6366f1;border-radius:12px 12px 0 0;padding:18px 24px;color:#fff">
+            <div style="font-size:12px;opacity:.85">NEWMENT · 뉴먼트 솔루션</div>
+            <div style="font-size:17px;font-weight:800;margin-top:4px">비밀번호 재설정 인증코드</div>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e8ee;border-top:none;border-radius:0 0 12px 12px;padding:22px 24px">
+            <p style="margin:0 0 12px">${(user.name || user.username)}님, 아래 인증코드를 입력해 비밀번호를 재설정하세요.</p>
+            <div style="text-align:center;background:#eef2ff;border-radius:10px;padding:16px;margin:0 0 14px">
+              <span style="font-size:30px;font-weight:800;letter-spacing:8px;color:#4338ca">${code}</span>
+            </div>
+            <p style="margin:0;font-size:12.5px;color:#6b7280">유효 시간 10분 · 본인이 요청하지 않았다면 이 메일을 무시하세요 (비밀번호는 변경되지 않습니다).</p>
+          </div>
+        </div>`,
+    });
+    console.log(`🔐 비밀번호 재설정 코드 발송: ${user.username} → ${rpMaskEmail(email)}`);
+    res.json({ ok: true, maskedEmail: rpMaskEmail(email) });
+  } catch (e) {
+    console.error('재설정 코드 발송 실패:', e.message);
+    res.json({ ok: false, error: '인증코드 발송에 실패했습니다. 잠시 후 다시 시도하세요.' });
+  }
+});
+
+// 인증코드 확인 + 비밀번호 변경 (시도 5회 제한)
+router.post('/api/reset-password/verify', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const code = String(req.body?.code || '').trim();
+    const newPw = String(req.body?.new_password || '');
+    if (!username || !/^\d{6}$/.test(code)) return res.json({ ok: false, error: '인증코드 6자리를 입력하세요' });
+    if (newPw.length < 8) return res.json({ ok: false, error: '비밀번호는 8자 이상이어야 합니다' });
+    const user = await db.pool.query(
+      `SELECT id, username, recovery_token FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
+      [username]).then(r => r.rows[0]);
+    if (!user || !user.recovery_token) return res.json({ ok: false, error: '인증코드를 먼저 발송받으세요' });
+    let tok;
+    try { tok = JSON.parse(user.recovery_token); } catch (_) { tok = null; }
+    if (!tok || !tok.h || !tok.exp) return res.json({ ok: false, error: '인증코드를 먼저 발송받으세요' });
+    if (Date.now() > tok.exp) return res.json({ ok: false, error: '인증코드가 만료되었습니다. 다시 발송받으세요.' });
+    if ((tok.t || 0) >= 5) return res.json({ ok: false, error: '시도 횟수를 초과했습니다. 인증코드를 다시 발송받으세요.' });
+    if (rpCodeHash(user.username, code) !== tok.h) {
+      tok.t = (tok.t || 0) + 1;
+      await db.pool.query(`UPDATE users SET recovery_token = $1 WHERE id = $2`, [JSON.stringify(tok), user.id]).catch(() => {});
+      return res.json({ ok: false, error: `인증코드가 올바르지 않습니다 (남은 시도 ${5 - tok.t}회)` });
+    }
+    const { hashPassword } = require('../db/database');
+    await db.pool.query(`UPDATE users SET password_hash = $1, recovery_token = NULL WHERE id = $2`, [hashPassword(newPw), user.id]);
+    console.log(`🔐 비밀번호 재설정 완료: ${user.username}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('비밀번호 재설정 실패:', e.message);
+    res.json({ ok: false, error: '변경에 실패했습니다. 잠시 후 다시 시도하세요.' });
   }
 });
 
@@ -834,6 +1003,32 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
     ${msg === 'approved' ? '<div class="alert alert-ok">승인되었습니다.</div>' : ''}
     ${msg === 'rejected' ? '<div class="alert alert-err">거부되었습니다.</div>' : ''}
     ${msg === 'reapproved' ? '<div class="alert alert-ok">재승인되었습니다.</div>' : ''}
+
+    <div class="card" style="margin-bottom:20px;border-left:4px solid #6366f1">
+      <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div style="font-size:13px;color:#475569;line-height:1.7">
+          🔑 <b>비밀번호를 잊은 직원</b>은 로그인 화면 → "비밀번호를 잊으셨나요?"에서 <b>본인 다우오피스 이메일 인증</b>으로 직접 재설정할 수 있습니다.<br>
+          <span style="color:#94a3b8;font-size:12px">아래 보안 코드는 admin 계정 초기화용 보조 수단입니다. 외부에 공유하지 마세요.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <code id="rs-secret" style="background:#f1f5f9;border-radius:6px;padding:6px 12px;font-size:12px;color:#64748b;min-width:120px;text-align:center">••••••••</code>
+          <button class="btn btn-outline btn-sm" style="font-size:12px" onclick="rsReveal(this)">보안 코드 보기</button>
+        </div>
+      </div>
+    </div>
+    <script>
+    async function rsReveal(btn){
+      var el = document.getElementById('rs-secret');
+      if (btn.dataset.shown === '1') { el.textContent = '••••••••'; btn.dataset.shown = ''; btn.textContent = '보안 코드 보기'; return; }
+      btn.disabled = true;
+      try {
+        var r = await fetch('/smart-sa/api/admin/reveal-reset-secret', { method: 'POST' });
+        var j = await r.json();
+        if (j.ok) { el.textContent = j.secret; btn.dataset.shown = '1'; btn.textContent = '숨기기'; }
+        else alert(j.error || '조회 실패');
+      } finally { btn.disabled = false; }
+    }
+    </script>
 
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
@@ -1293,6 +1488,13 @@ router.post('/api/admin/accounts/:id/delete', requireLogin, requireAdmin, async 
     console.log(`🗑 광고주 삭제 [${user?.username}]: ${acc.name} (${acc.customer_id}, 담당 ${acc.username})`);
     res.json({ ok: true });
   } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 비밀번호 초기화 보안 코드 확인 (관리자 전용 — 화면에 소스로 심지 않고 클릭 시에만 조회)
+router.post('/api/admin/reveal-reset-secret', requireLogin, requireAdmin, async (req, res) => {
+  const user = await getUser(req);
+  console.log(`🔑 보안 코드 조회: ${user?.username}`);
+  res.json({ ok: true, secret: process.env.CRON_SECRET || '(미설정)' });
 });
 
 router.post('/admin/users/:id/approve', requireLogin, requireAdmin, async (req, res) => {
