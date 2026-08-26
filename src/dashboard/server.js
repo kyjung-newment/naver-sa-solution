@@ -1140,8 +1140,11 @@ router.get('/admin/report-health', requireLogin, requireAdmin, async (req, res) 
     return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
   };
 
-  const settings = await getSystemSettingsMap(['report_cron_paused', 'report_resume_at', 'report_alert_email', 'report_alert_last_sent']);
+  const settings = await getSystemSettingsMap(['report_cron_paused', 'report_resume_at', 'report_alert_email', 'report_alert_last_sent',
+    'global_smtp_enabled', 'global_smtp_host', 'global_smtp_port', 'global_smtp_user', 'global_smtp_pass']);
   const paused = settings.report_cron_paused === '1';
+  const gsOn = settings.global_smtp_enabled === '1';
+  const gsConfigured = !!(settings.global_smtp_user && settings.global_smtp_pass);
   const resumeAtMs = settings.report_resume_at ? new Date(settings.report_resume_at).getTime() : 0;
   const alertEmail = settings.report_alert_email || REPORT_ALERT_EMAIL_DEFAULT;
 
@@ -1219,6 +1222,44 @@ router.get('/admin/report-health', requireLogin, requireAdmin, async (req, res) 
       </form>
     </div>
 
+    <div class="card" style="margin-bottom:16px;border-left:4px solid ${gsOn ? '#16a34a' : '#e2e8f0'}">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span class="card-title">📮 전역 발신 계정 (Gmail 등) ${gsOn ? '<span class="badge badge-green" style="font-size:11px;margin-left:6px">사용 중</span>' : '<span class="badge badge-gray" style="font-size:11px;margin-left:6px">미사용</span>'}</span>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;color:#64748b;margin-bottom:12px;line-height:1.7">
+          켜면 <b>모든 자동리포트·수동 발송·알림 메일이 아래 계정 하나로 발송</b>됩니다 (담당자별 다우오피스 SMTP 불필요 — 외부 사용자 개방용).
+          Gmail은 <b>2단계 인증 후 발급한 앱 비밀번호</b>(16자)를 입력하세요. 일반 Gmail은 일 500통, Workspace는 일 2,000통 발송 한도가 있습니다.
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label style="font-size:12px;color:#475569">발신 이메일<br><input id="gs-user" value="${escH(settings.global_smtp_user || '')}" placeholder="you@gmail.com" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:13px;width:210px"></label>
+          <label style="font-size:12px;color:#475569">앱 비밀번호<br><input id="gs-pass" type="password" placeholder="${gsConfigured ? '변경 시에만 입력' : '앱 비밀번호 16자'}" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:13px;width:170px"></label>
+          <label style="font-size:12px;color:#475569">SMTP 호스트<br><input id="gs-host" value="${escH(settings.global_smtp_host || 'smtp.gmail.com')}" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:13px;width:160px"></label>
+          <label style="font-size:12px;color:#475569">포트<br><input id="gs-port" value="${escH(settings.global_smtp_port || '465')}" style="padding:7px 10px;border:1px solid #e2e8f0;border-radius:7px;font-size:13px;width:70px"></label>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;padding-bottom:8px"><input type="checkbox" id="gs-enabled" ${gsOn ? 'checked' : ''} style="width:16px;height:16px;accent-color:#16a34a"> 사용</label>
+          <button class="btn btn-outline btn-sm" onclick="gsTest(this)" style="font-size:12px">📧 연결 테스트</button>
+          <button class="btn btn-primary btn-sm" onclick="gsSave(this)" style="font-size:12px">💾 저장</button>
+        </div>
+        <div id="gs-msg" style="font-size:12.5px;margin-top:8px"></div>
+      </div>
+    </div>
+    <script>
+    function gsPayload(){ return { enabled: document.getElementById('gs-enabled').checked, user: document.getElementById('gs-user').value.trim(), pass: document.getElementById('gs-pass').value, host: document.getElementById('gs-host').value.trim(), port: document.getElementById('gs-port').value.trim() }; }
+    function gsMsg(t, err){ var el=document.getElementById('gs-msg'); el.style.color=err?'#dc2626':'#16a34a'; el.textContent=t; }
+    async function gsTest(btn){
+      btn.disabled=true; var o=btn.textContent; btn.textContent='테스트 중...';
+      try { var r=await fetch('/smart-sa/api/admin/global-smtp/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(gsPayload())}); var j=await r.json();
+        gsMsg(j.ok ? '✅ '+j.message : '❌ '+(j.error||'실패'), !j.ok);
+      } catch(e){ gsMsg('❌ '+e.message, true); } finally { btn.disabled=false; btn.textContent=o; }
+    }
+    async function gsSave(btn){
+      btn.disabled=true; var o=btn.textContent; btn.textContent='저장 중...';
+      try { var r=await fetch('/smart-sa/api/admin/global-smtp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(gsPayload())}); var j=await r.json();
+        if (j.ok) { gsMsg('✅ 저장되었습니다. 새로고침합니다...'); setTimeout(function(){location.reload();}, 900); } else gsMsg('❌ '+(j.error||'실패'), true);
+      } catch(e){ gsMsg('❌ '+e.message, true); } finally { btn.disabled=false; btn.textContent=o; }
+    }
+    </script>
+
     <div class="card"><div class="card-body" style="overflow-x:auto;padding:0">
       <table style="min-width:900px">
         <thead><tr><th>광고주</th><th>담당자</th><th>일간</th><th>주간</th><th>월간</th><th>수신 이메일</th></tr></thead>
@@ -1268,6 +1309,45 @@ router.post('/admin/report-health/toggle-pause', requireLogin, requireAdmin, asy
     }
   } catch (e) { console.error('발송 토글 실패:', e.message); }
   res.redirect(303, '/smart-sa/admin/report-health');
+});
+
+// ─── 전역 발신 계정 (Gmail 등) 설정 — 관리자 전용 ────────────────────
+// 켜면 모든 리포트/알림 메일이 이 계정 하나로 발송 (외부 사용자 개방용)
+router.post('/api/admin/global-smtp', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const { enabled, user: gsUser, pass, host, port } = req.body || {};
+    const stored = await getSystemSettingsMap(['global_smtp_pass']);
+    const finalPass = pass || stored.global_smtp_pass || '';
+    if (enabled && (!gsUser || !finalPass)) return res.json({ ok: false, error: '발신 이메일과 앱 비밀번호를 입력하세요' });
+    await upsertSystemSetting('global_smtp_enabled', enabled ? '1' : '0');
+    await upsertSystemSetting('global_smtp_user', String(gsUser || '').trim());
+    if (pass) await upsertSystemSetting('global_smtp_pass', String(pass));
+    await upsertSystemSetting('global_smtp_host', String(host || 'smtp.gmail.com').trim());
+    await upsertSystemSetting('global_smtp_port', String(parseInt(port) || 465));
+    const actor = await getUser(req);
+    console.log(`📮 전역 발신 계정 ${enabled ? 'ON' : 'OFF'} (${gsUser}) by ${actor?.username}`);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+// 연결 테스트: SMTP 로그인 검증 + 발신 주소 본인에게 테스트 메일 1통
+router.post('/api/admin/global-smtp/test', requireLogin, requireAdmin, async (req, res) => {
+  try {
+    const { user: gsUser, pass, host, port } = req.body || {};
+    const stored = await getSystemSettingsMap(['global_smtp_pass']);
+    const finalPass = pass || stored.global_smtp_pass || '';
+    if (!gsUser || !finalPass) return res.json({ ok: false, error: '발신 이메일과 앱 비밀번호를 입력하세요' });
+    const acct = { email_host: String(host || 'smtp.gmail.com').trim(), email_port: parseInt(port) || 465, email_user: String(gsUser).trim(), email_pass: finalPass };
+    const check = await verifySmtpAuth(acct);
+    if (!check.ok) return res.json({ ok: false, error: check.error });
+    await sendMailWithFallback(acct, {
+      from: `"뉴먼트 솔루션" <${acct.email_user}>`,
+      to: acct.email_user,
+      subject: '[뉴먼트 솔루션] 전역 발신 계정 연결 테스트',
+      html: `<div style="font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:14px;color:#111827;line-height:1.7"><p>전역 발신 계정 연결 테스트 메일입니다.</p><p style="font-size:12.5px;color:#6b7280">이 메일이 보이면 ${acct.email_host}:${acct.email_port} 연결·인증·발송이 모두 정상입니다.</p></div>`,
+    });
+    res.json({ ok: true, message: `연결 성공 — ${acct.email_user} 으로 테스트 메일을 보냈습니다` });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // ─── 광고주 일괄 관리 (관리자): 전체 목록 + 개별 삭제 + 엑셀 일괄 이관/삭제 ──
@@ -8166,12 +8246,13 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   const creds = await db.getApiCredentials(req.session.userId, (typeof account!=="undefined" && account ? account.id : null));
   if (!creds) return res.status(400).json({ ok: false, error: 'API 계정 미등록' });
 
-  // account에 API 자격증명 + SMTP 자격증명 병합
-  const smtp = await db.getSmtpCredentials(req.session.userId);
-  console.log(`📧 SMTP 조회: daou_email=${smtp?.daou_email || '없음'}, smtp_pass=${smtp?.smtp_pass ? '설정됨(' + smtp.smtp_pass.length + '자)' : '없음'}, username=${smtp?.username || '없음'}`);
+  // account에 API 자격증명 + SMTP 자격증명 병합 (전역 발신 계정 우선 → 없으면 본인 다우오피스)
+  const globalSmtp = await getGlobalSmtpAccount();
+  const smtp = globalSmtp ? null : await db.getSmtpCredentials(req.session.userId);
+  if (!globalSmtp) console.log(`📧 SMTP 조회: daou_email=${smtp?.daou_email || '없음'}, smtp_pass=${smtp?.smtp_pass ? '설정됨(' + smtp.smtp_pass.length + '자)' : '없음'}, username=${smtp?.username || '없음'}`);
 
-  const emailUser = smtp?.daou_email || smtp?.username || '';
-  const emailPass = smtp?.smtp_pass || '';
+  const emailUser = globalSmtp ? globalSmtp.email_user : (smtp?.daou_email || smtp?.username || '');
+  const emailPass = globalSmtp ? globalSmtp.email_pass : (smtp?.smtp_pass || '');
 
   if (!emailUser || !emailPass) {
     return res.json({ ok: false, error: `SMTP 미설정: 이메일=${emailUser || '없음'}, 비밀번호=${emailPass ? '설정됨' : '없음'}. 내 정보에서 다우오피스 계정을 설정해주세요.` });
@@ -8180,9 +8261,8 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   const enriched = {
     ...account,
     api_key: creds.api_key, secret_key: creds.secret_key,
-    // SMTP: 다우오피스 자동 연동
-    email_host: smtp?.smtp_host || 'outbound.daouoffice.com',
-    email_port: 465,
+    email_host: globalSmtp ? globalSmtp.email_host : (smtp?.smtp_host || 'outbound.daouoffice.com'),
+    email_port: globalSmtp ? globalSmtp.email_port : 465,
     email_user: emailUser,
     email_pass: emailPass,
   };
@@ -8621,8 +8701,28 @@ const MAX_ATTEMPTS_PER_PERIOD = 4;
 // ─── 발송 이슈 알림 메일 ───────────────────────────────────────────
 // 크론 실행에서 실패가 발생하면 관리자에게 요약 메일 발송. 6시간 스로틀로 반복 알림 방지.
 const REPORT_ALERT_EMAIL_DEFAULT = 'kyjung@newment.co.kr';
-// 알림 발신 계정: 관리자(kyjung)의 다우오피스 SMTP — 담당자 개별 SMTP 장애와 무관하게 발송되도록
+
+// 전역 발신 계정 (Gmail 등) — 설정 시 모든 리포트/알림 메일이 이 계정 하나로 발송됨.
+// 외부(비직원) 사용자에게 솔루션을 열 때 개별 다우오피스 SMTP 없이 발송이 가능하도록 하는 모드.
+async function getGlobalSmtpAccount() {
+  try {
+    const s = await db.pool.query(
+      `SELECT key, value FROM system_settings WHERE key IN ('global_smtp_enabled','global_smtp_host','global_smtp_port','global_smtp_user','global_smtp_pass')`)
+      .then(r => Object.fromEntries(r.rows.map(x => [x.key, x.value])));
+    if (s.global_smtp_enabled !== '1' || !s.global_smtp_user || !s.global_smtp_pass) return null;
+    return {
+      email_host: s.global_smtp_host || 'smtp.gmail.com',
+      email_port: parseInt(s.global_smtp_port) || 465,
+      email_user: s.global_smtp_user,
+      email_pass: s.global_smtp_pass,
+    };
+  } catch (_) { return null; }
+}
+
+// 알림 발신 계정: 전역 발신 계정 우선, 없으면 관리자(kyjung)의 다우오피스 SMTP
 async function getAlertSenderAccount() {
+  const g = await getGlobalSmtpAccount();
+  if (g) return g;
   const su = await db.pool.query(`SELECT daou_email, smtp_pass, smtp_host, username FROM users WHERE daou_email = $1 AND smtp_pass != '' LIMIT 1`, [REPORT_ALERT_EMAIL_DEFAULT]).then(r => r.rows[0]).catch(() => null);
   if (!su) return null;
   return { email_host: su.smtp_host || 'outbound.daouoffice.com', email_port: 465, email_user: su.daou_email || su.username, email_pass: su.smtp_pass };
@@ -8809,6 +8909,9 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       let sent = 0, failed = 0;
       const failures = []; // 알림 메일용 실패 상세 수집
       const PER_ACCOUNT_TIMEOUT_MS = type === 'monthly' ? 420000 : 240000;
+      // 전역 발신 계정(Gmail 등) — 설정돼 있으면 담당자 개별 SMTP 대신 이 계정으로 일괄 발송
+      const globalSmtp = await getGlobalSmtpAccount();
+      if (globalSmtp && accounts.length) console.log(`  📮 전역 발신 계정 사용: ${globalSmtp.email_user} (${globalSmtp.email_host})`);
 
       const processOne = async (account) => {
         const t0 = Date.now();
@@ -8821,11 +8924,18 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             console.log(`⏭ [${account.name}] ${type}: 직전 6h 내 발송 확인 — 건너뜀`);
             return;
           }
-          const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
-          account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
-          account.email_port = 465;
-          account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
-          account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+          if (globalSmtp) {
+            account.email_host = globalSmtp.email_host;
+            account.email_port = globalSmtp.email_port;
+            account.email_user = globalSmtp.email_user;
+            account.email_pass = globalSmtp.email_pass;
+          } else {
+            const smtp = await db.getSmtpCredentials(account.user_id).catch(() => null);
+            account.email_host = smtp?.smtp_host || 'outbound.daouoffice.com';
+            account.email_port = 465;
+            account.email_user = smtp?.daou_email || smtp?.username || account.email_user || '';
+            account.email_pass = smtp?.smtp_pass || account.email_pass || '';
+          }
 
           // 사전 점검(실패 시 무거운 수집을 건너뛰어 시간 예산 보호 + 실패 사유를 명확히 기록)
           if (!recipients.split(',').map(s => s.trim()).filter(Boolean).length) {

@@ -43,8 +43,12 @@ async function sendMailWithFallback(account, mailOptions) {
     if (isAuthError(e)) throw new Error(`SMTP 인증 실패(${user}): ${e.message} — 다우오피스 비밀번호를 확인하세요`);
   }
 
-  // 2차: 폴백 서버 순회
-  for (const fb of DAOU_SMTP_FALLBACKS) {
+  // 2차 폴백: 다우오피스 계열 호스트면 다우 서버 순회, 그 외(Gmail 등 전역 발신)는 보조 포트만 재시도
+  const isDaou = /daouoffice\.com$/i.test(primaryHost);
+  const fallbacks = isDaou
+    ? DAOU_SMTP_FALLBACKS
+    : [{ host: primaryHost, port: primaryPort === 465 ? 587 : 465, secure: primaryPort !== 465 }];
+  for (const fb of fallbacks) {
     if (fb.host === primaryHost && fb.port === primaryPort) continue;
     try {
       const t = createTransporter(fb.host, fb.port, user, pass);
@@ -53,11 +57,11 @@ async function sendMailWithFallback(account, mailOptions) {
       return;
     } catch (e) {
       console.warn(`⚠️ SMTP 폴백 실패 (${fb.host}:${fb.port}): ${e.message}`);
-      if (isAuthError(e)) throw new Error(`SMTP 인증 실패(${user}): ${e.message} — 다우오피스 비밀번호를 확인하세요`);
+      if (isAuthError(e)) throw new Error(`SMTP 인증 실패(${user}): ${e.message} — ${isDaou ? '다우오피스 비밀번호' : '앱 비밀번호'}를 확인하세요`);
     }
   }
 
-  throw new Error(`모든 SMTP 서버 연결 실패. 마지막 시도: ${DAOU_SMTP_FALLBACKS.map(f => f.host+':'+f.port).join(', ')}`);
+  throw new Error(`모든 SMTP 서버 연결 실패. 마지막 시도: ${fallbacks.map(f => f.host + ':' + f.port).join(', ')}`);
 }
 
 // 발송 전 SMTP 로그인 사전 검증 (메일 발송 없음) — 실패 시 무거운 리포트 생성을 건너뛰어 크론 예산 절약
@@ -65,12 +69,14 @@ async function verifySmtpAuth(account) {
   if (!account.email_user || !account.email_pass) {
     return { ok: false, error: '발신 SMTP 미설정 — 내 정보에서 다우오피스 계정을 설정하세요' };
   }
-  const t = createTransporter(account.email_host || 'outbound.daouoffice.com', parseInt(account.email_port) || 465, account.email_user, account.email_pass);
+  const host = account.email_host || 'outbound.daouoffice.com';
+  const pwLabel = /daouoffice\.com$/i.test(host) ? '다우오피스 비밀번호' : '앱 비밀번호';
+  const t = createTransporter(host, parseInt(account.email_port) || 465, account.email_user, account.email_pass);
   try {
     await t.verify();
     return { ok: true };
   } catch (e) {
-    if (isAuthError(e)) return { ok: false, error: `SMTP 인증 실패(${account.email_user}): ${e.message} — 다우오피스 비밀번호를 확인하세요` };
+    if (isAuthError(e)) return { ok: false, error: `SMTP 인증 실패(${account.email_user}): ${e.message} — ${pwLabel}를 확인하세요` };
     // 접속 장애(일시적)는 발송 자체를 막지 않음 — sendMailWithFallback의 폴백에 맡김
     return { ok: true, warning: e.message };
   } finally {
