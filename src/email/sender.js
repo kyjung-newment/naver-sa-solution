@@ -157,7 +157,8 @@ function section(title, icon, content) {
 
 // ─── 메인 HTML 리포트 빌더 ─────────────────────────────────────────
 function buildHtmlReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom }) {
-  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+  // 기간 선택(맞춤) 리포트는 '월간/주간' 대신 '맞춤'으로 표기 (수신자 혼동 방지)
+  const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
   const now = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
   const t = data.total;
   const pt = prevData?.total || null;
@@ -579,7 +580,8 @@ function parseAccountReportConfig(account) {
 
 // ─── 이메일 발송 ────────────────────────────────────────────────────
 async function sendReport({ account, type, period, data, prevData, dateRange, prevRange, isCustom }) {
-  const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
+  // 기간 선택(맞춤) 리포트: 메일 제목·본문·첨부 파일명 모두 '맞춤'으로 표기
+  const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
   const today = new Date().toLocaleDateString('ko-KR');
   const recipients = (account.report_emails || '').split(',').map(e => e.trim()).filter(Boolean);
 
@@ -604,10 +606,12 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
   }
 
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // 맞춤 리포트 제목은 발송일 대신 리포트 대상 기간을 표기 (발송일 표기가 기간으로 오독되는 혼동 방지)
+  const subjectTail = isCustom ? `(${String(period).replace(/\s*\(맞춤\)\s*$/, '')})` : `- ${today}`;
   const mailOptions = {
     from: account.email_user,
     to: recipients.join(', '),
-    subject: `📊 [${account.name}] ${typeLabel} 성과 리포트 - ${today}`,
+    subject: `📊 [${account.name}] ${typeLabel} 성과 리포트 ${subjectTail}`,
     html,
     text: `네이버 SA ${typeLabel} 리포트\n광고주: ${account.name}\n기간: ${period}\n총비용: ${f.won(data.total.cost)}\n클릭: ${f.num(data.total.clk)}`,
   };

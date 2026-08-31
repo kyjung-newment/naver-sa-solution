@@ -8129,7 +8129,8 @@ router.get('/api/report/download-excel', requireLogin, async (req, res) => {
     const comparePeriod = (req.query.compareStart && req.query.compareEnd) ? { since: req.query.compareStart, until: req.query.compareEnd } : null;
     const { buffer } = await generateExcelBuffer(enriched, type, customRange, { comparePeriod });
 
-    const typeLabel = { daily: '일간', weekly: '주간', monthly: '월간' }[type];
+    // 기간 선택(맞춤) 다운로드는 파일명도 '맞춤'으로
+    const typeLabel = customRange ? '맞춤' : { daily: '일간', weekly: '주간', monthly: '월간' }[type];
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const safeName = (account.name || 'account').replace(/[\\/:*?"<>|]/g, '_');
     const filename = `${safeName}_${typeLabel}_리포트_${dateStr}.xlsx`;
