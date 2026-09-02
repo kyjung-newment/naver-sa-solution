@@ -8920,6 +8920,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       const processOne = async (account) => {
         const t0 = Date.now();
         const recipients = account.report_emails || '';
+        let attemptLogId = null;
+        const clearAttemptLog = () => { if (attemptLogId) { db.pool.query('DELETE FROM report_send_log WHERE id = $1', [attemptLogId]).catch(() => {}); attemptLogId = null; } };
         try {
           // 발송 직전 최신 스탬프 재확인 (2차 중복 방지 — due 목록 계산 후 다른 경로가 발송했을 수 있음)
           const fresh = await db.pool.query(`SELECT last_${type}_report AS l FROM ad_accounts WHERE id = $1`, [account.id]).catch(() => null);
@@ -8958,6 +8960,14 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             // 일시적 오류는 본 수집의 재시도에 맡김
           }
 
+          // 시도 개시 기록 — 서버가 무거운 생성 도중 죽어도(메모리 부족·실행시간 한도) 흔적이 남아
+          // 재시도 상한(24h당 4회)이 작동, 같은 계정이 캐치업 큐 맨 앞을 무한 독점하는 것을 방지.
+          // 정상 완료(성공/실패 기록) 시에는 이 개시 기록을 삭제한다.
+          attemptLogId = await db.pool.query(
+            `INSERT INTO report_send_log (account_id, report_type, source, status, error_msg, recipients)
+             VALUES ($1, $2, 'cron', 'failed', '처리 미완료 — 생성 중 서버 중단 추정(자동 기록)', $3) RETURNING id`,
+            [account.id, type, recipients]).then(r => r.rows[0]?.id).catch(() => null);
+
           // prev는 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
           const work = generateAndSend(account, type, null, {});
           const ok = await Promise.race([
@@ -8966,6 +8976,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           ]);
           if (ok === 'timeout') {
             // 슬롯은 반납하되, 같은 invocation 안에서 늦게라도 성공하면 스탬프를 남겨 중복 발송을 방지
+            clearAttemptLog();
             failed++;
             failures.push({ name: account.name, reason: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s)`, userId: account.user_id, userName: account.user_name || '' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
@@ -8978,15 +8989,18 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             return;
           }
           if (ok) {
+            clearAttemptLog();
             sent++;
             await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
             db.logReportSend(account.id, type, { status: 'sent', recipients, durationMs: Date.now() - t0 });
           } else {
+            clearAttemptLog();
             failed++;
             failures.push({ name: account.name, reason: '알 수 없는 실패', userId: account.user_id, userName: account.user_name || '' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: '알 수 없는 실패', recipients, durationMs: Date.now() - t0 });
           }
         } catch (e) {
+          clearAttemptLog();
           failed++;
           failures.push({ name: account.name, reason: e.message, userId: account.user_id, userName: account.user_name || '' });
           console.error(`❌ [${account.name}] ${type}:`, e.message);
@@ -8994,7 +9008,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         }
       };
 
-      // 슬라이딩 동시성 3 — 고정 배치(Promise.all)의 head-of-line blocking 제거
+      // 슬라이딩 동시성 — 고정 배치(Promise.all)의 head-of-line blocking 제거.
+      // 월간은 30일치 생성으로 메모리 사용이 커서 동시 2개로 제한 (동시 3개 시 생성 중 프로세스 중단 사례)
       let cursor = 0, cutoff = false;
       const worker = async () => {
         while (true) {
@@ -9004,7 +9019,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           await processOne(accounts[i]);
         }
       };
-      await Promise.all([worker(), worker(), worker()]);
+      const workers = type === 'monthly' ? [worker(), worker()] : [worker(), worker(), worker()];
+      await Promise.all(workers);
       const skipped = Math.max(0, accounts.length - sent - failed);
       if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
 
