@@ -8851,7 +8851,8 @@ async function sendOwnerReportAlerts(type, failures) {
 }
 
 // 이번 주기의 예정 발송 시각(KST 가상 epoch ms). 도래 전이거나 캐치업 창을 지났으면 null.
-function latestScheduledFireKst(type, a, nowKstMs) {
+// ignoreWindow=true면 캐치업 창 경과와 무관하게 주기 예정 시각을 반환 (force의 주기 중복 판정용)
+function latestScheduledFireKst(type, a, nowKstMs, ignoreWindow = false) {
   const k = new Date(nowKstMs); // UTC 필드가 KST를 나타냄
   const h = a[`sched_${type}_hour`] ?? 9;
   let fire;
@@ -8872,7 +8873,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     }
   }
   if (fire > nowKstMs) return null;
-  if (nowKstMs - fire > CATCHUP_WINDOW_MS[type]) return null;
+  if (!ignoreWindow && nowKstMs - fire > CATCHUP_WINDOW_MS[type]) return null;
   return fire;
 }
 
@@ -8931,7 +8932,13 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         const last = a[`last_${type}_report`];
         const lastMs = last ? new Date(last).getTime() : 0;
         if (lastMs && nowMs - lastMs < 6 * 3600 * 1000) return false; // 최근 6h 발송 제외 (중복 방지)
-        if (force) return true;
+        // force=1: 캐치업 창·재시도 상한·재개 기준만 무시. '이번 주기 이미 발송됨'은 force에서도 반드시 지킴
+        // (9/2 사고: force가 주기 체크까지 건너뛰어 9/1 발송 계정에 재발송됨 — 재발 방지)
+        if (force) {
+          const fireKst = latestScheduledFireKst(type, a, nowKstMs, true);
+          if (fireKst != null && lastMs >= fireKst - 9 * 60 * 60 * 1000) return false; // 이번 주기 발송 완료
+          return true;
+        }
         const fireKst = latestScheduledFireKst(type, a, nowKstMs);
         if (fireKst == null) return false;             // 예정 시각 도래 전 또는 캐치업 창 경과
         const fireMs = fireKst - 9 * 60 * 60 * 1000;   // KST 가상 시각 → 실제 epoch
