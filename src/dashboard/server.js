@@ -8281,7 +8281,28 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
       res.json({ ok: true, message: '리포트 발송 완료!' });
     } else if (ok) {
-      res.json({ ok: true, message: '맞춤 리포트 발송 완료!' });
+      // 기간 선택이 정확히 '지난달 전체'(월간) 또는 '지난주 월~일'(주간)이면 정기 리포트와 동일 내용 —
+      // 발송 완료로 기록해 이후 자동 캐치업이 같은 내용을 중복 발송하지 않게 한다
+      const isRegularPeriod = (() => {
+        try {
+          const k = new Date(Date.now() + 9 * 3600 * 1000);
+          if (type === 'monthly') {
+            const s = new Date(Date.UTC(k.getUTCFullYear(), k.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+            const e = new Date(Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), 0)).toISOString().slice(0, 10);
+            return customRange.since === s && customRange.until === e;
+          }
+          if (type === 'weekly') {
+            const today = new Date(Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate()));
+            const dow = today.getUTCDay();
+            const lastSun = new Date(today); lastSun.setUTCDate(today.getUTCDate() - (dow === 0 ? 7 : dow));
+            const lastMon = new Date(lastSun); lastMon.setUTCDate(lastSun.getUTCDate() - 6);
+            return customRange.since === lastMon.toISOString().slice(0, 10) && customRange.until === lastSun.toISOString().slice(0, 10);
+          }
+        } catch (_) {}
+        return false;
+      })();
+      if (isRegularPeriod) await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
+      res.json({ ok: true, message: isRegularPeriod ? '맞춤 리포트 발송 완료! (지난 기간 전체와 일치 — 정기 발송으로도 기록됨)' : '맞춤 리포트 발송 완료!' });
     } else {
       res.json({ ok: false, error: '리포트 생성 또는 이메일 발송에 실패했습니다. Vercel 로그를 확인해주세요.' });
     }
@@ -8734,9 +8755,11 @@ async function getAlertSenderAccount() {
 async function maybeSendReportIssueAlert(type, failures, stats) {
   try {
     if (!failures.length) return;
-    const s = await db.pool.query(`SELECT key, value FROM system_settings WHERE key IN ('report_alert_last_sent','report_alert_email')`)
+    // 스로틀은 리포트 유형별로 분리 — 주간(매시 실패 반복) 알림이 월간 알림을 억누르지 않도록
+    const throttleKey = `report_alert_last_sent:${type}`;
+    const s = await db.pool.query(`SELECT key, value FROM system_settings WHERE key IN ($1, 'report_alert_email')`, [throttleKey])
       .then(r => Object.fromEntries(r.rows.map(x => [x.key, x.value]))).catch(() => ({}));
-    if (s.report_alert_last_sent && Date.now() - new Date(s.report_alert_last_sent).getTime() < 6 * 3600 * 1000) return; // 스로틀
+    if (s[throttleKey] && Date.now() - new Date(s[throttleKey]).getTime() < 6 * 3600 * 1000) return; // 유형별 6h 스로틀
     const to = s.report_alert_email || REPORT_ALERT_EMAIL_DEFAULT;
     const acct = await getAlertSenderAccount();
     if (!acct) { console.warn('⚠ 발송 이슈 알림: 발신 SMTP 계정 없음'); return; }
@@ -8759,7 +8782,7 @@ async function maybeSendReportIssueAlert(type, failures, stats) {
         </div>
       </div>`;
     await sendMailWithFallback(acct, { from: `"뉴먼트 솔루션 알림" <${acct.email_user}>`, to, subject: `[자동리포트 알림] ${label} 발송 실패 ${failures.length}건 — 점검 필요`, html });
-    await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ('report_alert_last_sent', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP`, [new Date().toISOString()]).catch(() => {});
+    await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP`, [throttleKey, new Date().toISOString()]).catch(() => {});
     console.log(`📮 발송 이슈 알림 → ${to} (${label} ${failures.length}건)`);
   } catch (e) { console.warn('발송 이슈 알림 실패:', e.message); }
 }
@@ -8780,7 +8803,7 @@ async function sendOwnerReportAlerts(type, failures) {
     const label = { daily: '일간', weekly: '주간', monthly: '월간' }[type] || type;
     for (const [userId, list] of byUser) {
       try {
-        const throttleKey = `report_alert_owner_last:${userId}`;
+        const throttleKey = `report_alert_owner_last:${userId}:${type}`; // 담당자×유형별 24h 스로틀
         const last = await db.pool.query(`SELECT value FROM system_settings WHERE key = $1`, [throttleKey]).then(r => r.rows[0]?.value).catch(() => null);
         if (last && Date.now() - new Date(last).getTime() < 24 * 3600 * 1000) continue;
         const owner = await db.pool.query(`SELECT name, username, daou_email FROM users WHERE id = $1`, [userId]).then(r => r.rows[0]).catch(() => null);
@@ -9050,7 +9073,23 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       const skipped = Math.max(0, accounts.length - sent - failed);
       if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
 
-      // 실패 발생 시 알림 메일: 관리자(6h 스로틀) + 해당 담당자 본인(담당자당 24h 스로틀)
+      // 직전 실행들이 크래시로 남긴 '처리 미완료' 기록도 알림 대상에 포함
+      // (크래시된 실행은 스스로 알림을 보낼 수 없으므로 다음 실행이 대신 알림)
+      try {
+        const zombies = await db.pool.query(`
+          SELECT DISTINCT ON (l.account_id) l.account_id, a.name, a.user_id, u.name AS user_name
+          FROM report_send_log l JOIN ad_accounts a ON a.id = l.account_id JOIN users u ON u.id = a.user_id
+          WHERE l.report_type = $1 AND l.status = 'failed' AND l.error_msg LIKE '처리 미완료%'
+            AND l.created_at > NOW() - INTERVAL '2 hours'
+          ORDER BY l.account_id, l.id DESC`, [type]).then(r => r.rows);
+        for (const z of zombies) {
+          if (!failures.some(f => f.name === z.name)) {
+            failures.push({ name: z.name, reason: '생성 중 서버 중단(처리 미완료) — 반복 시 자동 격리, 리포트 발송 점검 화면 확인', userId: z.user_id, userName: z.user_name || '' });
+          }
+        }
+      } catch (_) {}
+
+      // 실패 발생 시 알림 메일: 관리자(유형별 6h 스로틀) + 해당 담당자 본인(담당자×유형별 24h 스로틀)
       if (failures.length > 0) {
         await maybeSendReportIssueAlert(type, failures, { sent, failed, skipped });
         await sendOwnerReportAlerts(type, failures);
