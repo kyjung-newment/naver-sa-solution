@@ -8863,10 +8863,13 @@ function latestScheduledFireKst(type, a, nowKstMs) {
     const curHour = new Date(nowKstMs).getUTCHours(); // KST 시각 (로그용)
     // ?force=1 → 스케줄/재시도 상한 무시하고 미발송(6h 이내 발송 제외) 전부 처리 (수동 재시도)
     const force = req.query.force === '1';
-    // 동시 실행 방지: 타입별 advisory lock — 정각 크론·수동 호출·재시도가 겹치면 후발 호출은 즉시 종료
-    // (겹침 시 due 목록을 각자 계산해 같은 계정에 중복 발송되는 사고 방지. 커넥션 종료 시 잠금 자동 해제)
-    const LOCK_KEYS = { daily: 911001, weekly: 911002, monthly: 911003 };
-    let lockClient = null, locked = false;
+    // 동시 실행 방지: system_settings 임대(lease) 잠금.
+    // ※ advisory lock은 Supabase 트랜잭션 풀링(pgbouncer, 6543) 환경에서 세션 의미가 깨져
+    //   동시 실행을 막지 못했음(중복 발송 원인). 원자적 행 UPDATE 임대로 교체.
+    //   임대 15분: 크래시로 해제를 못 해도 만료 후 자동 회복 (invocation 최장 800초 < 15분)
+    const leaseKey = `cron_lease_${type}`;
+    const leaseToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    let leased = false;
     try {
       // 긴급 일시정지 스위치: system_settings.report_cron_paused='1'이면 자동 발송 전면 중단 (force 포함)
       // report_resume_at: 재개 기준 시각 — 이 시각 이전에 예정됐던 발송은 소급하지 않음 (누락분 소급 방지)
@@ -8877,11 +8880,14 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         return res.json({ ok: true, type, paused: true, sent: 0, failed: 0, skipped: 0 });
       }
       const resumeAtMs = cronSettings.report_resume_at ? new Date(cronSettings.report_resume_at).getTime() : 0;
-      lockClient = await db.pool.connect();
-      const lr = await lockClient.query('SELECT pg_try_advisory_lock($1) AS ok', [LOCK_KEYS[type]]);
-      locked = lr.rows[0] && lr.rows[0].ok === true;
-      if (!locked) {
-        console.log(`⏭ Cron [${type}]: 다른 실행이 진행 중 — 이번 호출은 건너뜀`);
+      await db.pool.query(`INSERT INTO system_settings (key, value) VALUES ($1, '') ON CONFLICT (key) DO NOTHING`, [leaseKey]);
+      const lr = await db.pool.query(
+        `UPDATE system_settings SET value = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE key = $1 AND (value = '' OR updated_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes')`,
+        [leaseKey, leaseToken]);
+      leased = lr.rowCount > 0;
+      if (!leased) {
+        console.log(`⏭ Cron [${type}]: 다른 실행이 진행 중(임대 중) — 이번 호출은 건너뜀`);
         return res.json({ ok: true, type, alreadyRunning: true, sent: 0, failed: 0, skipped: 0 });
       }
       const allAccounts = await db.getAllAccountsWithFeature(`${type}_report`); // 가장 오래 미발송 순
@@ -8922,6 +8928,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
         const recipients = account.report_emails || '';
         let attemptLogId = null;
         const clearAttemptLog = () => { if (attemptLogId) { db.pool.query('DELETE FROM report_send_log WHERE id = $1', [attemptLogId]).catch(() => {}); attemptLogId = null; } };
+        let claimed = false, claimedOldLast = null;
+        const revertClaim = () => { if (claimed) { claimed = false; db.pool.query(`UPDATE ad_accounts SET last_${type}_report = $2 WHERE id = $1`, [account.id, claimedOldLast]).catch(() => {}); } };
         try {
           // 발송 직전 최신 스탬프 재확인 (2차 중복 방지 — due 목록 계산 후 다른 경로가 발송했을 수 있음)
           const fresh = await db.pool.query(`SELECT last_${type}_report AS l FROM ad_accounts WHERE id = $1`, [account.id]).catch(() => null);
@@ -8968,6 +8976,20 @@ function latestScheduledFireKst(type, a, nowKstMs) {
              VALUES ($1, $2, 'cron', 'failed', '처리 미완료 — 생성 중 서버 중단 추정(자동 기록)', $3) RETURNING id`,
             [account.id, type, recipients]).then(r => r.rows[0]?.id).catch(() => null);
 
+          // 계정 원자적 선점: 발송 스탬프를 먼저 새겨 경합·좀비 실행이 같은 계정을 다시 잡지 못하게 함
+          // (중복 발송 원천 차단이 최우선. 실패하면 스탬프를 원복해 캐치업이 이어감)
+          claimedOldLast = account[`last_${type}_report`] || null;
+          const claim = await db.pool.query(
+            `UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP
+             WHERE id = $1 AND (last_${type}_report IS NULL OR last_${type}_report < CURRENT_TIMESTAMP - INTERVAL '6 hours')`,
+            [account.id]);
+          if (claim.rowCount === 0) {
+            clearAttemptLog();
+            console.log(`⏭ [${account.name}] ${type}: 다른 실행이 이미 선점 — 건너뜀`);
+            return;
+          }
+          claimed = true;
+
           // prev는 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
           const work = generateAndSend(account, type, null, {});
           const ok = await Promise.race([
@@ -8984,8 +9006,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
               if (ok2) {
                 db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
                 db.logReportSend(account.id, type, { status: 'sent', errorMsg: '지연 완료(시간 초과 후 성공)', recipients, durationMs: Date.now() - t0 });
-              }
-            }).catch(() => {});
+              } else revertClaim();
+            }).catch(() => revertClaim());
             return;
           }
           if (ok) {
@@ -8995,12 +9017,14 @@ function latestScheduledFireKst(type, a, nowKstMs) {
             db.logReportSend(account.id, type, { status: 'sent', recipients, durationMs: Date.now() - t0 });
           } else {
             clearAttemptLog();
+            revertClaim();
             failed++;
             failures.push({ name: account.name, reason: '알 수 없는 실패', userId: account.user_id, userName: account.user_name || '' });
             db.logReportSend(account.id, type, { status: 'failed', errorMsg: '알 수 없는 실패', recipients, durationMs: Date.now() - t0 });
           }
         } catch (e) {
           clearAttemptLog();
+          revertClaim();
           failed++;
           failures.push({ name: account.name, reason: e.message, userId: account.user_id, userName: account.user_name || '' });
           console.error(`❌ [${account.name}] ${type}:`, e.message);
@@ -9037,11 +9061,8 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       console.error(`❌ Vercel Cron [${type}]:`, err.message);
       res.status(500).json({ ok: false, error: err.message });
     } finally {
-      // advisory lock 해제 (커넥션 반납 — 프로세스 강제 종료 시에도 세션 종료로 자동 해제됨)
-      if (lockClient) {
-        try { if (locked) await lockClient.query('SELECT pg_advisory_unlock($1)', [LOCK_KEYS[type]]); } catch (_) {}
-        try { lockClient.release(); } catch (_) {}
-      }
+      // 임대 해제 (내 토큰일 때만 — 만료 후 다른 실행이 새로 임대한 것을 지우지 않도록)
+      if (leased) await db.pool.query(`UPDATE system_settings SET value = '' WHERE key = $1 AND value = $2`, [leaseKey, leaseToken]).catch(() => {});
     }
   });
 });
