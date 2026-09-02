@@ -9033,7 +9033,9 @@ function latestScheduledFireKst(type, a, nowKstMs) {
       };
 
       // 슬라이딩 동시성 — 고정 배치(Promise.all)의 head-of-line blocking 제거.
-      // 월간은 30일치 생성으로 메모리 사용이 커서 동시 2개로 제한 (동시 3개 시 생성 중 프로세스 중단 사례)
+      // 월간은 30일치 생성으로 메모리 사용이 커서 동시 1개로 제한
+      // (동시 2~3개 생성 시 FUNCTION_INVOCATION_FAILED로 프로세스가 통째로 중단되던 실측 사례.
+      //  수동 발송(단건)은 항상 성공 → 단건 직렬 처리가 가장 안정적)
       let cursor = 0, cutoff = false;
       const worker = async () => {
         while (true) {
@@ -9043,7 +9045,7 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           await processOne(accounts[i]);
         }
       };
-      const workers = type === 'monthly' ? [worker(), worker()] : [worker(), worker(), worker()];
+      const workers = type === 'monthly' ? [worker()] : [worker(), worker(), worker()];
       await Promise.all(workers);
       const skipped = Math.max(0, accounts.length - sent - failed);
       if (skipped > 0) console.warn(`⏰ Cron [${type}]: 시간 예산 소진 — ${skipped}개는 다음 시간 크론이 이어서 처리`);
