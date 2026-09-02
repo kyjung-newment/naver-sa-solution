@@ -963,15 +963,32 @@ async function generateAndSend(account, type, customRange, opts) {
       }
     }
 
-    // 2. AD_DETAIL + AD_CONVERSION_DETAIL + SHOPPINGKEYWORD 수집
+    // 2~3. 수집 + 다차원 집계
     // 쇼핑 캠페인(유형 2)이 하나도 없으면 쇼핑키워드 리포트 2종 생략 — 유형 맵이 비어있으면 안전하게 전체 수집
     const campTps = Object.values(campTypeMap);
     const skipShopping = campTps.length > 0 && !campTps.some(tp => parseInt(tp) === 2);
     if (skipShopping) console.log('  ⚡ 쇼핑 캠페인 없음 → 쇼핑키워드 리포트 수집 생략');
-    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange, { skipShopping });
 
-    // 3. 다차원 집계
-    const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
+    let data;
+    const allDates = getDatesBetween(dateRange.since, dateRange.until);
+    const CHUNK_DAYS = 5;
+    if (opts.chunked && allDates.length > CHUNK_DAYS) {
+      // 대용량 폴백: 전 기간 원시 행을 한 번에 메모리에 올리면 초대형 계정(일 5만 행+)은
+      // 프로세스가 통째로 죽음 → 5일 단위로 수집→집계→병합해 피크 메모리를 1청크분으로 제한
+      console.log(`  🧩 대용량 분할 수집 모드: ${allDates.length}일 → ${CHUNK_DAYS}일 단위`);
+      let acc = null;
+      for (let i = 0; i < allDates.length; i += CHUNK_DAYS) {
+        const chunk = { since: allDates[i], until: allDates[Math.min(i + CHUNK_DAYS, allDates.length) - 1] };
+        const raws = await collectDetailData(client, chunk, { skipShopping });
+        const part = aggregateData(raws.rawAdDetail, raws.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raws.rawShopKwDetail, raws.rawShopConvDetail, kwQiMap, raws.rawQueryDetail, raws.rawConvHourly);
+        acc = mergeAgg(acc, part);
+        console.log(`  🧩 청크 ${chunk.since}~${chunk.until} 병합 완료`);
+      }
+      data = acc;
+    } else {
+      const raws = await collectDetailData(client, dateRange, { skipShopping });
+      data = aggregateData(raws.rawAdDetail, raws.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raws.rawShopKwDetail, raws.rawShopConvDetail, kwQiMap, raws.rawQueryDetail, raws.rawConvHourly);
+    }
 
     // 3-1. 미해결 이름(ID 노출) 감지 시 마스터 재조회로 재해석 ('ID 미인식 제외' 방지)
     await resolveUnresolvedNames(data, client, { campNameMap, agNameMap, kwNameMap }, account);

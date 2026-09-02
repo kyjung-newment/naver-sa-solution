@@ -8274,8 +8274,13 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
     // 월간 수동 트리거: 데이터가 너무 많으면 prev 스킵 (단, 맞춤 기간은 비교 데이터 필수이므로 항상 prev 가져옴)
     // prev는 /stats만 조회(저비용) → 월간 수동 발송도 비교시트 포함
     const skipPrev = req.body.skipPrev === true;
+    // 크래시 이력(초대형 계정)은 분할 수집 모드로 생성 — 수동 발송에서도 동일 폴백
+    const hadCrash = await db.pool.query(
+      `SELECT 1 FROM report_send_log WHERE account_id = $1 AND report_type = $2 AND status = 'failed'
+        AND error_msg LIKE '처리 미완료%' AND created_at > NOW() - INTERVAL '40 days' LIMIT 1`,
+      [account.id, type]).then(r => r.rows.length > 0).catch(() => false);
     const t0 = Date.now();
-    const ok = await generateAndSend(enriched, type, customRange, { skipPrev, comparePeriod });
+    const ok = await generateAndSend(enriched, type, customRange, { skipPrev, comparePeriod, chunked: hadCrash });
     if (ok) db.logReportSend(account.id, type, { source: 'manual', status: 'sent', recipients: account.report_emails || '', durationMs: Date.now() - t0 });
     if (ok && !customRange) {
       await db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [accountId]).catch(console.error);
@@ -9013,18 +9018,27 @@ function latestScheduledFireKst(type, a, nowKstMs) {
           }
           claimed = true;
 
+          // 최근 40일 내 크래시(처리 미완료) 이력이 있는 계정은 대용량 분할 수집 모드로 생성
+          // (초대형 계정의 30일 일괄 적재가 프로세스를 죽이는 문제의 차선책 — 5일 단위 수집·병합)
+          const hadCrash = await db.pool.query(
+            `SELECT 1 FROM report_send_log WHERE account_id = $1 AND report_type = $2 AND status = 'failed'
+              AND error_msg LIKE '처리 미완료%' AND created_at > NOW() - INTERVAL '40 days' LIMIT 1`,
+            [account.id, type]).then(r => r.rows.length > 0).catch(() => false);
+          if (hadCrash) console.log(`  🧩 [${account.name}] 크래시 이력 → 분할 수집 모드`);
+          const effTimeout = hadCrash ? 600000 : PER_ACCOUNT_TIMEOUT_MS; // 분할 모드는 오래 걸림
+
           // prev는 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
-          const work = generateAndSend(account, type, null, {});
+          const work = generateAndSend(account, type, null, hadCrash ? { chunked: true } : {});
           const ok = await Promise.race([
             work,
-            new Promise(resolve => setTimeout(() => resolve('timeout'), PER_ACCOUNT_TIMEOUT_MS)),
+            new Promise(resolve => setTimeout(() => resolve('timeout'), effTimeout)),
           ]);
           if (ok === 'timeout') {
             // 슬롯은 반납하되, 같은 invocation 안에서 늦게라도 성공하면 스탬프를 남겨 중복 발송을 방지
             clearAttemptLog();
             failed++;
-            failures.push({ name: account.name, reason: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s)`, userId: account.user_id, userName: account.user_name || '' });
-            db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${PER_ACCOUNT_TIMEOUT_MS / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
+            failures.push({ name: account.name, reason: `처리 시간 초과(${effTimeout / 1000}s)`, userId: account.user_id, userName: account.user_name || '' });
+            db.logReportSend(account.id, type, { status: 'failed', errorMsg: `처리 시간 초과(${effTimeout / 1000}s) — 백그라운드 계속 진행`, recipients, durationMs: Date.now() - t0 });
             work.then(ok2 => {
               if (ok2) {
                 db.pool.query(`UPDATE ad_accounts SET last_${type}_report = CURRENT_TIMESTAMP WHERE id = $1`, [account.id]).catch(console.error);
