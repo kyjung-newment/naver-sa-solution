@@ -187,6 +187,22 @@ async function initDb() {
     )
   `);
 
+  // ─── 단기보존 전환 상세 스냅샷 ──────────────────────────────────
+  // 네이버가 ~45일만 보관하는 SHOPPINGKEYWORD_CONVERSION_DETAIL(쇼핑 키워드별 전환)·
+  // AD_CONVERSION_DETAIL(시간대별 전환) 원본 행을 신선할 때 저장 → 만료 후 기간 선택 리포트가
+  // 자동 발송분과 동일한 데이터를 재구성. customer_id 키(담당자 이관/재등록과 무관하게 유지)
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS conv_detail_snapshot (
+      customer_id TEXT NOT NULL,
+      stat_date DATE NOT NULL,
+      report_tp TEXT NOT NULL,
+      rows_json TEXT NOT NULL DEFAULT '[]',
+      row_count INTEGER DEFAULT 0,
+      fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (customer_id, stat_date, report_tp)
+    )
+  `);
+
   // ─── 광고주 이관/삭제 관리 로그 (관리자 일괄 처리 감사용) ──────────
   await safeQuery(`
     CREATE TABLE IF NOT EXISTS account_admin_log (
@@ -603,6 +619,31 @@ async function getAllAccountsWithFeature(feature) {
       AND COALESCE(ac.api_key, users.api_key, '') != ''
     ${orderBy}
   `);
+}
+
+// ─── 단기보존 전환 상세 스냅샷 (쇼핑 키워드별·시간대별 전환, 네이버 ~45일 보관분 보존) ──
+async function upsertConvSnapshot(customerId, statDate, reportTp, rows) {
+  const json = JSON.stringify(rows || []);
+  return query(
+    `INSERT INTO conv_detail_snapshot (customer_id, stat_date, report_tp, rows_json, row_count, fetched_at)
+     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+     ON CONFLICT (customer_id, stat_date, report_tp)
+     DO UPDATE SET rows_json = EXCLUDED.rows_json, row_count = EXCLUDED.row_count, fetched_at = CURRENT_TIMESTAMP`,
+    [String(customerId), statDate, reportTp, json, (rows || []).length]
+  );
+}
+
+// 날짜 배열에 대한 스냅샷 조회 → { 'YYYY-MM-DD': rows[] }
+async function getConvSnapshots(customerId, reportTp, dates) {
+  if (!dates || !dates.length) return {};
+  const rows = await all(
+    `SELECT stat_date::text AS d, rows_json FROM conv_detail_snapshot
+     WHERE customer_id = $1 AND report_tp = $2 AND stat_date = ANY($3::date[])`,
+    [String(customerId), reportTp, dates]
+  );
+  const out = {};
+  for (const r of rows) { try { out[r.d] = JSON.parse(r.rows_json || '[]'); } catch (_) { out[r.d] = []; } }
+  return out;
 }
 
 // ─── 리포트 발송 이력 ─────────────────────────────────────────────
@@ -1292,6 +1333,7 @@ module.exports = Object.assign(module.exports, {
   listAgencyCredentials, addAgencyCredential, updateAgencyCredential, deleteAgencyCredential, getAgencyCredentialById,
   getAccountsByUser, getAccountById, getOwnedAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   logReportSend, getLatestReportAttempts, getRecentReportFailures,
+  upsertConvSnapshot, getConvSnapshots,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
   resetAdminPassword, deleteAllUsers, hashPassword, verifyPassword,

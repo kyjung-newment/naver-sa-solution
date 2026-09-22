@@ -88,6 +88,7 @@ function remapShoppingRow(cols) {
 async function collectDetailData(client, dateRange, opts = {}) {
   const light = !!opts.light; // light=AD_QUERY_DETAIL 생략(전략 라이브 폴백용: 메모리/속도)
   const skipShopping = opts.skipShopping === true; // 쇼핑 캠페인이 없는 계정: 쇼핑키워드 리포트 2종 생략 (API 호출 경량화, 결과는 어차피 빈 값)
+  const customerId = opts.customerId ? String(opts.customerId) : null; // 있으면 단기보존 리포트 스냅샷 저장/복원
   const dates = getDatesBetween(dateRange.since, dateRange.until);
   const rawAdDetail = [];
   const rawConvDetail = [];   // AD_CONVERSION (장기보존 ~8개월: 기기/키워드/광고그룹/일자 전환)
@@ -96,8 +97,27 @@ async function collectDetailData(client, dateRange, opts = {}) {
   const rawShopConvDetail = [];
   const rawQueryDetail = [];
 
-  // AD_CONVERSION_DETAIL(시간대 전환) 보존기간(~45일) 밖 날짜는 호출 자체를 생략
-  const hourConvCutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+  // 단기보존(~45일) 리포트 2종: AD_CONVERSION_DETAIL(시간대 전환)·SHOPPINGKEYWORD_CONVERSION_DETAIL(쇼핑 키워드별 전환)
+  // - 보존기간 안: 네이버에서 수집하고 스냅샷에 저장(재수집 시 최신값으로 갱신 — 간접전환 추가 귀속 반영)
+  // - 보존기간 밖: 호출 생략(100% 실패 10004) 후 스냅샷에서 복원 → 자동 발송 당시와 동일한 데이터로 재구성
+  const detailCutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+  const todayKst = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+  const SNAP_HOUR = 'AD_CONVERSION_DETAIL', SNAP_SHOP = 'SHOPPINGKEYWORD_CONVERSION_DETAIL';
+  let snapHour = {}, snapShop = {};
+  if (customerId) {
+    try {
+      [snapHour, snapShop] = await Promise.all([
+        db.getConvSnapshots(customerId, SNAP_HOUR, dates),
+        skipShopping ? Promise.resolve({}) : db.getConvSnapshots(customerId, SNAP_SHOP, dates),
+      ]);
+      const nH = Object.keys(snapHour).length, nS = Object.keys(snapShop).length;
+      if (nH || nS) console.log(`  💾 전환 상세 스냅샷 보유: 시간대 ${nH}일 · 쇼핑키워드 ${nS}일 (기간 ${dates.length}일)`);
+    } catch (e) { console.log('  ⚠️ 스냅샷 조회 실패:', e.message); }
+  }
+  const saveSnap = (tp, dt, rows) => {
+    if (!customerId || dt >= todayKst) return; // 진행 중인 오늘 데이터는 저장하지 않음(미완성)
+    db.upsertConvSnapshot(customerId, dt, tp, rows).catch(e => console.log('  ⚠️ 스냅샷 저장 실패:', e.message));
+  };
 
   // 날짜별 N개씩 병렬 처리 (Naver API 부하 + 메모리 균형)
   const BATCH_SIZE = light ? 8 : 5;
@@ -105,14 +125,14 @@ async function collectDetailData(client, dateRange, opts = {}) {
     const batch = dates.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
       batch.map(async (dt) => {
-        // 시간대 전환(AD_CONVERSION_DETAIL)은 네이버 보존 ~45일 — 그 이전 날짜는 100% 실패(10004)라 호출 생략
-        const hourConvOk = dt >= hourConvCutoff;
+        // 단기보존 리포트 2종은 보존기간 밖 날짜면 호출 생략 (스냅샷 복원)
+        const detailOk = dt >= detailCutoff;
         const reqs = [
           client.createAndDownloadStatReport('AD_DETAIL', dt),
           client.createAndDownloadStatReport('AD_CONVERSION', dt),                  // 주 전환(장기보존 ~8개월)
           skipShopping ? Promise.resolve([]) : client.createAndDownloadStatReport('SHOPPINGKEYWORD_DETAIL', dt),
-          skipShopping ? Promise.resolve([]) : client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
-          hourConvOk ? client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt) : Promise.resolve([]), // 시간대 전환(최근~45일)
+          (skipShopping || !detailOk) ? Promise.resolve(null) : client.createAndDownloadStatReport('SHOPPINGKEYWORD_CONVERSION_DETAIL', dt),
+          detailOk ? client.createAndDownloadStatReport('AD_CONVERSION_DETAIL', dt) : Promise.resolve(null), // 시간대 전환(최근~45일)
         ];
         // AD_QUERY_DETAIL(검색어): 네이버 개편으로 폐기되어 400(11001) 전면 실패 → 호출 제거(byQuery는 빈 값 유지)
         const [adResult, convResult, shopResult, shopConvResult, convHourResult] = await Promise.allSettled(reqs);
@@ -124,19 +144,29 @@ async function collectDetailData(client, dateRange, opts = {}) {
 
         // AD_CONVERSION: 전체 전환 데이터 (장기보존, 시간대 컬럼 없음)
         const convRows = convResult.status === 'fulfilled' ? convResult.value : [];
-        // AD_CONVERSION_DETAIL: 시간대 전환 보강 (최근만 성공, 과거기간은 실패→무시)
-        const convHourRows = (convHourResult && convHourResult.status === 'fulfilled') ? convHourResult.value : [];
+
+        // AD_CONVERSION_DETAIL: 시간대 전환 — 신선 수집 시 스냅샷 저장, 미수집/실패 시 스냅샷 복원
+        let convHourRows = [];
+        if (convHourResult.status === 'fulfilled' && Array.isArray(convHourResult.value)) {
+          convHourRows = convHourResult.value;
+          saveSnap(SNAP_HOUR, dt, convHourRows);
+        } else if (snapHour[dt]) {
+          convHourRows = snapHour[dt];
+        }
 
         // SHOPPINGKEYWORD_DETAIL: 쇼핑 키워드별 분석 전용 (리매핑만, 총합에는 미반영)
         let shopKwRows = [];
-        if (shopResult.status === 'fulfilled' && shopResult.value.length > 0) {
+        if (shopResult.status === 'fulfilled' && Array.isArray(shopResult.value) && shopResult.value.length > 0) {
           shopKwRows = shopResult.value.map(remapShoppingRow);
         }
 
-        // SHOPPINGKEYWORD_CONVERSION_DETAIL: 쇼핑 키워드별 전환 전용
+        // SHOPPINGKEYWORD_CONVERSION_DETAIL: 쇼핑 키워드별 전환 — 신선 수집 시 스냅샷 저장, 미수집/실패 시 복원
         let shopConvRows = [];
-        if (shopConvResult.status === 'fulfilled' && shopConvResult.value.length > 0) {
+        if (shopConvResult.status === 'fulfilled' && Array.isArray(shopConvResult.value)) {
+          saveSnap(SNAP_SHOP, dt, shopConvResult.value);
           shopConvRows = shopConvResult.value.map(remapShoppingRow);
+        } else if (snapShop[dt]) {
+          shopConvRows = snapShop[dt].map(remapShoppingRow);
         }
 
         // AD_QUERY_DETAIL: 검색어 텍스트 포함 (마스터 sync 의존 X). light 모드면 미수집.
@@ -979,14 +1009,14 @@ async function generateAndSend(account, type, customRange, opts) {
       let acc = null;
       for (let i = 0; i < allDates.length; i += CHUNK_DAYS) {
         const chunk = { since: allDates[i], until: allDates[Math.min(i + CHUNK_DAYS, allDates.length) - 1] };
-        const raws = await collectDetailData(client, chunk, { skipShopping });
+        const raws = await collectDetailData(client, chunk, { skipShopping, customerId: account.customer_id });
         const part = aggregateData(raws.rawAdDetail, raws.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raws.rawShopKwDetail, raws.rawShopConvDetail, kwQiMap, raws.rawQueryDetail, raws.rawConvHourly);
         acc = mergeAgg(acc, part);
         console.log(`  🧩 청크 ${chunk.since}~${chunk.until} 병합 완료`);
       }
       data = acc;
     } else {
-      const raws = await collectDetailData(client, dateRange, { skipShopping });
+      const raws = await collectDetailData(client, dateRange, { skipShopping, customerId: account.customer_id });
       data = aggregateData(raws.rawAdDetail, raws.rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, raws.rawShopKwDetail, raws.rawShopConvDetail, kwQiMap, raws.rawQueryDetail, raws.rawConvHourly);
     }
 
@@ -1114,7 +1144,10 @@ async function collectReportData(account, type, customRange, opts) {
   );
 
   const collectMain = (async () => {
-    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange);
+    // 쇼핑 캠페인 없으면 쇼핑키워드 리포트 생략 + customerId로 단기보존 전환 스냅샷 저장/복원 (자동 발송 경로와 동일)
+    const campTps = Object.values(campTypeMap);
+    const skipShopping = campTps.length > 0 && !campTps.some(tp => parseInt(tp) === 2);
+    const { rawAdDetail, rawConvDetail, rawConvHourly, rawShopKwDetail, rawShopConvDetail, rawQueryDetail } = await collectDetailData(client, dateRange, { skipShopping, customerId: account.customer_id });
     const data = aggregateData(rawAdDetail, rawConvDetail, campNameMap, agNameMap, campTypeMap, kwNameMap, rawShopKwDetail, rawShopConvDetail, kwQiMap, rawQueryDetail, rawConvHourly);
     await resolveUnresolvedNames(data, client, { campNameMap, agNameMap, kwNameMap }, account);
     await calibrateAllWithStats(data, client, dateRange, campTypeMap);
@@ -1490,4 +1523,4 @@ async function generateDownsellExcel(account, type, opts = {}) {
   return { buffer, period: r.period };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel, collectReportData };
+module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel, collectReportData, collectDetailData };

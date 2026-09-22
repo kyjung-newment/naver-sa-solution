@@ -7219,7 +7219,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
     <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:12px;color:#0c4a6e;line-height:1.65">
       <b>📌 데이터 조회 가능 기간 안내</b><br>
       • 비용·노출·클릭, 그리고 <b>일자·광고그룹·기기·키워드·캠페인별 전환</b>: 과거 기간도 정확합니다 (네이버 보존 범위 내).<br>
-      • <b>시간대별 전환</b>(구매완료·매출·ROAS): 네이버 정책상 <b>최근 약 45일</b>까지만 제공됩니다. 그 이전 기간은 시간대별 시트에 <b>빈칸(-)</b>으로 표시되며, 해당 항목은 네이버 다차원보고서를 이용해 주세요. <span style="color:#0369a1">(시간대별 비용·클릭은 과거도 정확)</span>
+      • <b>시간대별 전환·쇼핑 키워드별 전환</b>: 네이버가 <b>최근 약 45일</b>까지만 제공합니다. 그 이전 기간은 <b>자동 리포트가 생성됐던 날짜의 저장본</b>으로 제공되어 자동 발송분과 동일하게 집계되며, 저장본이 없는 날짜만 <b>빈칸(-)/미제공</b>으로 표시됩니다. <span style="color:#0369a1">(비용·클릭은 과거도 정확)</span>
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
       ${['daily','weekly','monthly'].map(t => {
@@ -7799,7 +7799,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         var cmp = c.cs ? (c.cs.replace(/-/g,'.')+'~'+c.ce.replace(/-/g,'.')) : '(자동 계산)';
         var warn='';
         var sd=new Date(c.s+'T00:00:00'); var daysAgo=Math.floor((today - sd)/86400000);
-        if(daysAgo>40 && kind!=='da'){ warn='<div style="margin-top:9px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.55">⚠️ <b>시간대별 전환</b> 데이터는 네이버 정책상 최근 약 45일까지만 제공됩니다. 선택 기간은 그 이전이라 <b>시간대별 시트의 전환·매출·ROAS가 빈칸(-)으로 표시</b>됩니다(비용·클릭은 정확). 해당 항목은 네이버 다차원보고서를 이용해 주세요.<br>※ 일자·광고그룹·기기·키워드·캠페인별 전환과 모든 비용 지표는 과거 기간도 정확합니다.</div>'; }
+        if(daysAgo>40 && kind!=='da'){ warn='<div style="margin-top:9px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.55">⚠️ <b>시간대별 전환</b>과 <b>쇼핑 키워드별 전환</b>은 네이버가 최근 약 45일까지만 제공합니다. 그 이전 기간은 <b>자동 리포트가 생성됐던 날짜의 저장본</b>으로 제공되며(자동 발송분과 동일), 저장본이 없는 날짜는 해당 항목이 빈칸(-)/미제공으로 표시됩니다(비용·클릭은 정확).<br>※ 일자·광고그룹·기기·파워링크 키워드·캠페인별 전환과 모든 비용 지표는 과거 기간도 정확합니다.</div>'; }
         n.innerHTML='분석: <b>'+c.s.replace(/-/g,'.')+'~'+c.e.replace(/-/g,'.')+'</b> &nbsp;·&nbsp; 비교('+c.clabel+'): <b>'+cmp+'</b>'+warn; }
       function setMode(m){ crMode=m;
         document.getElementById('cr-panel-month').style.display=(m==='month'?'block':'none');
@@ -9249,6 +9249,8 @@ router.get('/api/cron/cleanup-old-data', async (req, res) => {
     const logRes = await db.pool.query(`
       DELETE FROM sync_log WHERE stat_date < CURRENT_DATE - ($1 || ' days')::interval
     `, [RETENTION_DAYS]).catch(e => ({ rowCount: 0, error: e.message }));
+    // 단기보존 전환 상세 스냅샷은 AD_CONVERSION 보존(~8개월)에 맞춰 240일 유지
+    await db.pool.query(`DELETE FROM conv_detail_snapshot WHERE stat_date < CURRENT_DATE - INTERVAL '240 days'`).catch(() => {});
 
     // 네이버 리포트 job 정리 (계정당 100 한도 누적 방지 — master/stat 완료 job 삭제)
     // 자동발송 후에도 정리하지만, 수동 생성·실패 누락분을 주기적으로 일괄 정리한다.

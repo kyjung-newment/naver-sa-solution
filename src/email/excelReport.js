@@ -625,6 +625,13 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
         ? `전체 검색어 ${list.length}개 · 전환 발생 ${kwWithConv}개 (AD_QUERY_DETAIL 기반)`
         : `${kwLabel} ${validKw.length}개 · 전환 발생 ${kwWithConv}개${unknownKw.length ? ' (ID 미인식 '+unknownKw.length+'개 제외)' : ''}`, 14);
       r++;
+      // 쇼핑검색 키워드별 전환은 네이버가 ~45일만 제공(SHOPPINGKEYWORD_CONVERSION_DETAIL).
+      // 유형 합계에는 전환이 있는데 키워드별 전환이 전부 0이면 '미제공'이지 '0건'이 아님 → 안내 표기
+      const typeConv = (data.byCampaignType && data.byCampaignType[tp] && data.byCampaignType[tp].purchaseCnt) || 0;
+      if (tp === '쇼핑검색' && !useQuery && typeConv > 0 && kwWithConv === 0) {
+        r = subTitle(kws, r, `⚠ 이 기간의 쇼핑 키워드별 전환 데이터가 네이버에서 제공되지 않아(약 45일 보관) 키워드별 구매완료·구매매출은 실제 0건이 아닌 '미제공'입니다. 쇼핑검색 전체 전환(${typeConv.toLocaleString('ko-KR')}건)은 캠페인·광고그룹·유형별 시트에서 확인하세요. ※ 자동 리포트가 생성된 이후 기간은 저장본으로 제공됩니다.`, 14);
+        r += 2;
+      }
 
       // ── 구매전환매출 TOP 10 ──
       const convTop = [...validKw].filter(([, d]) => d.purchaseAmt > 0).sort((a, b) => b[1].purchaseAmt - a[1].purchaseAmt).slice(0, 10);
