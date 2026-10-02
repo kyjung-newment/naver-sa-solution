@@ -1771,12 +1771,15 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
         <span class="card-title">🏢 솔루션 적용 광고주</span>
-        <span style="font-size:12px;color:#94a3b8">${accounts.length}개</span>
+        <span style="display:flex;align-items:center;gap:10px;margin-left:auto">
+          ${accounts.length > 0 ? `<input id="acct-search" type="search" placeholder="광고주명 검색" oninput="filterAccounts()" autocomplete="off" style="height:32px;width:200px;font-size:13px;padding:0 10px;border:1px solid #e2e8f0;border-radius:6px">` : ''}
+          <span id="acct-count" style="font-size:12px;color:#94a3b8;white-space:nowrap">${accounts.length}개</span>
+        </span>
       </div>
       ${accounts.length === 0
         ? '<div class="empty">위에서 광고주를 추가하여<br>솔루션을 적용할 광고주를 등록해주세요.</div>'
-        : `<table>
-            <thead><tr><th>광고주명</th><th>Customer ID</th><th>네이버 마스터</th><th>활용 기능</th><th style="text-align:center">관리</th></tr></thead>
+        : `<table id="acct-table">
+            <thead><tr><th class="sortable" id="th-acct-name" onclick="sortAccountsByName()" title="클릭하면 오름차순 ↔ 내림차순으로 정렬됩니다">광고주명</th><th>Customer ID</th><th>네이버 마스터</th><th>활용 기능</th><th style="text-align:center">관리</th></tr></thead>
             <tbody>
               ${accounts.map(a => {
                 const syncBadge = a.sync_status === 'synced'
@@ -1810,7 +1813,8 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
                 </tr>
               `}).join('')}
             </tbody>
-          </table>`
+          </table>
+          <div id="acct-no-match" class="empty" style="display:none">검색 결과가 없습니다.</div>`
       }
     </div>
 
@@ -1847,6 +1851,45 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
     </div>
 
     <script>
+    // ── 광고주 목록 정렬(광고주명) / 검색 ──
+    var ACCT_TOTAL = ${accounts.length};
+    var acctSortDir = (function(){ try { return localStorage.getItem('acctNameSort') || ''; } catch(e) { return ''; } })();
+    function sortAccountsByName(dir) {
+      var th = document.getElementById('th-acct-name');
+      var tbody = document.querySelector('#acct-table tbody');
+      if (!th || !tbody) return;
+      if (!dir) dir = acctSortDir === 'asc' ? 'desc' : 'asc';
+      acctSortDir = dir;
+      try { localStorage.setItem('acctNameSort', dir); } catch(e) {}
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      rows.sort(function(a, b) {
+        var r = (a.dataset.accountName || '').localeCompare(b.dataset.accountName || '', 'ko', { sensitivity: 'base', numeric: true });
+        return dir === 'asc' ? r : -r;
+      });
+      rows.forEach(function(r) { tbody.appendChild(r); });
+      th.classList.remove('sort-asc', 'sort-desc');
+      th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    }
+    function filterAccounts() {
+      var input = document.getElementById('acct-search');
+      var tbody = document.querySelector('#acct-table tbody');
+      if (!input || !tbody) return;
+      var q = input.value.trim().toLowerCase();
+      var shown = 0;
+      Array.prototype.forEach.call(tbody.querySelectorAll('tr'), function(tr) {
+        var name = (tr.dataset.accountName || '').toLowerCase();
+        var cid = (tr.children[1] ? tr.children[1].textContent : '').trim().toLowerCase();
+        var ok = !q || name.indexOf(q) !== -1 || cid.indexOf(q) !== -1;
+        tr.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+      });
+      var cnt = document.getElementById('acct-count');
+      if (cnt) cnt.textContent = q ? (shown + ' / ' + ACCT_TOTAL + '개') : (ACCT_TOTAL + '개');
+      var nm = document.getElementById('acct-no-match');
+      if (nm) nm.style.display = (q && shown === 0) ? '' : 'none';
+    }
+    if (acctSortDir === 'asc' || acctSortDir === 'desc') sortAccountsByName(acctSortDir);
+
     async function testAndAddCustomer() {
       const nameEl = document.getElementById('add-name');
       const cidEl = document.getElementById('add-cid');
