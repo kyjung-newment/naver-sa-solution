@@ -1065,6 +1065,7 @@ async function generateAndSend(account, type, customRange, opts) {
       dateRange,
       prevRange,
       isCustom,
+      daReport: opts.daReport || null,
     });
 
     // 6. 발송 후 리포트 job 정리 (계정당 100 한도 누적 방지 — 특히 매일 도는 일간)
@@ -1196,6 +1197,11 @@ async function collectReportData(account, type, customRange, opts) {
 async function generatePreview(account, type, customRange, opts) {
   const r = await collectReportData(account, type, customRange, opts);
   const { buildHtmlReport } = require('../email/sender');
+  if (opts && opts.daReport) {
+    const saHtml = buildHtmlReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom });
+    const typeLabel = r.isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
+    return require('./gfaReport').buildCombinedHtml({ accountName: account.name, period: r.period, typeLabel, data: r.data, prevData: r.prevData, saHtml, daReport: opts.daReport });
+  }
   return buildHtmlReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom });
 }
 
@@ -1206,7 +1212,7 @@ async function generateExcelBuffer(account, type, customRange, opts) {
   const r = await collectReportData(account, type, customRange, opts);
   const { buildExcelReport } = require('../email/excelReport');
   const reportConfig = db.parseReportConfig(account);
-  return { buffer: await buildExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom, reportConfig }), period: r.period };
+  return { buffer: await buildExcelReport({ type, period: r.period, accountName: account.name, data: r.data, prevData: r.prevData, dateRange: r.dateRange, prevRange: r.prevRange, isCustom: r.isCustom, reportConfig, daReport: (opts && opts.daReport) || null }), period: r.period };
 }
 
 /**
@@ -1523,4 +1529,4 @@ async function generateDownsellExcel(account, type, opts = {}) {
   return { buffer, period: r.period };
 }
 
-module.exports = { generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel, collectReportData, collectDetailData };
+module.exports = { getDateRange, generateAndSend, generatePreview, generateExcelBuffer, generateAnalysisBundle, generateAnalysisBrief, runStrategy, generateUpsellExcel, generateDownsellExcel, collectReportData, collectDetailData };

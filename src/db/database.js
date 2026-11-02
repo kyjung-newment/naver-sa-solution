@@ -203,6 +203,61 @@ async function initDb() {
     )
   `);
 
+  // ─── GFA(DA) 원본 업로드 ─────────────────────────────────────────
+  // 같은 광고주·기간·보고서 형태(signature)는 1건만 유지 (다시 올리면 교체).
+  // rows_gz: 정규화 행 JSON의 gzip. 구매완료 외 전환 값은 저장하지 않는다.
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS da_upload_file (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      since DATE NOT NULL,
+      until DATE NOT NULL,
+      signature TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      dims_json TEXT NOT NULL,
+      file_name TEXT DEFAULT '',
+      content_hash TEXT DEFAULT '',
+      row_count INTEGER DEFAULT 0,
+      totals_json TEXT DEFAULT '{}',
+      warnings_json TEXT DEFAULT '[]',
+      rows_gz BYTEA NOT NULL,
+      uploaded_by INTEGER,
+      uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (account_id, since, until, signature)
+    )
+  `);
+  // DA 리포트 발송 이력 + 진행 중 잠금 (같은 기간 동시·중복 발송 차단)
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS da_upload_send (
+      id SERIAL PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      since DATE NOT NULL,
+      until DATE NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      source TEXT DEFAULT 'manual',
+      recipients TEXT DEFAULT '',
+      sent_by INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await safeQuery(`CREATE UNIQUE INDEX IF NOT EXISTS da_upload_send_inflight ON da_upload_send (account_id, since, until, mode) WHERE status = 'sending'`);
+  // 'DA 업로드 후 자동리포트 발송': 담당자가 업로드 완료를 확정한 주기
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS da_upload_ready (
+      account_id INTEGER NOT NULL REFERENCES ad_accounts(id) ON DELETE CASCADE,
+      report_type TEXT NOT NULL,
+      since DATE NOT NULL,
+      until DATE NOT NULL,
+      ready_by INTEGER,
+      ready_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (account_id, report_type, since, until)
+    )
+  `);
+  await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_wait_daily INTEGER DEFAULT 0`);
+  await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_wait_weekly INTEGER DEFAULT 0`);
+  await safeQuery(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS da_wait_monthly INTEGER DEFAULT 0`);
+
   // ─── 광고주 이관/삭제 관리 로그 (관리자 일괄 처리 감사용) ──────────
   await safeQuery(`
     CREATE TABLE IF NOT EXISTS account_admin_log (
@@ -672,6 +727,80 @@ async function getRecentReportFailures(reportType, sinceDays = 32) {
      WHERE report_type = $1 AND status = 'failed' AND created_at > NOW() - ($2 || ' days')::interval`,
     [reportType, String(sinceDays)]
   ).catch(() => []);
+}
+
+// ─── GFA(DA) 원본 업로드 ─────────────────────────────────────────
+function daFileRow(r) {
+  return {
+    id: r.id, account_id: r.account_id, since: r.since, until: r.until, signature: r.signature, kind: r.kind,
+    dims: JSON.parse(r.dims_json || '[]'), file_name: r.file_name, row_count: r.row_count,
+    totals: JSON.parse(r.totals_json || '{}'), warnings: JSON.parse(r.warnings_json || '[]'),
+    uploaded_at: r.uploaded_at, rows_gz: r.rows_gz,
+  };
+}
+const DA_FILE_COLS = `id, account_id, since::text AS since, until::text AS until, signature, kind, dims_json, file_name, row_count, totals_json, warnings_json, uploaded_at::text AS uploaded_at`;
+async function upsertDaFile({ accountId, since, until, signature, kind, dims, fileName, contentHash, rowCount, totals, warnings, rowsGz, uploadedBy }) {
+  const r = await query(
+    `INSERT INTO da_upload_file (account_id, since, until, signature, kind, dims_json, file_name, content_hash, row_count, totals_json, warnings_json, rows_gz, uploaded_by, uploaded_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,CURRENT_TIMESTAMP)
+     ON CONFLICT (account_id, since, until, signature) DO UPDATE SET
+       kind = EXCLUDED.kind, dims_json = EXCLUDED.dims_json, file_name = EXCLUDED.file_name, content_hash = EXCLUDED.content_hash,
+       row_count = EXCLUDED.row_count, totals_json = EXCLUDED.totals_json, warnings_json = EXCLUDED.warnings_json,
+       rows_gz = EXCLUDED.rows_gz, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = CURRENT_TIMESTAMP
+     RETURNING id, (xmax <> 0) AS replaced`,
+    [accountId, since, until, signature, kind, JSON.stringify(dims), fileName, contentHash, rowCount, JSON.stringify(totals), JSON.stringify(warnings), rowsGz, uploadedBy]);
+  return r.rows ? r.rows[0] : r[0];
+}
+async function getDaFiles(accountId, since, until, withRows = false) {
+  const rows = await all(`SELECT ${DA_FILE_COLS}${withRows ? ', rows_gz' : ''} FROM da_upload_file WHERE account_id = $1 AND since = $2 AND until = $3 ORDER BY kind, id`, [accountId, since, until]);
+  return rows.map(daFileRow);
+}
+async function deleteDaFile(id, accountId) {
+  return query('DELETE FROM da_upload_file WHERE id = $1 AND account_id = $2', [id, accountId]);
+}
+// 같은 내용의 파일이 다른 기간으로 올라가 있는지 (기간을 잘못 고른 업로드 차단)
+async function findDaFileInOtherPeriod(accountId, contentHash, since, until) {
+  return get(`SELECT since::text AS since, until::text AS until, file_name FROM da_upload_file
+    WHERE account_id = $1 AND content_hash = $2 AND NOT (since = $3 AND until = $4) LIMIT 1`, [accountId, contentHash, since, until]);
+}
+async function getDaPeriods(accountId) {
+  return all(`SELECT since::text AS since, until::text AS until, COUNT(*)::int AS files, MAX(uploaded_at)::text AS uploaded_at
+    FROM da_upload_file WHERE account_id = $1 GROUP BY since, until ORDER BY since DESC, until DESC LIMIT 24`, [accountId]);
+}
+async function getDaLastSend(accountId, since, until, mode) {
+  return get(`SELECT created_at::text AS created_at, recipients, source FROM da_upload_send
+    WHERE account_id = $1 AND since = $2 AND until = $3 AND mode = $4 AND status = 'sent' ORDER BY id DESC LIMIT 1`, [accountId, since, until, mode]);
+}
+// 발송 시작 잠금. 진행 중인 건이 있으면 null. 15분 넘은 잠금은 크래시로 보고 정리한다.
+async function beginDaSend(accountId, since, until, mode, recipients, sentBy, source = 'manual') {
+  await query(`DELETE FROM da_upload_send WHERE status = 'sending' AND created_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes'`);
+  const r = await pool.query(
+    `INSERT INTO da_upload_send (account_id, since, until, mode, status, source, recipients, sent_by)
+     VALUES ($1,$2,$3,$4,'sending',$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id`,
+    [accountId, since, until, mode, source, recipients, sentBy]);
+  return r.rows[0] ? r.rows[0].id : null;
+}
+async function finishDaSend(id, ok) {
+  if (ok) return query(`UPDATE da_upload_send SET status = 'sent', created_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  return query('DELETE FROM da_upload_send WHERE id = $1', [id]);
+}
+async function setDaWait(accountId, type, on) {
+  if (!['daily', 'weekly', 'monthly'].includes(type)) throw new Error('잘못된 타입');
+  return query(`UPDATE ad_accounts SET da_wait_${type} = $2 WHERE id = $1`, [accountId, on ? 1 : 0]);
+}
+async function setDaReady(accountId, type, since, until, by) {
+  return query(`INSERT INTO da_upload_ready (account_id, report_type, since, until, ready_by) VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (account_id, report_type, since, until) DO UPDATE SET ready_at = CURRENT_TIMESTAMP, ready_by = EXCLUDED.ready_by`, [accountId, type, since, until, by]);
+}
+async function clearDaReady(accountId, type, since, until) {
+  return query('DELETE FROM da_upload_ready WHERE account_id = $1 AND report_type = $2 AND since = $3 AND until = $4', [accountId, type, since, until]);
+}
+async function getDaReady(accountId, type, since, until) {
+  return get(`SELECT ready_at::text AS ready_at FROM da_upload_ready WHERE account_id = $1 AND report_type = $2 AND since = $3 AND until = $4`, [accountId, type, since, until]);
+}
+async function getDaReadySet(type, since, until) {
+  const rows = await all('SELECT account_id FROM da_upload_ready WHERE report_type = $1 AND since = $2 AND until = $3', [type, since, until]);
+  return new Set(rows.map(r => r.account_id));
 }
 
 async function addSelectedAccount(userId, customerId, name) {
@@ -1334,6 +1463,8 @@ module.exports = Object.assign(module.exports, {
   getAccountsByUser, getAccountById, getOwnedAccountById, getAccountByCustomerId, getAllAccountsWithFeature,
   logReportSend, getLatestReportAttempts, getRecentReportFailures,
   upsertConvSnapshot, getConvSnapshots,
+  upsertDaFile, getDaFiles, deleteDaFile, findDaFileInOtherPeriod, getDaPeriods, getDaLastSend, beginDaSend, finishDaSend,
+  setDaWait, setDaReady, clearDaReady, getDaReady, getDaReadySet,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
   resetAdminPassword, deleteAllUsers, hashPassword, verifyPassword,

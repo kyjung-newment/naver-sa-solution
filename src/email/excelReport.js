@@ -8,7 +8,7 @@ const f = {
   won: n => `₩${Number(n || 0).toLocaleString('ko-KR')}`,
 };
 
-async function buildExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom, reportConfig, suggestions }) {
+async function buildExcelReport({ type, period, accountName, data, prevData, dateRange, prevRange, isCustom, reportConfig, suggestions, daReport }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = '뉴먼트 솔루션';
   wb.created = new Date();
@@ -156,7 +156,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   cover.getRow(cr).height = 55;
   cover.mergeCells(cr, 2, cr, 4);
   const tc = cover.getRow(cr).getCell(2);
-  tc.value = `${accountName} 네이버 검색광고 ${typeLabel} 보고서`;
+  tc.value = daReport ? `${accountName} 네이버 검색광고+디스플레이 ${typeLabel} 보고서` : `${accountName} 네이버 검색광고 ${typeLabel} 보고서`;
   tc.font = { bold: true, size: 17, color: { argb: C.white } };
   tc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.green } };
   tc.alignment = cm;
@@ -185,13 +185,16 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     c.border = border; c.alignment = cm;
   });
   cr++;
-  const sheetList = [['요약·캠페인','KPI 요약 + 캠페인별 성과']];
+  // SA+DA 통합 리포트: 통합 요약을 맨 앞에, DA 시트를 맨 뒤에 둔다
+  const daOpts = daReport ? { accountName, period, typeLabel, cmpLabel: daReport.cmpLabel, model: daReport.model, prev: daReport.prev } : null;
+  const sheetList = daReport ? [['통합 요약', 'SA+DA 합산 성과 (구매완료 기준)'], ['요약·캠페인','SA KPI 요약 + 캠페인별 성과']] : [['요약·캠페인','KPI 요약 + 캠페인별 성과']];
   if (prevData && type !== 'daily') sheetList.push(['기간비교','캠페인유형별·광고그룹별 전기간 비교']);
   const _hasQuery = data.byQuery && Object.keys(data.byQuery).length > 0
     && Object.values(data.byQuery).some(d => (d.cost || 0) > 0 || (d.clk || 0) > 0);
   const _kwIdxLabel = _hasQuery ? '검색어별' : '키워드별';
   const _kwIdxDesc = _hasQuery ? '검색어별 성과 (AD_QUERY_DETAIL)' : '키워드별 전환/ROAS/비효율 TOP';
   sheetList.push(['유형 및 기기별','캠페인유형별 + PC/모바일 성과'], ['광고그룹별','광고그룹별 성과 (TOP 10)'], [_kwIdxLabel, _kwIdxDesc], ['시간대별','구매전환매출 기준 시간대 분포'], ['일자별','일자별 성과 추이']);
+  if (daOpts) for (const s of require('../report/gfaReport').daSheetPlan(daOpts)) sheetList.push([`DA ${s.name}`.slice(0, 31), s.desc]);
   sheetList.forEach(([n, d], i) => {
     const row = cover.getRow(cr + i); row.height = 22;
     [{v:`sheet${i+1}`}, {v:n, bold:true}, {v:d}].forEach((item, j) => {
@@ -204,6 +207,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
   // ══════════════════════════════════════════════════════════════════
   // 2. 요약·캠페인 (병합 시트)
   // ══════════════════════════════════════════════════════════════════
+  if (daReport) require('../report/gfaReport').addCombinedSheet(wb, { accountName, period, typeLabel, data, prevData, daReport });
   const sum = wb.addWorksheet('요약·캠페인');
   setup(sum); setColWidths(sum, [25]); sum.getColumn(3).width = 25;
 
@@ -1008,6 +1012,7 @@ async function buildExcelReport({ type, period, accountName, data, prevData, dat
     // 키워드 발굴 시트 제거 (사용자 요청)
   }
 
+  if (daOpts) require('../report/gfaReport').addDaSheets(wb, daOpts, 'DA ');
   return await wb.xlsx.writeBuffer();
 }
 

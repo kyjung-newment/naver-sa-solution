@@ -4,7 +4,8 @@ const pgSession = require('connect-pg-simple')(session);
 const { config } = require('../../config');
 const db = require('../db/database');
 const { createApiClient } = require('../api/naverApi');
-const { generateAndSend } = require('../report/generator');
+const { generateAndSend, getDateRange } = require('../report/generator');
+const { registerDaUploadRoutes, loadDaReport } = require('./daUploadRoutes');
 const crypto = require('crypto');
 const { sendInviteEmail, verifySmtpAuth, sendMailWithFallback } = require('../email/sender');
 
@@ -275,6 +276,9 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
   }
   // 리포트: 마케터=자동리포트, 열람자=리포트 다운로드
   menuItems.push({ id: 'reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>', label: isViewerUser ? '리포트 다운로드' : '자동리포트', href: '/smart-sa/reports' });
+  if (!isViewerUser && user?.is_admin) {
+    menuItems.push({ id: 'beta-reports', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6"/><path d="M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><line x1="7.5" y1="15" x2="16.5" y2="15"/></svg>', label: '자동리포트 BETA', href: '/smart-sa/beta/reports' });
+  }
   if (!isViewerUser) {
     menuItems.push(
       { id: 'accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', label: '광고주 관리', href: '/smart-sa/accounts' },
@@ -1169,11 +1173,16 @@ router.get('/admin/report-health', requireLogin, requireAdmin, async (req, res) 
   const nowKstMs = nowMs + 9 * 3600 * 1000;
   const GRACE_MS = 2 * 3600 * 1000; // 예정 경과 2시간까지는 캐치업 진행 중으로 간주
 
-  const typeLabels = { daily: '일간', weekly: '주간', monthly: '월간' };
+  const typeLabels = { daily: '일간', weekly: '주간', monthly: '월간', da_upload: 'DA 업로드' };
   function cellState(a, type) {
     if (!a[`feat_${type}_report`]) return { cls: 'off', label: 'OFF', detail: '' };
     const last = a[`last_${type}_report`];
     const lastMs = last ? new Date(last).getTime() : 0;
+    // 'DA 업로드 후 발송' 계정은 확정 전까지 의도적으로 보류 — 지연으로 집계하지 않는다
+    if (a[`da_wait_${type}`]) {
+      const heldFire = latestScheduledFireKst(type, a, nowKstMs, true);
+      if (heldFire != null && lastMs < heldFire - 9 * 3600 * 1000) return { cls: 'wait', label: 'DA 대기', detail: 'DA 업로드 확정 후 발송' };
+    }
     const att = attMap[a.id + ':' + type];
     const attMs = att ? new Date(att.created_at).getTime() : 0;
     if (att && att.status === 'failed' && attMs > lastMs) {
@@ -8971,10 +8980,26 @@ function latestScheduledFireKst(type, a, nowKstMs, ignoreWindow = false) {
         failsByAccount.get(r.account_id).push(new Date(r.created_at).getTime());
       }
 
+      // 'DA 업로드 후 자동리포트 발송' 계정: 업로드 확정 전에는 어떤 경우에도 발송하지 않는다
+      const regularRange = getDateRange(type);
+      const daReadySet = allAccounts.some(a => a[`da_wait_${type}`])
+        ? await db.getDaReadySet(type, regularRange.since, regularRange.until).catch(() => new Set())
+        : new Set();
+
       const accounts = allAccounts.filter(a => {
         const last = a[`last_${type}_report`];
         const lastMs = last ? new Date(last).getTime() : 0;
         if (lastMs && nowMs - lastMs < 6 * 3600 * 1000) return false; // 최근 6h 발송 제외 (중복 방지)
+        if (a[`da_wait_${type}`]) {
+          if (!daReadySet.has(a.id)) return false;
+          // 업로드가 늦을 수 있어 캐치업 창은 적용하지 않고 주기 중복·재시도 상한만 본다
+          const heldFire = latestScheduledFireKst(type, a, nowKstMs, true);
+          if (heldFire == null) return false;
+          const heldFireMs = heldFire - 9 * 60 * 60 * 1000;
+          if (lastMs >= heldFireMs) return false;
+          const heldFails = (failsByAccount.get(a.id) || []).filter(t => t >= heldFireMs && t >= nowMs - 24 * 3600 * 1000).length;
+          return heldFails < MAX_ATTEMPTS_PER_PERIOD;
+        }
         // force=1: 캐치업 창·재시도 상한·재개 기준만 무시. '이번 주기 이미 발송됨'은 force에서도 반드시 지킴
         // (9/2 사고: force가 주기 체크까지 건너뛰어 9/1 발송 계정에 재발송됨 — 재발 방지)
         if (force) {
@@ -9077,8 +9102,15 @@ function latestScheduledFireKst(type, a, nowKstMs, ignoreWindow = false) {
           if (hadCrash) console.log(`  🧩 [${account.name}] 크래시 이력 → 분할 수집 모드`);
           const effTimeout = hadCrash ? 600000 : PER_ACCOUNT_TIMEOUT_MS; // 분할 모드는 오래 걸림
 
+          // 'DA 업로드 후 발송' 계정은 업로드 데이터를 합친 SA+DA 통합 리포트로 생성
+          let daGen = {};
+          if (account[`da_wait_${type}`]) {
+            const daReport = await loadDaReport(account.id, regularRange.since, regularRange.until);
+            if (!daReport) throw new Error('DA 성과 보고서 파일이 없습니다 — 업로드 후 다시 확정해 주세요');
+            daGen = { daReport, comparePeriod: daReport.comparePeriod };
+          }
           // prev는 /stats만 조회(저비용) → 월간도 비교시트 포함 (수동 생성과 내용 통일)
-          const work = generateAndSend(account, type, null, hadCrash ? { chunked: true } : {});
+          const work = generateAndSend(account, type, null, { ...(hadCrash ? { chunked: true } : {}), ...daGen });
           const ok = await Promise.race([
             work,
             new Promise(resolve => setTimeout(() => resolve('timeout'), effTimeout)),
@@ -9294,6 +9326,9 @@ router.get('/api/cron/cleanup-old-data', async (req, res) => {
     `, [RETENTION_DAYS]).catch(e => ({ rowCount: 0, error: e.message }));
     // 단기보존 전환 상세 스냅샷은 AD_CONVERSION 보존(~8개월)에 맞춰 240일 유지
     await db.pool.query(`DELETE FROM conv_detail_snapshot WHERE stat_date < CURRENT_DATE - INTERVAL '240 days'`).catch(() => {});
+    // GFA 업로드 원본·이력은 전년 비교를 고려해 400일 유지
+    await db.pool.query(`DELETE FROM da_upload_file WHERE until < CURRENT_DATE - INTERVAL '400 days'`).catch(() => {});
+    await db.pool.query(`DELETE FROM da_upload_ready WHERE until < CURRENT_DATE - INTERVAL '400 days'`).catch(() => {});
 
     // 네이버 리포트 job 정리 (계정당 100 한도 누적 방지 — master/stat 완료 job 삭제)
     // 자동발송 후에도 정리하지만, 수동 생성·실패 누락분을 주기적으로 일괄 정리한다.
@@ -10082,5 +10117,8 @@ router.post('/api/sync/trigger', requireLogin, requireAdmin, async (req, res) =>
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+// ─── 자동리포트 BETA (GFA 원본 업로드 · SA+DA 통합) ─────────────────
+registerDaUploadRoutes(router, { requireLogin, requireAdmin, appLayout, getUser, getLayoutOpts, getGlobalSmtpAccount, escHtml });
 
 module.exports = { router };

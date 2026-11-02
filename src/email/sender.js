@@ -579,7 +579,7 @@ function parseAccountReportConfig(account) {
 }
 
 // ─── 이메일 발송 ────────────────────────────────────────────────────
-async function sendReport({ account, type, period, data, prevData, dateRange, prevRange, isCustom }) {
+async function sendReport({ account, type, period, data, prevData, dateRange, prevRange, isCustom, daReport }) {
   // 기간 선택(맞춤) 리포트: 메일 제목·본문·첨부 파일명 모두 '맞춤'으로 표기
   const typeLabel = isCustom ? '맞춤' : ({ daily: '일간', weekly: '주간', monthly: '월간' }[type] || type);
   const today = new Date().toLocaleDateString('ko-KR');
@@ -593,13 +593,16 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
     throw new Error(`발신 SMTP 미설정 — 내 정보에서 다우오피스 이메일을 연동하세요`);
   }
 
-  const html = buildHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
+  const saHtml = buildHtmlReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom });
+  const html = daReport
+    ? require('../report/gfaReport').buildCombinedHtml({ accountName: account.name, period, typeLabel, data, prevData, saHtml, daReport })
+    : saHtml;
 
   // 엑셀 리포트 생성 (계정별 시트 커스터마이징 적용)
   let excelBuffer = null;
   try {
     const reportConfig = parseAccountReportConfig(account);
-    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom, reportConfig });
+    excelBuffer = await buildExcelReport({ type, period, accountName: account.name, data, prevData, dateRange, prevRange, isCustom, reportConfig, daReport });
     console.log(`📊 [${account.name}] 엑셀 리포트 생성 완료 (${Math.round(excelBuffer.length / 1024)}KB)`);
   } catch (e) {
     console.warn(`⚠️ [${account.name}] 엑셀 리포트 생성 실패:`, e.message);
@@ -611,7 +614,7 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
   const mailOptions = {
     from: account.email_user,
     to: recipients.join(', '),
-    subject: `📊 [${account.name}] ${typeLabel} 성과 리포트 ${subjectTail}`,
+    subject: `📊 [${account.name}] ${typeLabel} 성과 리포트${daReport ? ' (SA+DA)' : ''} ${subjectTail}`,
     html,
     text: `네이버 SA ${typeLabel} 리포트\n광고주: ${account.name}\n기간: ${period}\n총비용: ${f.won(data.total.cost)}\n클릭: ${f.num(data.total.clk)}`,
   };
@@ -619,7 +622,7 @@ async function sendReport({ account, type, period, data, prevData, dateRange, pr
   // 엑셀 첨부파일 추가
   if (excelBuffer) {
     mailOptions.attachments = [{
-      filename: `${account.name}_${typeLabel}_리포트_${dateStr}.xlsx`,
+      filename: `${account.name}_${daReport ? 'SA+DA_' : ''}${typeLabel}_리포트_${dateStr}.xlsx`,
       content: Buffer.from(excelBuffer),
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     }];
