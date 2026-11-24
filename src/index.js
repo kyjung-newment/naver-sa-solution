@@ -48,9 +48,15 @@ app.use('/auto-bid', autoSpo); // 레거시 경로
 // 헬스체크
 // 헬스체크 — 내부 정보(사용자 수·오류 원문)는 노출하지 않는다
 app.get('/health', async (req, res) => {
-  let db = 'ok';
-  try { await require('./db/database').pool.query('SELECT 1'); } catch (_) { db = 'error'; }
-  res.json({ status: db === 'ok' ? 'ok' : 'degraded', db });
+  let db = 'ok', secrets = 'n/a';
+  try {
+    const { pool, secretBox } = require('./db/database');
+    await pool.query('SELECT 1');
+    // 암호화 키 자가검증: 표본 복호화 성공 여부만 (값·개수 비노출)
+    const st = secretBox.getStatus();
+    if (st.kid) { const c = await secretBox.selfCheck(pool, 20); secrets = c.checked === 0 ? 'none' : (c.failed ? 'fail' : 'ok'); }
+  } catch (_) { db = 'error'; }
+  res.json({ status: db === 'ok' && secrets !== 'fail' ? 'ok' : 'degraded', db, secrets });
 });
 
 // ─── Vercel: app을 서버리스 함수로 내보내기 ────────────────────────

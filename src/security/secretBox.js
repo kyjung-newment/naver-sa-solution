@@ -154,7 +154,27 @@ async function coverageReport(pool) {
   return out;
 }
 
+/** 운영 자가검증: 암호화된 값을 표본으로 복호화해 키가 맞는지 확인 (값은 반환하지 않음) */
+async function selfCheck(pool, sample = 30) {
+  const rows = await pool.query(
+    `SELECT v FROM (
+       SELECT secret_key AS v FROM users WHERE secret_key LIKE 'enc:v1:%'
+       UNION ALL SELECT secret_key FROM agency_credentials WHERE secret_key LIKE 'enc:v1:%'
+       UNION ALL SELECT smtp_pass FROM users WHERE smtp_pass LIKE 'enc:v1:%'
+     ) x LIMIT $1`, [sample]).then(r => r.rows).catch(() => []);
+  let failed = 0;
+  for (const r of rows) {
+    const [kid, iv, tag, ct] = r.v.slice(PREFIX.length).split(':');
+    try {
+      const d = crypto.createDecipheriv('aes-256-gcm', KEYS[kid], Buffer.from(iv, 'base64url'));
+      d.setAuthTag(Buffer.from(tag, 'base64url'));
+      Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]);
+    } catch (_) { failed++; }
+  }
+  return { checked: rows.length, failed };
+}
+
 module.exports = {
-  seal, open, openFields, mask, isEncrypted, initSecretBox, sealPlaintextRows, coverageReport,
+  seal, open, openFields, mask, isEncrypted, initSecretBox, sealPlaintextRows, coverageReport, selfCheck,
   getStatus: () => ({ ...status, fingerprint: ACTIVE_KID ? fingerprint(ACTIVE_KID) : null, hasDataKey: !!KEYS.k, hasSessionKey: !!KEYS.s }),
 };
