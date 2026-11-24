@@ -20,7 +20,10 @@ async function mapLimit(items, limit, fn) {
  * @param {{ apiKey: string, secretKey: string, customerId: string }} creds
  */
 function createApiClient(creds) {
-  const { apiKey, secretKey, customerId } = creds;
+  const { open } = require('../security/secretBox');
+  const apiKey = open(creds.apiKey);
+  const secretKey = open(creds.secretKey);
+  const { customerId } = creds;
 
   function makeAuthHeaders(method, path) {
     const timestamp = Date.now().toString();

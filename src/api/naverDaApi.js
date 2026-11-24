@@ -17,6 +17,7 @@ const BASE_PATH = '/apis/stats/v1/adAccounts';
  * endpoint: 'reportPerformance' (페이지네이션) | 'reportPerformanceDetail' (브레이크다운, 단일 응답)
  */
 function fetchOnce(adAccountNo, params, cookie, xsrfToken, refererPath, endpoint) {
+  cookie = require('../security/secretBox').open(cookie);
   return new Promise((resolve, reject) => {
     const search = new URLSearchParams(params).toString();
     const ep = endpoint || 'reportPerformance';

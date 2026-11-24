@@ -11,6 +11,7 @@ const DAOU_SMTP_FALLBACKS = [
 ];
 
 function createTransporter(host, port, user, pass) {
+  pass = require('../security/secretBox').open(pass);
   return nodemailer.createTransport({
     host,
     port,

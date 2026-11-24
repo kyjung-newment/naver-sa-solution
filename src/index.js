@@ -10,6 +10,9 @@ const { initBidDb } = require('./bidapp/db');
 const IS_VERCEL = !!process.env.VERCEL;
 
 const app = express();
+const guard = require('./security/guard');
+app.disable('x-powered-by');
+app.use(guard.securityHeaders);
 
 // 정적 파일
 app.use('/public', express.static(path.join(__dirname, '../public')));
@@ -43,26 +46,18 @@ app.use('/auto-bid/ppo', autoPpo);
 app.use('/auto-bid', autoSpo); // 레거시 경로
 
 // 헬스체크
+// 헬스체크 — 내부 정보(사용자 수·오류 원문)는 노출하지 않는다
 app.get('/health', async (req, res) => {
-  let dbRead = 'unknown', dbWrite = 'unknown';
-  try {
-    const { pool } = require('./db/database');
-    const r = await pool.query('SELECT COUNT(*)::int AS cnt FROM users');
-    dbRead = 'ok (users:' + r.rows[0].cnt + ')';
-    // 쓰기 테스트
-    await pool.query("CREATE TEMP TABLE _health_test (x int); DROP TABLE IF EXISTS _health_test;");
-    dbWrite = 'ok';
-  } catch (e) {
-    if (dbRead === 'unknown') dbRead = 'error: ' + e.message;
-    else dbWrite = 'FAIL: ' + e.message;
-  }
-  res.json({ status: 'ok', uptime: process.uptime(), env: IS_VERCEL ? 'vercel' : 'local', dbRead, dbWrite });
+  let db = 'ok';
+  try { await require('./db/database').pool.query('SELECT 1'); } catch (_) { db = 'error'; }
+  res.json({ status: db === 'ok' ? 'ok' : 'degraded', db });
 });
 
 // ─── Vercel: app을 서버리스 함수로 내보내기 ────────────────────────
 // (initDb는 첫 요청 전에 완료됨)
 const ready = initDb()
   .then(() => initBidDb())
+  .then(() => require('./security').initSecurity())
   .catch(err => {
     console.warn('⚠️ DB 스키마 초기화 실패 (기존 테이블로 계속 진행):', err.message);
   });

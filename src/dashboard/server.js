@@ -8,6 +8,7 @@ const { generateAndSend, getDateRange } = require('../report/generator');
 const { registerDaUploadRoutes, loadDaReport } = require('./daUploadRoutes');
 const crypto = require('crypto');
 const { sendInviteEmail, verifySmtpAuth, sendMailWithFallback } = require('../email/sender');
+const guard = require('../security/guard');
 
 const router = express.Router();
 
@@ -48,8 +49,36 @@ router.use(session({
 
 router.use(express.json({ limit: '20mb' })); // 이미지 base64 업로드 대응
 router.use(express.urlencoded({ extended: true, limit: '20mb' }));
+// 보안: 로그인 화면·데이터는 캐시 금지, 개인정보 내려받기·변경 요청은 감사 로그
+router.use(guard.noStoreForSession);
+router.use(guard.auditMiddleware);
+router.use(guard.jsonSanitizer); // API 응답 문자열의 < > 치환 (캠페인명 등을 통한 스크립트 삽입 차단)
+router.use('/api/shopping-bid', async (req, res, next) => {
+  if (!FEATURES.SHOPPING_BID) return res.status(403).json({ ok: false, error: '쇼핑검색 자동입찰 기능이 꺼져 있습니다' });
+  const accountId = req.query.accountId || req.body?.accountId || req.session?.selectedAccountId;
+  if (!req.session?.userId || !accountId || !(await db.getOwnedAccountById(accountId, req.session.userId))) return res.status(403).json({ ok: false, error: '권한 없음' });
+  next();
+});
+router.use(['/api/autobid/debug-rank', '/api/autobid/test-realrank'], (req, res, next) => {
+  if (!FEATURES.AUTOBID) return res.status(403).json({ ok: false, error: '자동입찰 기능이 꺼져 있습니다' });
+  next();
+});
 // 열람자(viewer)는 허용된 경로 외 마케터 기능 전면 차단
 router.use((req, res, next) => viewerGuard(req, res, next));
+
+// 크론 인증 (Vercel 외 배포·CRON_SECRET 미설정에서도 열리지 않도록)
+function cronAuthorized(req) {
+  const secret = process.env.CRON_SECRET || '';
+  if (secret) {
+    const got = String(req.headers.authorization || '');
+    const want = `Bearer ${secret}`;
+    const ok = got.length === want.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want));
+    if (!ok) guard.audit(req, 'cron_auth_fail', { ok: false });
+    return ok;
+  }
+  const ip = guard.clientIp(req);
+  return !process.env.VERCEL && (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1');
+}
 
 function requireLogin(req, res, next) {
   if (!req.session.userId) return res.redirect('/smart-sa/login');
@@ -236,7 +265,7 @@ const css = `
 function layout(title, body, user = null) {
   return `<!DOCTYPE html><html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} - 뉴먼트 솔루션</title>
+<title>${escHtml(title)} - 뉴먼트 솔루션</title>
 <style>${css}</style></head><body>${body}
 <div class="toast-wrap" id="toast-wrap"></div>
 <script>
@@ -287,6 +316,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     if (user?.is_admin) {
       menuItems.push({ id: 'admin', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', label: '직원 관리', href: '/smart-sa/admin/users' });
       menuItems.push({ id: 'report-health', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>', label: '리포트 발송 점검', href: '/smart-sa/admin/report-health' });
+      menuItems.push({ id: 'admin-security', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>', label: '보안 점검', href: '/smart-sa/admin/security' });
       menuItems.push({ id: 'admin-accounts', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>', label: '광고주 일괄 관리', href: '/smart-sa/admin/accounts' });
     }
   }
@@ -403,7 +433,7 @@ function appLayout(title, content, user, activeMenu, opts = {}) {
     ${sidebar}
     <div class="main">
       <div class="topbar">
-        <div class="topbar-title">${title}</div>
+        <div class="topbar-title">${escHtml(title)}</div>
         ${topbarAccount}
       </div>
       <div class="content">${content}</div>
@@ -428,6 +458,7 @@ router.get('/login', async (req, res) => {
         <div class="card">
           <div class="card-body">
             ${err === 'invalid' ? '<div class="alert alert-err">아이디 또는 비밀번호가 올바르지 않습니다.</div>' : ''}
+            ${err === 'locked' ? `<div class="alert alert-err">로그인 실패가 반복되어 잠시 잠겼습니다. 약 ${Math.min(60, parseInt(req.query.m) || 15)}분 뒤 다시 시도하거나 비밀번호 찾기를 이용하세요.</div>` : ''}
             ${isFirst ? '<div class="alert alert-ok">최초 실행입니다. 관리자 계정을 생성해주세요.</div>' : ''}
             <form method="POST" action="${isFirst ? '/smart-sa/register' : '/smart-sa/login'}">
               <div class="form-group">
@@ -479,17 +510,43 @@ router.get('/login', async (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-  const { username, password, remember } = req.body;
+  const { password, remember } = req.body;
+  const username = String(req.body.username || '').trim().slice(0, 200);
+  const ip = guard.clientIp(req);
+  // 1) 잠금 확인: 아이디별 15분 5회, IP별 15분 20회
+  const lockedFor = Math.max(await guard.lockedMinutes('login_user', username), await guard.lockedMinutes('login_ip', ip));
+  if (lockedFor) {
+    guard.audit(req, 'login_blocked', { ok: false, username, detail: `잠금 중 (${lockedFor}분 남음)` });
+    return res.redirect(303, `/smart-sa/login?err=locked&m=${lockedFor}`);
+  }
   const user = await db.authenticateUser(username, password);
-  if (!user) return res.redirect(303, '/smart-sa/login?err=invalid');
-  // 로그인 유지: 30일, 기본: 8시간
-  if (remember === '1') req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
-  req.session.userId = user.id;
-  req.session.userName = user.name;
-  req.session.isAdmin = !!user.is_admin;
-  req.session.approved = user.approved;
-  req.session.role = user.role || 'marketer';
-  req.session.save(() => res.redirect(303, '/smart-sa'));
+  if (!user) {
+    const userLocked = await guard.recordFailure('login_user', username);
+    const ipLocked = await guard.recordFailure('login_ip', ip);
+    guard.audit(req, 'login_fail', { ok: false, username });
+    if (userLocked || ipLocked) {
+      guard.audit(req, 'login_locked', { ok: false, username, detail: userLocked ? '아이디 잠금' : 'IP 잠금' });
+      guard.notify(`[보안] 로그인 잠금 발생 — ${userLocked ? username : 'IP ' + ip}`,
+        `<p>로그인 실패가 반복되어 ${userLocked ? '아이디 <b>' + escHtml(username) + '</b>' : 'IP <b>' + escHtml(ip) + '</b>'}가 잠겼습니다.</p><p>IP: ${escHtml(ip)}<br>본인 실수가 아니라면 비밀번호 대입 시도일 수 있습니다. 관리자 → 보안 점검에서 확인하세요.</p>`,
+        `lock:${userLocked ? username : ip}`);
+      return res.redirect(303, `/smart-sa/login?err=locked&m=${userLocked ? guard.POLICIES.login_user.lock : guard.POLICIES.login_ip.lock}`);
+    }
+    return res.redirect(303, '/smart-sa/login?err=invalid');
+  }
+  await guard.clearFailures('login_user', username);
+  // 2) 세션 고정 공격 방지: 로그인 시 세션 ID 재발급
+  req.session.regenerate(err => {
+    if (err) return res.redirect(303, '/smart-sa/login?err=invalid');
+    // 로그인 유지: 30일, 기본: 8시간
+    if (remember === '1') req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
+    req.session.userId = user.id;
+    req.session.userName = user.name;
+    req.session.isAdmin = !!user.is_admin;
+    req.session.approved = user.approved;
+    req.session.role = user.role || 'marketer';
+    guard.audit(req, 'login_ok', { userId: user.id, username: user.username });
+    req.session.save(() => res.redirect(303, '/smart-sa'));
+  });
 });
 
 router.post('/register', async (req, res) => {
@@ -523,6 +580,8 @@ router.get('/signup', (req, res) => {
         <div class="card">
           <div class="card-body">
             ${err === 'taken' ? '<div class="alert alert-err">이미 사용 중인 아이디입니다.</div>' : ''}
+            ${err === 'weak' ? '<div class="alert alert-err">비밀번호는 8자 이상, 영문과 숫자를 모두 포함해야 합니다.</div>' : ''}
+            ${err === 'format' ? '<div class="alert alert-err">아이디는 영문·숫자·._@- 3~60자, 이름은 특수기호 없이 40자 이내로 입력하세요.</div>' : ''}
             <form method="POST" action="/smart-sa/signup">
               <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e5e7eb">솔루션 계정</div>
               <div class="form-group">
@@ -566,17 +625,25 @@ router.get('/signup', (req, res) => {
 
 router.post('/signup', async (req, res) => {
   const { username, password, name, daou_email, daou_pass } = req.body;
+  const pwErr = db.passwordPolicyError(password);
+  if (pwErr) return res.redirect(303, '/smart-sa/signup?err=weak');
+  if (!/^[A-Za-z0-9._@-]{3,60}$/.test(String(username || '')) || /[<>"'&]/.test(String(name || '')) || String(name || '').length > 40) {
+    return res.redirect(303, '/smart-sa/signup?err=format');
+  }
   try {
     // 승인 대기(approved=0) 상태로 생성 + 다우오피스 정보 함께 저장
     const id = await db.createUser(username, password, name || username, {
       isAdmin: false, approved: false,
       daouEmail: daou_email || '', daouPass: daou_pass || '',
     });
-    req.session.userId = id;
-    req.session.userName = name || username;
-    req.session.isAdmin = false;
-    req.session.approved = 0;
-    req.session.save(() => res.redirect(303, '/smart-sa/pending'));
+    guard.audit(req, 'signup', { userId: id, username });
+    req.session.regenerate(() => {
+      req.session.userId = id;
+      req.session.userName = name || username;
+      req.session.isAdmin = false;
+      req.session.approved = 0;
+      req.session.save(() => res.redirect(303, '/smart-sa/pending'));
+    });
   } catch (e) {
     res.redirect(303, '/smart-sa/signup?err=taken');
   }
@@ -593,6 +660,7 @@ router.get('/profile', requireLogin, async (req, res) => {
     ${msg === 'smtp_ok' ? '<div class="alert alert-ok">다우오피스 정보가 업데이트되었습니다.</div>' : ''}
     ${msg === 'pw_err' ? '<div class="alert alert-err">현재 비밀번호가 올바르지 않습니다.</div>' : ''}
     ${msg === 'pw_ok' ? '<div class="alert alert-ok">솔루션 비밀번호가 변경되었습니다.</div>' : ''}
+    ${msg === 'pw_weak' ? '<div class="alert alert-err">새 비밀번호는 8자 이상, 영문과 숫자를 모두 포함해야 합니다.</div>' : ''}
     <div class="card" style="margin-bottom:16px">
       <div class="card-header"><span class="card-title">계정 정보</span></div>
       <div class="card-body">
@@ -621,7 +689,7 @@ router.get('/profile', requireLogin, async (req, res) => {
           </div>
           <div class="form-row">
             <div class="form-group"><label>다우오피스 이메일</label><input name="daou_email" value="${smtp?.daou_email || ''}" required placeholder="user@newment.co.kr" type="email"></div>
-            <div class="form-group"><label>다우오피스 비밀번호</label><input type="password" name="daou_pass" value="${smtp?.smtp_pass || ''}" required placeholder="다우오피스 로그인 비밀번호"></div>
+            <div class="form-group"><label>다우오피스 비밀번호</label><input type="password" name="daou_pass" value="" ${smtp?.smtp_pass ? '' : 'required'} autocomplete="new-password" placeholder="${smtp?.smtp_pass ? '저장됨 · 바꿀 때만 입력' : '다우오피스 로그인 비밀번호'}"></div>
           </div>
           <div style="display:flex;gap:8px;margin-top:8px">
             <button class="btn btn-primary">저장</button>
@@ -652,8 +720,8 @@ router.get('/profile', requireLogin, async (req, res) => {
         <form method="POST" action="/smart-sa/profile/password">
           <div class="form-group"><label>현재 비밀번호</label><input type="password" name="current_pw" required></div>
           <div class="form-row">
-            <div class="form-group"><label>새 비밀번호</label><input type="password" name="new_pw" required minlength="6"></div>
-            <div class="form-group"><label>새 비밀번호 확인</label><input type="password" name="new_pw2" required minlength="6"></div>
+            <div class="form-group"><label>새 비밀번호 (8자 이상, 영문+숫자)</label><input type="password" name="new_pw" required minlength="8" autocomplete="new-password"></div>
+            <div class="form-group"><label>새 비밀번호 확인</label><input type="password" name="new_pw2" required minlength="8" autocomplete="new-password"></div>
           </div>
           <button class="btn btn-outline" style="margin-top:8px">비밀번호 변경</button>
         </form>
@@ -665,7 +733,12 @@ router.get('/profile', requireLogin, async (req, res) => {
 
 router.post('/profile/smtp', requireLogin, async (req, res) => {
   const { daou_email, daou_pass, smtp_host } = req.body;
-  await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2, smtp_host = $3 WHERE id = $4', [daou_email, daou_pass, smtp_host || 'outbound.daouoffice.com', req.session.userId]);
+  if (daou_pass) {
+    await db.pool.query('UPDATE users SET daou_email = $1, smtp_pass = $2, smtp_host = $3 WHERE id = $4', [daou_email, db.secretBox.seal(daou_pass), smtp_host || 'outbound.daouoffice.com', req.session.userId]);
+  } else {
+    await db.pool.query('UPDATE users SET daou_email = $1, smtp_host = $2 WHERE id = $3', [daou_email, smtp_host || 'outbound.daouoffice.com', req.session.userId]);
+  }
+  guard.audit(req, 'smtp_change', { detail: daou_pass ? '비밀번호 변경 포함' : '이메일·서버만 변경' });
   res.redirect(303, '/smart-sa/profile?msg=smtp_ok');
 });
 
@@ -701,6 +774,7 @@ router.post('/profile/smtp-test', requireLogin, async (req, res) => {
 router.post('/profile/password', requireLogin, async (req, res) => {
   const { current_pw, new_pw, new_pw2 } = req.body;
   if (new_pw !== new_pw2) return res.redirect(303, '/smart-sa/profile?msg=pw_err');
+  if (db.passwordPolicyError(new_pw)) return res.redirect(303, '/smart-sa/profile?msg=pw_weak');
   const user = await db.getUserByUsername((await getUser(req)).username);
   const { verifyPassword, hashPassword } = require('../db/database');
   // verifyPassword is not exported, check inline
@@ -710,10 +784,12 @@ router.post('/profile/password', requireLogin, async (req, res) => {
   if (attempt !== hash) return res.redirect(303, '/smart-sa/profile?msg=pw_err');
   const newHash = (() => { const s = crypto.randomBytes(16).toString('hex'); return s + ':' + crypto.scryptSync(new_pw, s, 64).toString('hex'); })();
   await db.pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.session.userId]);
+  guard.audit(req, 'password_change');
   res.redirect(303, '/smart-sa/profile?msg=pw_ok');
 });
 
 router.get('/logout', (req, res) => {
+  if (req.session?.userId) guard.audit(req, 'logout');
   req.session.destroy(() => res.redirect('/smart-sa/login'));
 });
 
@@ -842,8 +918,17 @@ router.get('/reset-password', (req, res) => {
 // 보안 코드(CRON_SECRET) → admin 계정 초기화 (보조 수단)
 router.post('/reset-password', async (req, res) => {
   const { secret, new_password, confirm_password } = req.body;
-  if (secret !== process.env.CRON_SECRET) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
-  if (new_password !== confirm_password || new_password.length < 8) return res.redirect(303, '/smart-sa/reset-password?msg=err');
+  const ip = guard.clientIp(req);
+  if (await guard.lockedMinutes('secret_ip', ip)) return res.redirect(303, '/smart-sa/reset-password?msg=fail');
+  const okSecret = !!process.env.CRON_SECRET && typeof secret === 'string' && secret.length === process.env.CRON_SECRET.length
+    && crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(process.env.CRON_SECRET));
+  if (!okSecret) {
+    if (await guard.recordFailure('secret_ip', ip)) guard.notify('[보안] 관리자 비밀번호 초기화 시도 반복', `<p>보안코드로 관리자 비밀번호를 초기화하려는 시도가 반복되어 해당 IP를 1시간 잠갔습니다.</p><p>IP: ${escHtml(ip)}</p>`, `secret:${ip}`);
+    guard.audit(req, 'admin_reset_fail', { ok: false });
+    return res.redirect(303, '/smart-sa/reset-password?msg=fail');
+  }
+  if (new_password !== confirm_password || db.passwordPolicyError(new_password)) return res.redirect(303, '/smart-sa/reset-password?msg=err');
+  guard.audit(req, 'admin_reset_ok', { detail: '보안코드로 관리자 비밀번호 초기화' });
   try {
     await db.resetAdminPassword(new_password);
     res.redirect(303, '/smart-sa/reset-password?msg=done');
@@ -868,6 +953,10 @@ router.post('/api/reset-password/send-code', async (req, res) => {
   try {
     const username = String(req.body?.username || '').trim();
     if (!username) return res.json({ ok: false, error: '아이디를 입력하세요' });
+    const rpIp = guard.clientIp(req);
+    const rpLock = await guard.lockedMinutes('reset_ip', rpIp);
+    if (rpLock) return res.json({ ok: false, error: `요청이 너무 많습니다. ${rpLock}분 뒤 다시 시도하세요.` });
+    await guard.recordFailure('reset_ip', rpIp);
     const user = await db.pool.query(
       `SELECT id, name, username, daou_email, recovery_sent_at FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
       [username]).then(r => r.rows[0]);
@@ -906,6 +995,7 @@ router.post('/api/reset-password/send-code', async (req, res) => {
     });
     await db.pool.query(`UPDATE users SET recovery_sent_at = CURRENT_TIMESTAMP WHERE id = $1`, [user.id]).catch(() => {});
     console.log(`🔐 비밀번호 재설정 코드 발송: ${user.username} → ${rpMaskEmail(email)}`);
+    guard.audit(req, 'password_reset_code', { userId: user.id, username: user.username, detail: rpMaskEmail(email) });
     res.json({ ok: true, maskedEmail: rpMaskEmail(email) });
   } catch (e) {
     console.error('재설정 코드 발송 실패:', e.message);
@@ -921,7 +1011,11 @@ router.post('/api/reset-password/verify', async (req, res) => {
     const code = String(req.body?.code || '').trim();
     const newPw = String(req.body?.new_password || '');
     if (!username || !/^\d{6}$/.test(code)) return res.json({ ok: false, error: '인증코드 6자리를 입력하세요' });
-    if (newPw.length < 8) return res.json({ ok: false, error: '비밀번호는 8자 이상이어야 합니다' });
+    const pwPolicy = db.passwordPolicyError(newPw);
+    if (pwPolicy) return res.json({ ok: false, error: pwPolicy });
+    const vIp = guard.clientIp(req);
+    const vLock = await guard.lockedMinutes('reset_ip', vIp);
+    if (vLock) return res.json({ ok: false, error: `요청이 너무 많습니다. ${vLock}분 뒤 다시 시도하세요.` });
     const user = await db.pool.query(
       `SELECT id, username, recovery_token FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
       [username]).then(r => r.rows[0]);
@@ -934,10 +1028,14 @@ router.post('/api/reset-password/verify', async (req, res) => {
     if (rpCodeHash(user.username, code) !== tok.h) {
       tok.t = (tok.t || 0) + 1;
       await db.pool.query(`UPDATE users SET recovery_token = $1 WHERE id = $2`, [JSON.stringify(tok), user.id]).catch(() => {});
+      await guard.recordFailure('reset_ip', vIp);
+      guard.audit(req, 'password_reset_fail', { ok: false, userId: user.id, username: user.username });
       return res.json({ ok: false, error: `인증코드가 올바르지 않습니다 (남은 시도 ${5 - tok.t}회)` });
     }
     await db.pool.query(`UPDATE users SET password_hash = $1, recovery_token = NULL WHERE id = $2`, [db.hashPassword(newPw), user.id]);
     console.log(`🔐 비밀번호 재설정 완료: ${user.username}`);
+    guard.audit(req, 'password_reset_done', { userId: user.id, username: user.username });
+    await guard.clearFailures('login_user', user.username);
     res.json({ ok: true });
   } catch (e) {
     console.error('비밀번호 재설정 실패:', e.message);
@@ -1049,8 +1147,8 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
             <tbody>
               ${allUsers.filter(u => u.approved === 0).map(u => `
                 <tr>
-                  <td><strong>${u.name}</strong></td>
-                  <td style="color:#64748b">${u.username}</td>
+                  <td><strong>${escHtml(u.name)}</strong></td>
+                  <td style="color:#64748b">${escHtml(u.username)}</td>
                   <td style="font-size:12px;color:#94a3b8">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
                   <td style="text-align:center">
                     <form method="POST" action="/smart-sa/admin/users/${u.id}/approve" style="display:inline">
@@ -1079,8 +1177,8 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
             <tbody>
               ${allUsers.filter(u => u.approved === -1).map(u => `
                 <tr>
-                  <td><strong>${u.name}</strong></td>
-                  <td style="color:#64748b">${u.username}</td>
+                  <td><strong>${escHtml(u.name)}</strong></td>
+                  <td style="color:#64748b">${escHtml(u.username)}</td>
                   <td style="font-size:12px;color:#94a3b8">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
                   <td style="text-align:center">
                     <form method="POST" action="/smart-sa/admin/users/${u.id}/approve" style="display:inline">
@@ -1107,8 +1205,8 @@ router.get('/admin/users', requireLogin, requireAdmin, async (req, res) => {
             const totalBid = st.autobidKw + st.shoppingBidKw;
             return `
             <tr>
-              <td><strong>${u.name}</strong></td>
-              <td style="color:#64748b">${u.username}</td>
+              <td><strong>${escHtml(u.name)}</strong></td>
+              <td style="color:#64748b">${escHtml(u.username)}</td>
               <td>${u.is_admin ? '<span class="badge badge-blue">관리자</span>' : '<span class="badge badge-gray">직원</span>'}</td>
               <td style="text-align:center">${st.accounts > 0 ? `<span class="badge badge-green">${st.accounts}개</span>` : '<span style="color:#cbd5e1">-</span>'}</td>
               <td style="text-align:center">${totalBid > 0 ? `<span class="badge badge-blue">${totalBid}개</span>${st.shoppingBidKw > 0 ? `<span style="font-size:11px;color:#94a3b8;margin-left:4px">(쇼핑 ${st.shoppingBidKw})</span>` : ''}` : '<span style="color:#cbd5e1">-</span>'}</td>
@@ -1333,7 +1431,7 @@ router.post('/api/admin/global-smtp', requireLogin, requireAdmin, async (req, re
     if (enabled && (!gsUser || !finalPass)) return res.json({ ok: false, error: '발신 이메일과 앱 비밀번호를 입력하세요' });
     await upsertSystemSetting('global_smtp_enabled', enabled ? '1' : '0');
     await upsertSystemSetting('global_smtp_user', String(gsUser || '').trim());
-    if (pass) await upsertSystemSetting('global_smtp_pass', String(pass));
+    if (pass) await upsertSystemSetting('global_smtp_pass', db.secretBox.seal(String(pass)));
     await upsertSystemSetting('global_smtp_host', String(host || 'smtp.gmail.com').trim());
     await upsertSystemSetting('global_smtp_port', String(parseInt(port) || 465));
     const actor = await getUser(req);
@@ -1667,11 +1765,11 @@ router.get('/api-settings', requireLogin, async (req, res) => {
         <form method="POST" action="/smart-sa/api-settings">
           <div class="form-group">
             <label>API Key (액세스라이선스) *</label>
-            <input name="api_key" required value="${creds?.api_key || ''}" placeholder="01000000-0000-0000-0000-000000000000">
+            <input name="api_key" ${creds?.api_key ? '' : 'required'} value="" autocomplete="off" placeholder="${creds?.api_key ? '저장됨 (' + escHtml(db.secretBox.mask(creds.api_key, 6)) + ') · 바꿀 때만 입력' : '01000000-0000-0000-0000-000000000000'}">
           </div>
           <div class="form-group">
             <label>Secret Key (비밀키) *</label>
-            <input name="secret_key" required value="${creds?.secret_key || ''}" placeholder="AQAAAABk...">
+            <input name="secret_key" type="password" ${creds?.secret_key ? '' : 'required'} value="" autocomplete="new-password" placeholder="${creds?.secret_key ? '저장됨 · 바꿀 때만 입력' : 'AQAAAABk...'}">
           </div>
           <div class="form-group">
             <label>매니저 Customer ID (내 계정 ID) *</label>
@@ -1697,7 +1795,10 @@ router.get('/api-settings', requireLogin, async (req, res) => {
 });
 
 router.post('/api-settings', requireLogin, async (req, res) => {
-  const { api_key, secret_key, manager_customer_id } = req.body;
+  const existing = await db.getApiCredentials(req.session.userId, null).catch(() => null);
+  const api_key = String(req.body.api_key || '').trim() || existing?.api_key || '';
+  const secret_key = String(req.body.secret_key || '').trim() || existing?.secret_key || '';
+  const { manager_customer_id } = req.body;
   // API 연결 테스트
   try {
     const testClient = createApiClient({ apiKey: api_key, secretKey: secret_key, customerId: manager_customer_id });
@@ -1713,6 +1814,7 @@ router.post('/api-settings', requireLogin, async (req, res) => {
     await db.pool.query('DELETE FROM agency_credentials WHERE user_id = $1', [req.session.userId]);
     await db.addAgencyCredential(req.session.userId, { label: '기본 대행사', api_key, secret_key, manager_customer_id });
   } catch (e) { console.warn('agency_credentials 갱신 실패:', e.message); }
+  guard.audit(req, 'api_credential_change', { target: manager_customer_id });
   res.redirect(303, '/smart-sa/api-settings?msg=saved');
 });
 
@@ -1842,7 +1944,7 @@ router.get('/accounts', requireLogin, requireApi, async (req, res) => {
             </tr>
             <tr>
               <td style="padding:6px 12px;color:#64748b;font-weight:600;border-bottom:1px solid #f1f5f9">API Key</td>
-              <td style="padding:6px 12px;font-family:monospace;font-size:11px;border-bottom:1px solid #f1f5f9">${creds.api_key.substring(0, 20)}...</td>
+              <td style="padding:6px 12px;font-family:monospace;font-size:11px;border-bottom:1px solid #f1f5f9">${escHtml(db.secretBox.mask(creds.api_key, 6))}</td>
             </tr>
             <tr>
               <td style="padding:6px 12px;color:#64748b;font-weight:600">연동 상태</td>
@@ -2000,9 +2102,12 @@ router.get('/api/customer-links', requireLogin, async (req, res) => {
 });
 
 // API: 광고주 선택 (세션에 저장)
-router.post('/api/select-account', requireLogin, (req, res) => {
-  const { accountId } = req.body;
-  req.session.selectedAccountId = accountId || '';
+router.post('/api/select-account', requireLogin, async (req, res) => {
+  const accountId = String(req.body.accountId || '');
+  if (accountId && (!/^\d+$/.test(accountId) || !(await getAccessibleAccounts(req)).some(a => String(a.id) === accountId))) {
+    return res.status(403).json({ ok: false, error: '접근할 수 없는 광고주입니다' });
+  }
+  req.session.selectedAccountId = accountId;
   req.session.save((err) => {
     if (err) return res.json({ ok: false, error: 'session save failed: ' + err.message });
     res.json({ ok: true });
@@ -2176,6 +2281,7 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
   try {
     const { customerId, name, agencyId } = req.body;
     if (!customerId) return res.status(400).json({ ok: false, error: 'Customer ID 필요' });
+    if (!/^\d{3,12}$/.test(String(customerId).trim())) return res.status(400).json({ ok: false, error: 'Customer ID는 숫자만 입력할 수 있습니다' });
     const id = await db.addSelectedAccount(req.session.userId, String(customerId), name || String(customerId));
     // 대행사 연결
     if (agencyId) {
@@ -2236,7 +2342,7 @@ router.post('/api/add-customer', requireLogin, async (req, res) => {
 
 // 광고주 기능 설정 폼
 function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
-  const v = (k, def = '') => account[k] ?? def;
+  const v = (k, def = '') => escHtml(account[k] ?? def);
   const chk = k => account[k] ? 'checked' : '';
   return `
     <form method="POST">
@@ -2338,7 +2444,7 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
           </div>
           <div class="form-group">
             <label>광고관리 쿠키 (Cookie 헤더 전체) — XSRF-TOKEN 포함되어야 함</label>
-            <textarea name="naver_cookie" rows="5" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical">${v('naver_cookie')}</textarea>
+            <textarea name="naver_cookie" rows="5" placeholder="NID_AUT=...; NID_SES=...; JSESSIONID=...; XSRF-TOKEN=..." style="width:100%;font-family:monospace;font-size:11px;resize:vertical"></textarea>${account.naver_cookie ? '<p style="font-size:11px;color:#16a34a;margin-top:4px">쿠키 저장됨 · 바꿀 때만 입력하세요 (보안상 저장된 값은 표시하지 않습니다)</p>' : ''}
           </div>
 
           <!-- 도움말 이미지 (Admin 업로드, 모든 사용자 조회) -->
@@ -2449,7 +2555,7 @@ function accountSettingsForm(account = {}, smtpInfo = {}, user = {}) {
           <input type="hidden" name="email_host" value="${v('email_host','outbound.daouoffice.com')}">
           <input type="hidden" name="email_port" value="${v('email_port',465)}">
           <input type="hidden" name="email_user" value="${v('email_user','')}">
-          <input type="hidden" name="email_pass" value="${v('email_pass','')}">
+
         </div>
       </div>
 
@@ -2502,6 +2608,11 @@ router.post('/accounts/:id/edit', requireLogin, async (req, res) => {
   // SA/DA 체크박스 (체크 안 하면 키 자체가 안 옴)
   data.has_sa = 'has_sa' in req.body;
   data.has_da = 'has_da' in req.body;
+  // 화면에 싣지 않는 비밀값은 비어 있으면 기존 값을 유지
+  const current = await db.getOwnedAccountById(req.params.id, user.id);
+  if (!current) return res.redirect(303, '/smart-sa/accounts');
+  if (!data.naver_cookie) data.naver_cookie = current.naver_cookie || '';
+  if (!data.email_pass) data.email_pass = current.email_pass || '';
   await db.updateAccount(req.params.id, user.id, data);
   res.redirect(303, '/smart-sa/accounts?msg=saved');
 });
@@ -2586,8 +2697,20 @@ router.post('/accounts/:id/viewers/:vid/revoke', requireLogin, requireMarketer, 
 });
 
 // ─── 광고주 초대 수락 (광고주/열람자) ──────────────────────────────
+function inviteClosed(inv) {
+  if (!inv) return true;
+  if (inv.status === 'accepted') return true;
+  const ttlH = inv.role === 'master' ? 72 : 24 * 7;
+  return !!inv.created_at && Date.now() - new Date(inv.created_at).getTime() > ttlH * 3600 * 1000;
+}
+function inviteClosedHtml(inv) {
+  const msg = inv && inv.status === 'accepted'
+    ? '이미 수락한 초대입니다. 로그인해서 이용해 주세요.'
+    : '초대 링크가 만료되었습니다. 담당자에게 다시 초대를 요청해 주세요.';
+  return `<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:36px">⚠️</div><h2 style="font-size:18px;margin:8px 0">${msg}</h2><a class="btn btn-primary" href="/smart-sa/login" style="margin-top:10px">로그인</a></div></div>`;
+}
 function inviteStandalone(title, inner) {
-  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(title)}</title>
   <style>${css}</style></head><body style="background:#f5f6fa;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
   <div style="width:100%;max-width:440px">${inner}</div></body></html>`;
 }
@@ -2595,6 +2718,7 @@ function inviteStandalone(title, inner) {
 router.get('/invite/:token', async (req, res) => {
   const inv = await db.getInviteByToken(req.params.token);
   if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:36px">⚠️</div><h2 style="margin:8px 0">유효하지 않은 초대 링크</h2><p style="color:#6b7280">링크가 만료되었거나 잘못되었습니다. 담당자에게 재발송을 요청해주세요.</p></div></div>'));
+  if (inviteClosed(inv)) return res.send(inviteStandalone('초대', inviteClosedHtml(inv)));
   const existing = await db.getViewerUserByEmail(inv.email);
   const inner = `
     <div class="card"><div class="card-body">
@@ -2619,9 +2743,10 @@ router.post('/invite/:token', async (req, res) => {
   const inv = await db.getInviteByToken(token);
   const back = (err) => res.redirect(303, `/smart-sa/invite/${token}?err=${encodeURIComponent(err)}`);
   if (!inv) return res.send(inviteStandalone('초대', '<div class="card"><div class="card-body" style="text-align:center"><h2>유효하지 않은 초대입니다.</h2></div></div>'));
+  if (inviteClosed(inv)) return res.send(inviteStandalone('초대', inviteClosedHtml(inv)));
   const name = String(req.body.name || '').trim();
   const password = String(req.body.password || '');
-  if (!name || password.length < 4) return back('이름과 4자 이상 비밀번호를 입력해주세요.');
+  if (!name) return back('이름을 입력해주세요.');
   try {
     let viewer = await db.getViewerUserByEmail(inv.email);
     if (viewer) {
@@ -2630,16 +2755,21 @@ router.post('/invite/:token', async (req, res) => {
       if (!auth) return back('이미 가입된 이메일입니다. 기존 비밀번호를 입력해주세요.');
       viewer = auth;
     } else {
+      const pwErr = db.passwordPolicyError(password);
+      if (pwErr) return back(pwErr);
       viewer = await db.createViewerUser(inv.email, name, password);
     }
     await db.acceptInvite(token, viewer.id);
-    req.session.userId = viewer.id;
-    req.session.userName = viewer.name;
-    req.session.isAdmin = false;
-    req.session.approved = 1;
-    req.session.role = 'viewer';
-    req.session.selectedAccountId = '';
-    req.session.save(() => res.redirect(303, '/smart-sa'));
+    guard.audit(req, 'viewer_invite_accept', { userId: viewer.id, username: inv.email, target: String(inv.account_id || '') });
+    req.session.regenerate(() => {
+      req.session.userId = viewer.id;
+      req.session.userName = viewer.name;
+      req.session.isAdmin = false;
+      req.session.approved = 1;
+      req.session.role = 'viewer';
+      req.session.selectedAccountId = '';
+      req.session.save(() => res.redirect(303, '/smart-sa'));
+    });
   } catch (e) {
     console.error('초대 수락 실패:', e.message);
     back('처리 중 오류가 발생했습니다. 다시 시도해주세요.');
@@ -3847,7 +3977,7 @@ router.get('/', requireLogin, requireApi, async (req, res) => {
     let currentPeriod = 'yesterday';
     let customStart = '', customEnd = '';
     const tabLoaded = {};
-    const selectedAccountId = '${req.session.selectedAccountId || ''}';
+    const selectedAccountId = ${JSON.stringify(String(req.session.selectedAccountId || '')).replace(/</g, '\\u003c')};
     // firstAccountId 제거 - 광고주 선택 필수
 
     function getAccountId() { return selectedAccountId; }
@@ -7254,7 +7384,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
 
   const content = `
     ${!selId ? '<div class="alert alert-info">좌측 상단에서 광고주를 선택해주세요.</div>' : `
-    <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${selAccount.name || ''}</strong>
+    <p style="color:#64748b;font-size:13px;margin-bottom:16px">현재 광고주: <strong>${escHtml(selAccount.name || '')}</strong>
       ${selAccount.has_sa === false ? '' : '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;margin-left:6px;padding:1px 6px">SA</span>'}
       ${FEATURES.DA && selAccount.has_da ? '<span class="badge" style="background:#fce7f3;color:#9f1239;font-size:10px;margin-left:3px;padding:1px 6px">DA</span>' : ''}
     </p>
@@ -7376,12 +7506,12 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
       </div>
       <div class="card-body">
         <div id="emails-display">
-          <p style="font-size:13px;color:#374151" id="emails-text">${selAccount.report_emails ? selAccount.report_emails.split(',').map(e => e.trim()).filter(Boolean).map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+e+'</span>').join('') : '<span style="color:#94a3b8">수신 이메일이 설정되지 않았습니다.</span>'}</p>
+          <p style="font-size:13px;color:#374151" id="emails-text">${selAccount.report_emails ? selAccount.report_emails.split(',').map(e => e.trim()).filter(Boolean).map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+escHtml(e)+'</span>').join('') : '<span style="color:#94a3b8">수신 이메일이 설정되지 않았습니다.</span>'}</p>
         </div>
         <div id="emails-edit" style="display:none">
           <div class="form-group" style="margin-bottom:12px">
             <label>수신 이메일 (쉼표로 구분)</label>
-            <input type="text" id="emails-input" value="${selAccount.report_emails || ''}" placeholder="user1@example.com, user2@example.com">
+            <input type="text" id="emails-input" value="${escHtml(selAccount.report_emails || '')}" placeholder="user1@example.com, user2@example.com">
           </div>
           <div style="display:flex;gap:8px">
             <button class="btn btn-primary btn-sm" onclick="saveEmails()">저장</button>
@@ -8153,7 +8283,7 @@ router.get('/reports', requireLogin, requireApi, async (req, res) => {
         if (!json.ok) throw new Error(json.error);
         const emails = val.split(',').map(e => e.trim()).filter(Boolean);
         document.getElementById('emails-text').innerHTML = emails.length
-          ? emails.map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+e+'</span>').join('')
+          ? emails.map(e => '<span class="badge badge-blue" style="margin-right:6px;margin-bottom:4px;padding:4px 12px">'+String(e).replace(/[<>"&]/g,'')+'</span>').join('')
           : '<span style="color:#94a3b8">수신 이메일이 설정되지 않았습니다.</span>';
         toggleEditEmails();
         toast('수신 이메일이 저장되었습니다.');
@@ -8305,7 +8435,7 @@ router.post('/api/report/trigger', requireLogin, async (req, res) => {
   // account에 API 자격증명 + SMTP 자격증명 병합 (전역 발신 계정 우선 → 없으면 본인 다우오피스)
   const globalSmtp = await getGlobalSmtpAccount();
   const smtp = globalSmtp ? null : await db.getSmtpCredentials(req.session.userId);
-  if (!globalSmtp) console.log(`📧 SMTP 조회: daou_email=${smtp?.daou_email || '없음'}, smtp_pass=${smtp?.smtp_pass ? '설정됨(' + smtp.smtp_pass.length + '자)' : '없음'}, username=${smtp?.username || '없음'}`);
+  if (!globalSmtp) console.log(`📧 SMTP 조회: daou_email=${guard.maskEmail(smtp?.daou_email) || '없음'}, smtp_pass=${smtp?.smtp_pass ? '설정됨' : '없음'}`);
 
   const emailUser = globalSmtp ? globalSmtp.email_user : (smtp?.daou_email || smtp?.username || '');
   const emailPass = globalSmtp ? globalSmtp.email_pass : (smtp?.smtp_pass || '');
@@ -8707,7 +8837,7 @@ router.post('/api/da-report/trigger', requireLogin, async (req, res) => {
   router.get(`/api/cron/da-${type}`, async (req, res) => {
     if (!FEATURES.DA) return res.json({ ok: true, disabled: true, message: 'DA 리포트 비활성화됨' });
     const authHeader = req.headers.authorization;
-    if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    if (!cronAuthorized(req)) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
     const startedAt = Date.now();
@@ -8796,7 +8926,7 @@ async function getGlobalSmtpAccount() {
       email_host: s.global_smtp_host || 'smtp.gmail.com',
       email_port: parseInt(s.global_smtp_port) || 465,
       email_user: s.global_smtp_user,
-      email_pass: s.global_smtp_pass,
+      email_pass: db.secretBox.open(s.global_smtp_pass),
     };
   } catch (_) { return null; }
 }
@@ -8933,7 +9063,7 @@ function latestScheduledFireKst(type, a, nowKstMs, ignoreWindow = false) {
   router.get(`/api/cron/${type}`, async (req, res) => {
     // Vercel Cron 인증 헤더 확인
     const authHeader = req.headers.authorization;
-    if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    if (!cronAuthorized(req)) {
       return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
 
@@ -9208,11 +9338,8 @@ function latestScheduledFireKst(type, a, nowKstMs, ignoreWindow = false) {
 const { syncAccountDate, runDashboardSync, runBackfill } = require('../sync/dashboardSync');
 
 // ─── 쇼핑 키워드 진단 엔드포인트 ──────────────────────────────────
-router.get('/api/debug/shopping-report', async (req, res) => {
-  // CRON_SECRET 또는 로그인 인증
-  const authHeader = req.headers.authorization;
-  const isCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
-  if (!isCron && !req.session?.userId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+router.get('/api/debug/shopping-report', requireLogin, requireAdmin, async (req, res) => {
+  if (!(await db.getOwnedAccountById(req.query.accountId, req.session.userId))) return res.status(404).json({ ok: false, error: '본인 소유 광고주만 조회할 수 있습니다' });
   try {
     // accountId 직접 조회 (CRON 모드에서도 작동)
     const accountRow = await db.pool.query(
@@ -9273,7 +9400,7 @@ router.get('/api/debug/shopping-report', async (req, res) => {
 // ?force=1 로 호출하면 sync_log 삭제 후 강제 재동기화
 router.get('/api/cron/sync-dashboard', async (req, res) => {
   const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
@@ -9294,11 +9421,11 @@ router.get('/api/cron/sync-dashboard', async (req, res) => {
 // 배치 5만 행 단위로 반복하여 락 최소화
 router.get('/api/cron/cleanup-old-data', async (req, res) => {
   const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   const startedAt = Date.now();
-  const RETENTION_DAYS = parseInt(req.query.days) || 60;
+  const RETENTION_DAYS = Math.max(60, parseInt(req.query.days) || 60); // 60일 미만 삭제 요청은 무시 (데이터 일괄 삭제 방지)
   const BATCH_SIZE = 50000;
   const MAX_BATCHES = 20; // 안전장치: 단일 실행 최대 100만 행 (초과 시 다음날 cron이 마저 정리)
   try {
@@ -9329,6 +9456,9 @@ router.get('/api/cron/cleanup-old-data', async (req, res) => {
     // GFA 업로드 원본·이력은 전년 비교를 고려해 400일 유지
     await db.pool.query(`DELETE FROM da_upload_file WHERE until < CURRENT_DATE - INTERVAL '400 days'`).catch(() => {});
     await db.pool.query(`DELETE FROM da_upload_ready WHERE until < CURRENT_DATE - INTERVAL '400 days'`).catch(() => {});
+    // 보안: 감사 로그 400일 보관, 만료된 잠금 정리, 평문으로 남은 민감정보 암호화
+    await guard.cleanup();
+    await db.secretBox.sealPlaintextRows(db.pool).catch(() => 0);
 
     // 네이버 리포트 job 정리 (계정당 100 한도 누적 방지 — master/stat 완료 job 삭제)
     // 자동발송 후에도 정리하지만, 수동 생성·실패 누락분을 주기적으로 일괄 정리한다.
@@ -9370,7 +9500,7 @@ router.get('/api/cron/cleanup-old-data', async (req, res) => {
 // ?force=1 로 호출하면 sync_log 삭제 후 강제 백필
 router.get('/api/cron/sync-backfill', async (req, res) => {
   const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
@@ -10040,7 +10170,7 @@ router.post('/api/shopping-bid/debug', requireLogin, async (req, res) => {
 router.get('/api/cron/autobid', async (req, res) => {
   if (!FEATURES.AUTOBID) return res.json({ ok: true, disabled: true, message: '자동입찰 비활성화됨' });
   const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
@@ -10077,7 +10207,7 @@ router.get('/api/cron/autobid', async (req, res) => {
 router.get('/api/cron/shopping-autobid', async (req, res) => {
   if (!FEATURES.SHOPPING_BID) return res.json({ ok: true, disabled: true, message: '쇼핑 자동입찰 비활성화됨' });
   const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   try {
@@ -10120,5 +10250,20 @@ router.post('/api/sync/trigger', requireLogin, requireAdmin, async (req, res) =>
 
 // ─── 자동리포트 BETA (GFA 원본 업로드 · SA+DA 통합) ─────────────────
 registerDaUploadRoutes(router, { requireLogin, requireAdmin, appLayout, getUser, getLayoutOpts, getGlobalSmtpAccount, escHtml });
+
+// ─── 보안 점검 (관리자) + 보안 알림 메일 ─────────────────────────────
+require('../security/adminPage').registerSecurityAdmin(router, { requireLogin, requireAdmin, appLayout, getUser, getLayoutOpts, escHtml });
+guard.setAlert(async (subject, html) => {
+  const sender = await getAlertSenderAccount();
+  if (!sender) return;
+  const to = await db.pool.query(`SELECT value FROM system_settings WHERE key = 'report_alert_email'`).then(r => r.rows[0]?.value).catch(() => null) || REPORT_ALERT_EMAIL_DEFAULT;
+  await sendMailWithFallback(sender, {
+    from: `"뉴먼트 솔루션 보안" <${sender.email_user}>`, to, subject,
+    html: `<div style="max-width:600px;margin:0 auto;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;font-size:14px;line-height:1.7;color:#111827">
+      <div style="background:#1e293b;color:#fff;border-radius:12px 12px 0 0;padding:16px 22px;font-weight:800">🛡 ${escHtml(subject)}</div>
+      <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:18px 22px">${html}
+      <p style="font-size:12px;color:#6b7280;margin-top:14px">자세한 기록: 솔루션 → 관리자 → 보안 점검</p></div></div>`,
+  });
+});
 
 module.exports = { router };

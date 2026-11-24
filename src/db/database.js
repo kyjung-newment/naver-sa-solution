@@ -1,5 +1,8 @@
 const { Pool } = require('pg');
 const crypto = require('crypto');
+const secretBox = require('../security/secretBox');
+const { seal, open, openFields } = secretBox;
+const CRED_FIELDS = ['api_key', 'secret_key'];
 
 // ─── PostgreSQL 연결 (Supabase DATABASE_URL) ─────────────────────────
 const pool = new Pool({
@@ -486,9 +489,19 @@ function hashPassword(password) {
 }
 
 function verifyPassword(password, stored) {
-  const [salt, hash] = stored.split(':');
-  const attempt = crypto.scryptSync(password, salt, 64).toString('hex');
-  return attempt === hash;
+  const [salt, hash] = String(stored || '').split(':');
+  if (!salt || !hash) return false;
+  const attempt = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(hash, 'hex');
+  return expected.length === attempt.length && crypto.timingSafeEqual(attempt, expected);
+}
+
+// 새 비밀번호 정책: 8자 이상, 영문과 숫자 포함
+function passwordPolicyError(pw) {
+  const s = String(pw || '');
+  if (s.length < 8) return '비밀번호는 8자 이상이어야 합니다';
+  if (!/[A-Za-z]/.test(s) || !/\d/.test(s)) return '비밀번호는 영문과 숫자를 모두 포함해야 합니다';
+  return null;
 }
 
 // ─── 쿼리 헬퍼 ────────────────────────────────────────────────────────
@@ -509,7 +522,7 @@ async function createUser(username, password, name, { isAdmin = 0, approved = 0,
   const passwordHash = hashPassword(password);
   const result = await pool.query(
     'INSERT INTO users (username, password_hash, name, is_admin, approved, daou_email, smtp_pass) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
-    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0, daouEmail, daouPass]
+    [username, passwordHash, name, isAdmin ? 1 : 0, approved ? 1 : 0, daouEmail, seal(daouPass)]
   );
   return result.rows[0].id;
 }
@@ -519,16 +532,16 @@ async function getUserByUsername(username) {
 }
 
 async function getUserById(id) {
-  return get(
+  return openFields(await get(
     'SELECT id, username, name, is_admin, approved, role, api_key, secret_key, manager_customer_id, created_at FROM users WHERE id = $1',
     [id]
-  );
+  ), CRED_FIELDS);
 }
 
 async function authenticateUser(username, password) {
   const user = await getUserByUsername(username);
-  if (!user) return null;
-  if (!verifyPassword(password, user.password_hash)) return null;
+  if (!user || !user.password_hash) { crypto.scryptSync(String(password || ''), 'dummy-salt-for-timing', 64); return null; }
+  if (!verifyPassword(String(password || ''), user.password_hash)) return null;
   return { id: user.id, username: user.username, name: user.name, is_admin: user.is_admin, approved: user.approved, role: user.role || 'marketer' };
 }
 
@@ -555,39 +568,39 @@ async function rejectUser(userId) {
 
 // ─── SMTP 자격증명 (다우오피스 자동 연동) ──────────────────────────────
 async function getSmtpCredentials(userId) {
-  return get('SELECT username, smtp_pass, daou_email, smtp_host FROM users WHERE id = $1', [userId]);
+  return openFields(await get('SELECT username, smtp_pass, daou_email, smtp_host FROM users WHERE id = $1', [userId]), ['smtp_pass']);
 }
 
 // ─── API 자격증명 ─────────────────────────────────────────────────────
 async function updateApiCredentials(userId, apiKey, secretKey, managerCustomerId) {
   return query(
     'UPDATE users SET api_key = $1, secret_key = $2, manager_customer_id = $3 WHERE id = $4',
-    [apiKey, secretKey, managerCustomerId, userId]
+    [seal(apiKey), seal(secretKey), managerCustomerId, userId]
   );
 }
 
 // ─── 대행사 자격증명 다중 관리 ───────────────────────────────────
 async function listAgencyCredentials(userId) {
-  return all('SELECT id, label, manager_customer_id, api_key, secret_key, created_at FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC', [userId]);
+  return (await all('SELECT id, label, manager_customer_id, api_key, secret_key, created_at FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC', [userId])).map(r => openFields(r, CRED_FIELDS));
 }
 async function addAgencyCredential(userId, { label, api_key, secret_key, manager_customer_id }) {
   const r = await query(
     'INSERT INTO agency_credentials (user_id, label, api_key, secret_key, manager_customer_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-    [userId, label || '', api_key, secret_key, manager_customer_id]
+    [userId, label || '', seal(api_key), seal(secret_key), manager_customer_id]
   );
   return r.rows[0]?.id;
 }
 async function updateAgencyCredential(id, userId, { label, api_key, secret_key, manager_customer_id }) {
   return query(
     'UPDATE agency_credentials SET label=$1, api_key=$2, secret_key=$3, manager_customer_id=$4 WHERE id=$5 AND user_id=$6',
-    [label || '', api_key, secret_key, manager_customer_id, id, userId]
+    [label || '', seal(api_key), seal(secret_key), manager_customer_id, id, userId]
   );
 }
 async function deleteAgencyCredential(id, userId) {
   return query('DELETE FROM agency_credentials WHERE id = $1 AND user_id = $2', [id, userId]);
 }
 async function getAgencyCredentialById(id, userId) {
-  return get('SELECT id, label, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND user_id = $2', [id, userId]);
+  return openFields(await get('SELECT id, label, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND user_id = $2', [id, userId]), CRED_FIELDS);
 }
 
 async function getApiCredentials(userId, accountId) {
@@ -606,11 +619,11 @@ async function getApiCredentials(userId, accountId) {
       // 1. 계정에 직접 링크된 agency_credential
       if (acc.agency_credential_id) {
         const linked = await get(`SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE id = $1 AND api_key != ''`, [acc.agency_credential_id]);
-        if (linked) return linked;
+        if (linked) return openFields(linked, CRED_FIELDS);
       }
       // 2. 소유자의 첫 번째 agency_credential
       const ownerCred = await get('SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 AND api_key != \'\' ORDER BY id ASC LIMIT 1', [acc.owner_id]);
-      if (ownerCred) return ownerCred;
+      if (ownerCred) return openFields(ownerCred, CRED_FIELDS);
       // 3. 소유자 users 테이블 레거시
       const legacy = await _getApiCredentialsLegacy(acc.owner_id);
       if (legacy) return legacy;
@@ -619,7 +632,7 @@ async function getApiCredentials(userId, accountId) {
   }
   // 폴백: 요청자 본인의 자격증명 (마케터, accountId 없는 경우)
   const first = await get('SELECT id, api_key, secret_key, manager_customer_id FROM agency_credentials WHERE user_id = $1 ORDER BY id ASC LIMIT 1', [userId]);
-  if (first && first.api_key) return first;
+  if (first && first.api_key) return openFields(first, CRED_FIELDS);
   return _getApiCredentialsLegacy(userId);
 }
 async function _getApiCredentialsLegacy(userId) {
@@ -628,7 +641,7 @@ async function _getApiCredentialsLegacy(userId) {
     [userId]
   );
   if (!row || !row.api_key) return null;
-  return row;
+  return openFields(row, CRED_FIELDS);
 }
 
 // ─── Ad Accounts ─────────────────────────────────────────────────────
@@ -638,16 +651,16 @@ async function getAccountsByUser(userId) {
 
 async function getAccountById(id, userId) {
   // 소유자 또는 accepted 열람자(viewer)면 접근 허용
-  return get(`SELECT * FROM ad_accounts WHERE id = $1
+  return openFields(await get(`SELECT * FROM ad_accounts WHERE id = $1
     AND (user_id = $2 OR EXISTS (
       SELECT 1 FROM account_viewers v
       WHERE v.account_id = ad_accounts.id AND v.viewer_user_id = $2 AND v.status = 'accepted'
-    ))`, [id, userId]);
+    ))`, [id, userId]), ['email_pass', 'naver_cookie']);
 }
 
 // 소유자 전용 조회 (열람자 권한 부여 등 마케터 액션에서 소유 검증)
 async function getOwnedAccountById(id, ownerUserId) {
-  return get('SELECT * FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, ownerUserId]);
+  return openFields(await get('SELECT * FROM ad_accounts WHERE id = $1 AND user_id = $2', [id, ownerUserId]), ['email_pass', 'naver_cookie']);
 }
 
 async function getAccountByCustomerId(customerId, userId) {
@@ -661,7 +674,7 @@ async function getAllAccountsWithFeature(feature) {
   const orderBy = lastCol ? `ORDER BY ad_accounts.${lastCol} ASC NULLS FIRST, ad_accounts.id ASC` : '';
   // 광고주에 연결된 agency_credential 우선, 없으면 users 테이블 폴백
   // (대행사 자격증명만 등록한 사용자도 대상에 포함되도록 COALESCE 기준으로 필터)
-  return all(`
+  return (await all(`
     SELECT ad_accounts.*,
            users.name AS user_name,
            COALESCE(ac.api_key, users.api_key) AS api_key,
@@ -673,7 +686,7 @@ async function getAllAccountsWithFeature(feature) {
     WHERE ad_accounts.${col} = 1
       AND COALESCE(ac.api_key, users.api_key, '') != ''
     ${orderBy}
-  `);
+  `)).map(r => openFields(r, ['api_key', 'secret_key', 'email_pass', 'naver_cookie']));
 }
 
 // ─── 단기보존 전환 상세 스냅샷 (쇼핑 키워드별·시간대별 전환, 네이버 ~45일 보관분 보존) ──
@@ -832,7 +845,7 @@ async function updateAccount(id, userId, data) {
     data.email_host || 'smtp.gmail.com',
     parseInt(data.email_port) || 587,
     data.email_user || '',
-    data.email_pass || '',
+    seal(data.email_pass || ''),
     data.feat_daily_report ? 1 : 0,
     data.feat_weekly_report ? 1 : 0,
     data.feat_monthly_report ? 1 : 0,
@@ -844,7 +857,7 @@ async function updateAccount(id, userId, data) {
     parseInt(data.auto_bid_interval) || 5,
     id, userId,
     data.site_url || '',
-    data.naver_cookie || '',
+    seal(data.naver_cookie || ''),
     data.has_sa === false || data.has_sa === 0 || data.has_sa === '0' ? false : true,
     data.has_da === true || data.has_da === 1 || data.has_da === '1' || data.has_da === 'on' ? true : false,
     data.da_xsrf_token || '',
@@ -1455,7 +1468,7 @@ async function queryStatsTrend(accountId, since, until) {
 }
 
 module.exports = Object.assign(module.exports, {
-  initDb, query, get, all,
+  initDb, query, get, all, secretBox,
   createUser, getUserByUsername, getUserById, authenticateUser, countUsers,
   getAllUsers, getPendingUsers, approveUser, rejectUser,
   updateApiCredentials, getApiCredentials, getSmtpCredentials,
@@ -1467,7 +1480,7 @@ module.exports = Object.assign(module.exports, {
   setDaWait, setDaReady, clearDaReady, getDaReady, getDaReadySet,
   addSelectedAccount, updateAccount, deleteAccount, saveReportConfig, parseReportConfig,
   getViewerAccounts, getAccountViewers, createAccountInvite, getInviteByToken, acceptInvite, revokeAccountViewer, getViewerUserByEmail, createViewerUser,
-  resetAdminPassword, deleteAllUsers, hashPassword, verifyPassword,
+  resetAdminPassword, deleteAllUsers, hashPassword, verifyPassword, passwordPolicyError,
   updateSyncStatus, upsertMasterCampaigns, upsertMasterAdgroups, upsertMasterKeywords, upsertMasterQi,
   getMasterCampaigns, getMasterAdgroups, getMasterKeywords, buildKeywordMaps,
   getAutoBidKeywords, upsertAutoBidKeyword, deleteAutoBidKeyword, updateAutoBidKeywordStatus, getEnabledAutoBidKeywords,

@@ -88,10 +88,24 @@ router.use(session({
 }));
 router.use(express.json({ limit: '2mb' }));
 router.use(express.urlencoded({ extended: true, limit: '2mb' }));
+const guard = require('../security/guard');
+router.use(guard.noStoreForSession);
+router.use(guard.auditMiddleware);
+router.use(guard.jsonSanitizer);
 
 // ─── 권한 (역할 2종: master=마스터 / client=광고주) ─────────────────
 // 초대 계정(users.role='viewer')은 account_viewers.role 로 마스터/광고주 구분.
 // 뉴먼트 솔루션 계정(마케터)은 항상 마스터. (기존 admin → 마스터 자동 이관)
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function cronAuthorized(req) {
+  const secret = process.env.CRON_SECRET || '';
+  if (secret) {
+    const got = String(req.headers.authorization || ''), want = `Bearer ${secret}`;
+    return got.length === want.length && require('crypto').timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  }
+  const ip = guard.clientIp(req);
+  return !process.env.VERCEL && (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1');
+}
 function isInvited(req) { return req.session.role === 'viewer'; }
 function isClient(req) {
   if (req.session.bidRole) return req.session.bidRole === 'client';
@@ -109,7 +123,7 @@ async function resolveBidRole(req) {
 // SSO(기존 솔루션과 세션 공유)로 들어온 세션도 최초 요청 시 역할 해석
 router.use(async (req, res, next) => {
   try {
-    if (req.session.userId && !req.session.bidRole) await resolveBidRole(req);
+    if (req.session.userId && (!req.session.bidRole || isInvited(req))) await resolveBidRole(req);
   } catch (e) { /* 역할 해석 실패 → 폴백 규칙 사용 */ }
   next();
 });
@@ -173,8 +187,13 @@ async function getAccessibleAccounts(req) {
       ORDER BY bid_weight DESC, a.id ASC
     `, [PINNED_CUSTOMER_ID])).rows;
   }
-  // 멀티 브랜드: 본인 소유 + 초대받은 계정 + 입찰관리 데이터가 있는 광고주 전체 (마스터 간 공유)
-  const viewer = isInvited(req) ? await db.getViewerAccounts(req.session.userId) : [];
+  // 초대받은 외부 계정(마스터 포함)은 초대받은 광고주만 접근 — 다른 브랜드로 공유 범위가 넓어지지 않게
+  if (isInvited(req)) {
+    const invited = await db.getViewerAccounts(req.session.userId);
+    return PINNED_CUSTOMER_ID ? invited.filter(a => String(a.customer_id) === PINNED_CUSTOMER_ID) : invited;
+  }
+  // 멀티 브랜드(내부 운영자): 본인 소유 + 입찰관리 데이터가 있는 광고주 전체 (마스터 간 공유)
+  const viewer = [];
   const owned = await db.getAccountsByUser(req.session.userId);
   const shared = (await bidDb.pool.query(`
     SELECT DISTINCT a.* FROM ad_accounts a
@@ -525,7 +544,7 @@ router.get('/login', (req, res) => {
           <p style="color:#94a3b8;font-size:13px;margin-top:6px">네이버 쇼핑검색 입찰 자동 조정 시스템</p>
         </div>
         <div class="card"><div class="card-body">
-          ${err === 'invalid' ? '<div class="alert alert-err">아이디 또는 비밀번호가 올바르지 않습니다.</div>' : ''}
+          ${err === 'invalid' ? '<div class="alert alert-err">아이디 또는 비밀번호가 올바르지 않습니다.</div>' : ''}${err === 'locked' ? '<div class="alert alert-err">로그인 실패가 반복되어 잠시 잠겼습니다. 15분 뒤 다시 시도하세요.</div>' : ''}
           <form method="POST" action="${BASE}/login">
             <div style="margin-bottom:14px"><label>아이디 (광고주는 이메일)</label><input name="username" required autocomplete="username"></div>
             <div style="margin-bottom:16px"><label>비밀번호</label><input type="password" name="password" required autocomplete="current-password"></div>
@@ -538,17 +557,39 @@ router.get('/login', (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { password } = req.body;
+  const username = String(req.body.username || '').trim().slice(0, 200);
+  const ip = guard.clientIp(req);
+  const lockedFor = Math.max(await guard.lockedMinutes('login_user', username), await guard.lockedMinutes('login_ip', ip));
+  if (lockedFor) {
+    guard.audit(req, 'login_blocked', { ok: false, username, detail: `AUTO BID · 잠금 중 (${lockedFor}분 남음)` });
+    return res.redirect(303, `${BASE}/login?err=locked`);
+  }
   const user = await db.authenticateUser(username, password);
-  if (!user) return res.redirect(303, `${BASE}/login?err=invalid`);
-  req.session.userId = user.id;
-  req.session.userName = user.name;
-  req.session.isAdmin = !!user.is_admin;
-  req.session.approved = user.approved;
-  req.session.role = user.role || 'marketer';
-  req.session.bidRole = null;
-  await resolveBidRole(req);
-  req.session.save(() => res.redirect(303, BASE));
+  if (!user) {
+    const userLocked = await guard.recordFailure('login_user', username);
+    const ipLocked = await guard.recordFailure('login_ip', ip);
+    guard.audit(req, 'login_fail', { ok: false, username, detail: 'AUTO BID' });
+    if (userLocked || ipLocked) {
+      guard.audit(req, 'login_locked', { ok: false, username, detail: userLocked ? 'AUTO BID · 아이디 잠금' : 'AUTO BID · IP 잠금' });
+      guard.notify(`[보안] AUTO BID 로그인 잠금 — ${userLocked ? username : 'IP ' + ip}`, `<p>AUTO BID 로그인 실패가 반복되어 잠겼습니다.</p><p>IP: ${esc(ip)}</p>`, `lock:${userLocked ? username : ip}`);
+      return res.redirect(303, `${BASE}/login?err=locked`);
+    }
+    return res.redirect(303, `${BASE}/login?err=invalid`);
+  }
+  await guard.clearFailures('login_user', username);
+  req.session.regenerate(async err => {
+    if (err) return res.redirect(303, `${BASE}/login?err=invalid`);
+    req.session.userId = user.id;
+    req.session.userName = user.name;
+    req.session.isAdmin = !!user.is_admin;
+    req.session.approved = user.approved;
+    req.session.role = user.role || 'marketer';
+    req.session.bidRole = null;
+    await resolveBidRole(req).catch(() => {});
+    guard.audit(req, 'login_ok', { userId: user.id, username: user.username, detail: 'AUTO BID' });
+    req.session.save(() => res.redirect(303, BASE));
+  });
 });
 
 router.get('/logout', (req, res) => {
@@ -1678,7 +1719,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     let credInfo = null;
     try {
       const myCred = await db.getApiCredentials(req.session.userId, null);
-      if (myCred && myCred.api_key) credInfo = { masked: String(myCred.api_key).slice(0, 10) + '••••••', mgr: myCred.manager_customer_id || '' };
+      if (myCred && myCred.api_key) credInfo = { masked: require('../security/secretBox').mask(myCred.api_key, 10), mgr: myCred.manager_customer_id || '' };
     } catch (e) { /* 미연동 표시 */ }
     const content = `
       <div class="alert alert-info">🎯 <b>${PINNED_LABEL}(${PINNED_CUSTOMER_ID})</b> 광고주가 아직 연동되지 않았습니다. 아래에서 마케터 API 계정을 등록한 뒤 광고주를 연동해주세요.</div>
@@ -1714,7 +1755,7 @@ router.get('/settings', requireLogin, async (req, res) => {
     try {
       const myCred = await db.getApiCredentials(req.session.userId, null);
       if (myCred && myCred.api_key) {
-        credInfo = { masked: String(myCred.api_key).slice(0, 10) + '••••••', mgr: myCred.manager_customer_id || '' };
+        credInfo = { masked: require('../security/secretBox').mask(myCred.api_key, 10), mgr: myCred.manager_customer_id || '' };
       }
     } catch (e) { /* 미연동으로 표시 */ }
   }
@@ -2378,8 +2419,7 @@ async function getCronAccounts() {
 // 크론 tick 은 인스턴스 채널과 무관하게 두 채널(shopping/powerlink)을 모두 처리한다.
 // (레거시 경로 /egojin-bid/api/cron/tick 하나로 전 채널·전 브랜드 커버, 클레임 키로 중복 방지)
 router.get('/api/cron/tick', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (process.env.VERCEL && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!cronAuthorized(req)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   const kst = logic.nowKST();
